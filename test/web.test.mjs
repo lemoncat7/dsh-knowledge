@@ -28,8 +28,8 @@ test('management console serves a secured same-origin application', async (t) =>
 
   const index = await fetch(`${base}/knowledge`)
   assert.equal(index.status, 200)
-  assert.equal(index.headers.get('x-frame-options'), 'DENY')
-  assert.match(index.headers.get('content-security-policy'), /frame-ancestors 'none'/)
+  assert.equal(index.headers.get('x-frame-options'), 'SAMEORIGIN')
+  assert.match(index.headers.get('content-security-policy'), /frame-ancestors 'self'/)
   const html = await index.text()
   assert.match(html, /name="dsh-knowledge-api" content="\/knowledge-api\/v1"/)
   assert.match(html, /src="\/knowledge\/app\.js"/)

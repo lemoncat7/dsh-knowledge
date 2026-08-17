@@ -4,18 +4,27 @@ import { mkdirSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import {
   contentHash,
+  DEFAULT_KNOWLEDGE_BASE_ID,
   newId,
   normalizeDraft,
+  normalizeKnowledgeBaseDraft,
+  normalizeKnowledgeMountDraft,
   nowIso,
   type CandidateProposal,
   type ApiTokenRecord,
   type ExtractionJobRecord,
   type KnowledgeCandidate,
+  type KnowledgeBase,
+  type KnowledgeBaseDraft,
   type KnowledgeDraft,
   type KnowledgeEntry,
   type KnowledgeStatus,
   type KnowledgeStats,
   type KnowledgeVersion,
+  type KnowledgeMount,
+  type KnowledgeMountDraft,
+  type KnowledgeMountTargetKind,
+  type ResolvedKnowledgeMount,
   type ListRequest,
   type ListResult,
   type ReviewDecision,
@@ -28,12 +37,12 @@ import type { KnowledgeProvider } from './provider.js'
 type SqlRow = Record<string, unknown>
 
 const ENTRY_COLUMNS = `
-  id, title, body, type, tags_json, scope_kind, scope_id, confidence,
+  id, knowledge_base_id, title, body, type, tags_json, scope_kind, scope_id, confidence,
   status, version, source_json, created_at, updated_at
 `
 
 const JOINED_ENTRY_COLUMNS = `
-  e.id AS id, e.title AS title, e.body AS body, e.type AS type,
+  e.id AS id, e.knowledge_base_id AS knowledge_base_id, e.title AS title, e.body AS body, e.type AS type,
   e.tags_json AS tags_json, e.scope_kind AS scope_kind, e.scope_id AS scope_id,
   e.confidence AS confidence, e.status AS status, e.version AS version,
   e.source_json AS source_json, e.created_at AS created_at, e.updated_at AS updated_at
@@ -52,10 +61,9 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   }
 
   private migrate(): void {
-    const version = Number((this.db.prepare('PRAGMA user_version').get() as SqlRow).user_version ?? 0)
-    if (version > 1) throw new Error(`knowledge database schema ${version} is newer than this plugin supports`)
-    if (version === 1) return
-    this.db.exec(`
+    let version = Number((this.db.prepare('PRAGMA user_version').get() as SqlRow).user_version ?? 0)
+    if (version > 2) throw new Error(`knowledge database schema ${version} is newer than this plugin supports`)
+    if (version === 0) this.db.exec(`
       BEGIN IMMEDIATE;
       CREATE TABLE knowledge_entries (
         id TEXT PRIMARY KEY,
@@ -133,10 +141,164 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       PRAGMA user_version = 1;
       COMMIT;
     `)
+    if (version === 0) version = 1
+    if (version === 1) this.db.exec(`
+      BEGIN IMMEDIATE;
+      CREATE TABLE knowledge_bases (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL,
+        default_tags_json TEXT NOT NULL,
+        extraction_instructions TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('active','archived')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO knowledge_bases(
+        id,name,description,default_tags_json,extraction_instructions,status,created_at,updated_at
+      ) VALUES(
+        'default','默认知识库','由 0.2 版本迁移的知识。','[]','仅收录可跨会话复用、且与当前挂载范围相关的知识。','active',datetime('now'),datetime('now')
+      );
+      ALTER TABLE knowledge_entries ADD COLUMN knowledge_base_id TEXT NOT NULL DEFAULT 'default';
+      CREATE INDEX knowledge_entries_base_status ON knowledge_entries(knowledge_base_id, status, updated_at DESC);
+      CREATE TABLE knowledge_mounts (
+        id TEXT PRIMARY KEY,
+        target_kind TEXT NOT NULL CHECK(target_kind IN ('project','session')),
+        target_id TEXT NOT NULL,
+        knowledge_base_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+        enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+        recall_enabled INTEGER NOT NULL CHECK(recall_enabled IN (0,1)),
+        write_mode TEXT NOT NULL CHECK(write_mode IN ('none','audit','direct')),
+        include_tags_json TEXT NOT NULL,
+        exclude_tags_json TEXT NOT NULL,
+        extraction_instructions TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(target_kind, target_id, knowledge_base_id)
+      );
+      CREATE INDEX knowledge_mounts_target ON knowledge_mounts(target_kind, target_id, enabled);
+      PRAGMA user_version = 2;
+      COMMIT;
+    `)
   }
 
   private assertOpen(): void {
     if (this.closed) throw new Error('knowledge provider is closed')
+  }
+
+  async listKnowledgeBases(): Promise<KnowledgeBase[]> {
+    this.assertOpen()
+    return (this.db.prepare('SELECT * FROM knowledge_bases ORDER BY status, updated_at DESC, id').all() as SqlRow[])
+      .map(rowToKnowledgeBase)
+  }
+
+  async getKnowledgeBase(id: string): Promise<KnowledgeBase | undefined> {
+    this.assertOpen()
+    const row = this.db.prepare('SELECT * FROM knowledge_bases WHERE id = ?').get(id) as SqlRow | undefined
+    return row === undefined ? undefined : rowToKnowledgeBase(row)
+  }
+
+  async createKnowledgeBase(input: KnowledgeBaseDraft): Promise<KnowledgeBase> {
+    this.assertOpen()
+    const draft = normalizeKnowledgeBaseDraft(input)
+    const timestamp = nowIso()
+    const base: KnowledgeBase = { ...draft, id: newId(), status: 'active', createdAt: timestamp, updatedAt: timestamp }
+    this.db.prepare(`
+      INSERT INTO knowledge_bases(id,name,description,default_tags_json,extraction_instructions,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,'active',?,?)
+    `).run(base.id, base.name, base.description, JSON.stringify(base.defaultTags), base.extractionInstructions, timestamp, timestamp)
+    return base
+  }
+
+  async updateKnowledgeBase(id: string, input: KnowledgeBaseDraft): Promise<KnowledgeBase> {
+    this.assertOpen()
+    const current = await this.getKnowledgeBase(id)
+    if (current === undefined) throw notFound('knowledge base', id)
+    const draft = normalizeKnowledgeBaseDraft(input)
+    const updated: KnowledgeBase = { ...current, ...draft, status: 'active', updatedAt: nowIso() }
+    this.db.prepare(`
+      UPDATE knowledge_bases SET name=?,description=?,default_tags_json=?,extraction_instructions=?,status='active',updated_at=? WHERE id=?
+    `).run(updated.name, updated.description, JSON.stringify(updated.defaultTags), updated.extractionInstructions, updated.updatedAt, id)
+    return updated
+  }
+
+  async archiveKnowledgeBase(id: string): Promise<KnowledgeBase> {
+    this.assertOpen()
+    if (id === DEFAULT_KNOWLEDGE_BASE_ID) throw conflict('the default knowledge base cannot be archived')
+    const current = await this.getKnowledgeBase(id)
+    if (current === undefined) throw notFound('knowledge base', id)
+    if (current.status === 'archived') return current
+    const updated: KnowledgeBase = { ...current, status: 'archived', updatedAt: nowIso() }
+    this.db.prepare("UPDATE knowledge_bases SET status='archived',updated_at=? WHERE id=?").run(updated.updatedAt, id)
+    this.db.prepare('UPDATE knowledge_mounts SET enabled=0,updated_at=? WHERE knowledge_base_id=?').run(updated.updatedAt, id)
+    return updated
+  }
+
+  async listMounts(targetKind?: KnowledgeMountTargetKind, targetId?: string): Promise<KnowledgeMount[]> {
+    this.assertOpen()
+    const where: string[] = []
+    const args: string[] = []
+    if (targetKind !== undefined) { where.push('target_kind=?'); args.push(targetKind) }
+    if (targetId !== undefined) { where.push('target_id=?'); args.push(targetId) }
+    return (this.db.prepare(`SELECT * FROM knowledge_mounts${where.length === 0 ? '' : ` WHERE ${where.join(' AND ')}`} ORDER BY updated_at DESC`)
+      .all(...args) as SqlRow[]).map(rowToMount)
+  }
+
+  async upsertMount(input: KnowledgeMountDraft): Promise<KnowledgeMount> {
+    this.assertOpen()
+    const draft = normalizeKnowledgeMountDraft(input)
+    const base = await this.getKnowledgeBase(draft.knowledgeBaseId)
+    if (base === undefined) throw notFound('knowledge base', draft.knowledgeBaseId)
+    if (base.status !== 'active') throw conflict(`knowledge base "${draft.knowledgeBaseId}" is archived`)
+    const previous = this.db.prepare(`
+      SELECT * FROM knowledge_mounts WHERE target_kind=? AND target_id=? AND knowledge_base_id=?
+    `).get(draft.targetKind, draft.targetId, draft.knowledgeBaseId) as SqlRow | undefined
+    const timestamp = nowIso()
+    const mount: KnowledgeMount = {
+      ...draft,
+      id: previous === undefined ? newId() : String(previous.id),
+      createdAt: previous === undefined ? timestamp : String(previous.created_at),
+      updatedAt: timestamp,
+    }
+    this.db.prepare(`
+      INSERT INTO knowledge_mounts(
+        id,target_kind,target_id,knowledge_base_id,enabled,recall_enabled,write_mode,
+        include_tags_json,exclude_tags_json,extraction_instructions,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(target_kind,target_id,knowledge_base_id) DO UPDATE SET
+        enabled=excluded.enabled,recall_enabled=excluded.recall_enabled,write_mode=excluded.write_mode,
+        include_tags_json=excluded.include_tags_json,exclude_tags_json=excluded.exclude_tags_json,
+        extraction_instructions=excluded.extraction_instructions,updated_at=excluded.updated_at
+    `).run(
+      mount.id, mount.targetKind, mount.targetId, mount.knowledgeBaseId,
+      mount.enabled ? 1 : 0, mount.recallEnabled ? 1 : 0, mount.writeMode,
+      JSON.stringify(mount.includeTags), JSON.stringify(mount.excludeTags), mount.extractionInstructions,
+      mount.createdAt, mount.updatedAt,
+    )
+    return mount
+  }
+
+  async deleteMount(id: string): Promise<void> {
+    this.assertOpen()
+    const result = this.db.prepare('DELETE FROM knowledge_mounts WHERE id=?').run(id)
+    if (result.changes === 0) throw notFound('knowledge mount', id)
+  }
+
+  async resolveMounts(sessionId: string, projectId?: string): Promise<ResolvedKnowledgeMount[]> {
+    this.assertOpen()
+    const project = projectId === undefined ? [] : await this.listMounts('project', projectId)
+    const session = await this.listMounts('session', sessionId)
+    const resolved = new Map<string, { mount: KnowledgeMount; inheritedFrom?: 'project' }>()
+    for (const mount of project) resolved.set(mount.knowledgeBaseId, { mount, inheritedFrom: 'project' })
+    for (const mount of session) resolved.set(mount.knowledgeBaseId, { mount })
+    const output: ResolvedKnowledgeMount[] = []
+    for (const { mount, inheritedFrom } of resolved.values()) {
+      if (!mount.enabled) continue
+      const base = await this.getKnowledgeBase(mount.knowledgeBaseId)
+      if (base === undefined || base.status !== 'active') continue
+      output.push({ ...mount, base, ...inheritedFrom === undefined ? {} : { inheritedFrom } })
+    }
+    return output.sort((left, right) => left.base.name.localeCompare(right.base.name, 'zh-CN'))
   }
 
   async stats(): Promise<KnowledgeStats> {
@@ -144,6 +306,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     const entryRows = this.db.prepare('SELECT status, type, COUNT(*) AS count FROM knowledge_entries GROUP BY status, type').all() as SqlRow[]
     const candidateRows = this.db.prepare('SELECT status, COUNT(*) AS count FROM knowledge_candidates GROUP BY status').all() as SqlRow[]
     const jobRows = this.db.prepare('SELECT status, COUNT(*) AS count FROM extraction_jobs GROUP BY status').all() as SqlRow[]
+    const baseRows = this.db.prepare('SELECT status, COUNT(*) AS count FROM knowledge_bases GROUP BY status').all() as SqlRow[]
     const byType: KnowledgeStats['entries']['byType'] = {
       preference: 0,
       fact: 0,
@@ -163,7 +326,10 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     for (const row of candidateRows) candidates[String(row.status) as keyof typeof candidates] = Number(row.count)
     const extractionJobs = { running: 0, completed: 0, failed: 0 }
     for (const row of jobRows) extractionJobs[String(row.status) as keyof typeof extractionJobs] = Number(row.count)
+    const knowledgeBases = { active: 0, archived: 0 }
+    for (const row of baseRows) knowledgeBases[String(row.status) as keyof typeof knowledgeBases] = Number(row.count)
     return {
+      knowledgeBases: { total: knowledgeBases.active + knowledgeBases.archived, ...knowledgeBases },
       entries: { total: active + archived, active, archived, byType },
       candidates: { total: candidates.pending + candidates.approved + candidates.rejected, ...candidates },
       extractionJobs: { total: extractionJobs.running + extractionJobs.completed + extractionJobs.failed, ...extractionJobs },
@@ -194,16 +360,28 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       ? ''
       : ` AND e.type IN (${request.types.map(() => '?').join(',')})`
     const typeArgs = request.types ?? []
+    const baseIds = [...new Set(request.knowledgeBaseIds ?? [])].filter(Boolean)
+    const baseSql = baseIds.length === 0 ? '' : ` AND e.knowledge_base_id IN (${baseIds.map(() => '?').join(',')})`
+    const includeTags = [...new Set(request.includeTags ?? [])].filter(Boolean)
+    const includeSql = includeTags.length === 0 ? '' : ` AND EXISTS (
+      SELECT 1 FROM json_each(e.tags_json) tags WHERE tags.value IN (${includeTags.map(() => '?').join(',')})
+    )`
+    const excludeTags = [...new Set(request.excludeTags ?? [])].filter(Boolean)
+    const excludeSql = excludeTags.length === 0 ? '' : ` AND NOT EXISTS (
+      SELECT 1 FROM json_each(e.tags_json) tags WHERE tags.value IN (${excludeTags.map(() => '?').join(',')})
+    )`
+    const filterSql = `${typeSql}${baseSql}${includeSql}${excludeSql}`
+    const filterArgs = [...typeArgs, ...baseIds, ...includeTags, ...excludeTags]
     const text = request.text.trim()
     let rows: SqlRow[]
     if (text.length === 0) {
       rows = this.db.prepare(`
         SELECT ${ENTRY_COLUMNS}, 0.0 AS rank
         FROM knowledge_entries e
-        WHERE e.status = 'active' AND ${scopeSql}${typeSql}
+        WHERE e.status = 'active' AND ${scopeSql}${filterSql}
         ORDER BY CASE WHEN e.scope_kind = 'project' THEN 0 ELSE 1 END, e.updated_at DESC
         LIMIT ?
-      `).all(...scopeArgs, ...typeArgs, limit) as SqlRow[]
+      `).all(...scopeArgs, ...filterArgs, limit) as SqlRow[]
     } else {
       const ftsQuery = toFtsQuery(text)
       try {
@@ -211,15 +389,15 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
           SELECT ${JOINED_ENTRY_COLUMNS}, bm25(knowledge_fts, 0.0, 4.0, 1.0, 0.5) AS rank
           FROM knowledge_fts
           JOIN knowledge_entries e ON e.id = knowledge_fts.knowledge_id
-          WHERE knowledge_fts MATCH ? AND e.status = 'active' AND ${scopeSql}${typeSql}
+          WHERE knowledge_fts MATCH ? AND e.status = 'active' AND ${scopeSql}${filterSql}
           ORDER BY CASE WHEN e.scope_kind = 'project' THEN 0 ELSE 1 END, rank, e.updated_at DESC
           LIMIT ?
-        `).all(ftsQuery, ...scopeArgs, ...typeArgs, limit) as SqlRow[]
+        `).all(ftsQuery, ...scopeArgs, ...filterArgs, limit) as SqlRow[]
       } catch {
         rows = []
       }
       if (rows.length < limit) {
-        const supplements = this.searchByTerms(text, scopeSql, scopeArgs, typeSql, typeArgs, limit)
+        const supplements = this.searchByTerms(text, scopeSql, scopeArgs, filterSql, filterArgs, limit)
         const seen = new Set(rows.map(row => String(row.id)))
         rows.push(...supplements.filter(row => !seen.has(String(row.id))).slice(0, limit - rows.length))
       }
@@ -231,8 +409,8 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     text: string,
     scopeSql: string,
     scopeArgs: string[],
-    typeSql: string,
-    typeArgs: string[],
+    filterSql: string,
+    filterArgs: string[],
     limit: number,
   ): SqlRow[] {
     const terms = fallbackTerms(text)
@@ -245,10 +423,10 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     return this.db.prepare(`
       SELECT ${ENTRY_COLUMNS}, 3.0 AS rank
       FROM knowledge_entries e
-      WHERE e.status = 'active' AND ${scopeSql}${typeSql} AND (${clauses.join(' OR ')})
+      WHERE e.status = 'active' AND ${scopeSql}${filterSql} AND (${clauses.join(' OR ')})
       ORDER BY CASE WHEN e.scope_kind = 'project' THEN 0 ELSE 1 END, e.updated_at DESC
       LIMIT ?
-    `).all(...scopeArgs, ...typeArgs, ...args, limit) as SqlRow[]
+    `).all(...scopeArgs, ...filterArgs, ...args, limit) as SqlRow[]
   }
 
   async list(request: ListRequest): Promise<ListResult<KnowledgeEntry>> {
@@ -258,6 +436,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     const args: Array<string | number> = []
     if (request.status !== undefined) { where.push('status = ?'); args.push(request.status) }
     if (request.type !== undefined) { where.push('type = ?'); args.push(request.type) }
+    if (request.knowledgeBaseId !== undefined) { where.push('knowledge_base_id = ?'); args.push(request.knowledgeBaseId) }
     if (request.projectId !== undefined) {
       where.push(`(scope_kind = 'global' OR (scope_kind = 'project' AND scope_id = ?))`)
       args.push(request.projectId)
@@ -296,15 +475,18 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   private insertEntry(input: KnowledgeDraft): KnowledgeEntry {
     const draft = normalizeDraft(input)
+    if (this.db.prepare("SELECT id FROM knowledge_bases WHERE id=? AND status='active'").get(draft.knowledgeBaseId) === undefined) {
+      throw notFound('active knowledge base', draft.knowledgeBaseId)
+    }
     const id = newId()
     const timestamp = nowIso()
     const entry: KnowledgeEntry = { ...draft, id, status: 'active', version: 1, createdAt: timestamp, updatedAt: timestamp }
     this.db.prepare(`
       INSERT INTO knowledge_entries (
-        id,title,body,type,tags_json,scope_kind,scope_id,confidence,status,version,content_hash,source_json,created_at,updated_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        id,knowledge_base_id,title,body,type,tags_json,scope_kind,scope_id,confidence,status,version,content_hash,source_json,created_at,updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(
-      id, draft.title, draft.body, draft.type, JSON.stringify(draft.tags), draft.scope.kind,
+      id, draft.knowledgeBaseId, draft.title, draft.body, draft.type, JSON.stringify(draft.tags), draft.scope.kind,
       draft.scope.kind === 'project' ? draft.scope.id : null, draft.confidence, 'active', 1,
       contentHash(draft), draft.source === undefined ? null : JSON.stringify(draft.source), timestamp, timestamp,
     )
@@ -323,6 +505,9 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     if (currentRow === undefined) throw notFound('knowledge entry', id)
     const current = rowToEntry(currentRow)
     const draft = normalizeDraft(input)
+    if (this.db.prepare("SELECT id FROM knowledge_bases WHERE id=? AND status='active'").get(draft.knowledgeBaseId) === undefined) {
+      throw notFound('active knowledge base', draft.knowledgeBaseId)
+    }
     const timestamp = nowIso()
     const entry: KnowledgeEntry = {
       ...draft,
@@ -334,11 +519,11 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     }
     this.db.prepare(`
       UPDATE knowledge_entries SET
-        title=?,body=?,type=?,tags_json=?,scope_kind=?,scope_id=?,confidence=?,status='active',
+        knowledge_base_id=?,title=?,body=?,type=?,tags_json=?,scope_kind=?,scope_id=?,confidence=?,status='active',
         version=?,content_hash=?,source_json=?,updated_at=?
       WHERE id=?
     `).run(
-      draft.title, draft.body, draft.type, JSON.stringify(draft.tags), draft.scope.kind,
+      draft.knowledgeBaseId, draft.title, draft.body, draft.type, JSON.stringify(draft.tags), draft.scope.kind,
       draft.scope.kind === 'project' ? draft.scope.id : null, draft.confidence, entry.version,
       contentHash(draft), draft.source === undefined ? null : JSON.stringify(draft.source), timestamp, id,
     )
@@ -518,6 +703,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   private writeVersion(entry: KnowledgeEntry, changeKind: KnowledgeVersion['changeKind']): void {
     const snapshot: KnowledgeVersion['snapshot'] = {
+      knowledgeBaseId: entry.knowledgeBaseId,
       title: entry.title,
       body: entry.body,
       type: entry.type,
@@ -544,6 +730,7 @@ function rowToEntry(row: SqlRow): KnowledgeEntry {
   const source = row.source_json == null ? undefined : JSON.parse(String(row.source_json)) as KnowledgeDraft['source']
   return {
     id: String(row.id),
+    knowledgeBaseId: row.knowledge_base_id == null ? DEFAULT_KNOWLEDGE_BASE_ID : String(row.knowledge_base_id),
     title: String(row.title),
     body: String(row.body),
     type: String(row.type) as KnowledgeEntry['type'],
@@ -561,11 +748,13 @@ function rowToEntry(row: SqlRow): KnowledgeEntry {
 }
 
 function rowToVersion(row: SqlRow): KnowledgeVersion {
+  const snapshot = JSON.parse(String(row.snapshot_json)) as KnowledgeVersion['snapshot']
+  if (snapshot.knowledgeBaseId === undefined) snapshot.knowledgeBaseId = DEFAULT_KNOWLEDGE_BASE_ID
   return {
     id: String(row.id),
     knowledgeId: String(row.knowledge_id),
     version: Number(row.version),
-    snapshot: JSON.parse(String(row.snapshot_json)) as KnowledgeVersion['snapshot'],
+    snapshot,
     changeKind: String(row.change_kind) as KnowledgeVersion['changeKind'],
     createdAt: String(row.created_at),
   }
@@ -576,17 +765,49 @@ function rowToCandidate(row: SqlRow): KnowledgeCandidate {
   const sourceKey = row.source_key == null ? undefined : String(row.source_key)
   const reviewedAt = row.reviewed_at == null ? undefined : String(row.reviewed_at)
   const reviewNote = row.review_note == null ? undefined : String(row.review_note)
+  const draft = JSON.parse(String(row.draft_json)) as KnowledgeDraft
+  if (draft.knowledgeBaseId === undefined) draft.knowledgeBaseId = DEFAULT_KNOWLEDGE_BASE_ID
   return {
     id: String(row.id),
     action: String(row.action) as KnowledgeCandidate['action'],
     ...targetId === undefined ? {} : { targetId },
-    draft: JSON.parse(String(row.draft_json)) as KnowledgeDraft,
+    draft,
     reason: String(row.reason),
     status: String(row.status) as KnowledgeCandidate['status'],
     ...sourceKey === undefined ? {} : { sourceKey },
     createdAt: String(row.created_at),
     ...reviewedAt === undefined ? {} : { reviewedAt },
     ...reviewNote === undefined ? {} : { reviewNote },
+  }
+}
+
+function rowToKnowledgeBase(row: SqlRow): KnowledgeBase {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    description: String(row.description),
+    defaultTags: JSON.parse(String(row.default_tags_json)) as string[],
+    extractionInstructions: String(row.extraction_instructions),
+    status: String(row.status) as KnowledgeBase['status'],
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  }
+}
+
+function rowToMount(row: SqlRow): KnowledgeMount {
+  return {
+    id: String(row.id),
+    targetKind: String(row.target_kind) as KnowledgeMount['targetKind'],
+    targetId: String(row.target_id),
+    knowledgeBaseId: String(row.knowledge_base_id),
+    enabled: Number(row.enabled) === 1,
+    recallEnabled: Number(row.recall_enabled) === 1,
+    writeMode: String(row.write_mode) as KnowledgeMount['writeMode'],
+    includeTags: JSON.parse(String(row.include_tags_json)) as string[],
+    excludeTags: JSON.parse(String(row.exclude_tags_json)) as string[],
+    extractionInstructions: String(row.extraction_instructions),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
   }
 }
 

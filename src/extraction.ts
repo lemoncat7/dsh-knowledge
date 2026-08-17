@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { ResolvedConfig } from './config.js'
-import { isKnowledgeType, type CandidateProposal, type KnowledgeDraft, type KnowledgeScope } from './domain.js'
+import { isKnowledgeType, normalizeTags, type CandidateProposal, type KnowledgeDraft, type KnowledgeScope, type ResolvedKnowledgeMount } from './domain.js'
 import type { KnowledgeProvider } from './provider.js'
 import { messageText, type MessageLike, type RuntimeContextLike, type SessionLike } from './runtime.js'
 
@@ -16,8 +16,6 @@ interface TurnSnapshot {
 }
 
 export class ExtractionCoordinator {
-  private readonly pending = new Set<Promise<void>>()
-  private tail: Promise<void> = Promise.resolve()
   private closing = false
   private readonly shutdown = new AbortController()
 
@@ -27,48 +25,89 @@ export class ExtractionCoordinator {
     private readonly config: ResolvedConfig,
   ) {}
 
-  enqueue(session: SessionLike, turn: number): void {
-    if (this.closing) return
+  async run(session: SessionLike, turn: number, parentSignal: AbortSignal): Promise<ExtractionResult> {
+    if (this.closing) return emptyResult('skipped')
     const snapshot = snapshotTurn(session, turn, this.config.extractionMaxInputChars)
-    if (snapshot === undefined) return
-    const task = this.tail.then(() => this.process(snapshot))
-    this.tail = task.catch(() => {})
-    this.pending.add(task)
-    void task.catch((error: unknown) => {
-      this.ctx.logger.warn(`dsh-knowledge: extraction failed for ${snapshot.sourceKey}: ${errorMessage(error)}`)
-    }).finally(() => { this.pending.delete(task) })
+    if (snapshot === undefined) return emptyResult('skipped')
+    const mounts = (await this.provider.resolveMounts(session.id, snapshot.projectId, parentSignal))
+      .filter(mount => mount.writeMode !== 'none')
+    if (mounts.length === 0) return emptyResult('unmounted')
+    return this.process(snapshot, mounts, AbortSignal.any([parentSignal, this.shutdown.signal]))
   }
 
   async close(): Promise<void> {
     this.closing = true
     this.shutdown.abort(new Error('dsh-knowledge is shutting down'))
-    await Promise.allSettled([...this.pending])
   }
 
-  private async process(snapshot: TurnSnapshot): Promise<void> {
-    const signal = this.shutdown.signal
-    if (!await this.provider.claimExtraction(snapshot.sourceKey, signal)) return
+  private async process(
+    snapshot: TurnSnapshot,
+    mounts: ResolvedKnowledgeMount[],
+    signal: AbortSignal,
+  ): Promise<ExtractionResult> {
+    if (!await this.provider.claimExtraction(snapshot.sourceKey, signal)) return emptyResult('duplicate')
     try {
       const query = `${snapshot.userText}\n${snapshot.assistantText}`.slice(0, 4000)
-      const existing = await this.provider.search({
+      const existing = (await Promise.all(mounts.map(mount => this.provider.search({
         text: query,
         ...snapshot.projectId === undefined ? {} : { projectId: snapshot.projectId },
+        knowledgeBaseIds: [mount.knowledgeBaseId],
+        ...mount.includeTags.length === 0 ? {} : { includeTags: mount.includeTags },
+        ...mount.excludeTags.length === 0 ? {} : { excludeTags: mount.excludeTags },
         limit: 10,
-      }, signal)
-      const proposals = await extractWithLlm(this.ctx, this.config, snapshot, existing.map(hit => hit.entry), signal)
+      }, signal)))).flat().map(hit => hit.entry)
+      const proposals = await extractWithLlm(this.ctx, this.config, snapshot, mounts, existing, signal)
       let candidateCount = 0
+      let directCount = 0
+      let auditCount = 0
+      const byBase = new Map(mounts.map(mount => [mount.knowledgeBaseId, {
+        knowledgeBaseId: mount.knowledgeBaseId,
+        name: mount.base.name,
+        directCount: 0,
+        auditCount: 0,
+      }]))
       for (const proposal of proposals) {
-        await this.provider.propose(proposal, snapshot.sourceKey, signal)
+        const mount = mounts.find(candidate => candidate.knowledgeBaseId === proposal.draft.knowledgeBaseId)
+        if (mount === undefined) continue
+        const candidate = await this.provider.propose(proposal, snapshot.sourceKey, signal)
         candidateCount += 1
+        const direct = mount.writeMode === 'direct'
+          && proposal.action !== 'conflict'
+          && proposal.draft.confidence >= this.config.directWriteMinConfidence
+        const counts = byBase.get(mount.knowledgeBaseId)
+        if (direct) {
+          await this.provider.review(candidate.id, { decision: 'approve', note: 'Automatically approved by direct-write mount policy.' }, signal)
+          directCount += 1
+          if (counts !== undefined) counts.directCount += 1
+        } else {
+          auditCount += 1
+          if (counts !== undefined) counts.auditCount += 1
+        }
       }
       await this.provider.completeExtraction(snapshot.sourceKey, candidateCount, signal)
       this.ctx.logger.debug(`dsh-knowledge: extracted ${candidateCount} candidate(s) from ${snapshot.sourceKey}`)
+      return {
+        status: 'completed', candidateCount, directCount, auditCount,
+        bases: [...byBase.values()].filter(base => base.directCount + base.auditCount > 0),
+      }
     } catch (error) {
       const message = errorMessage(error)
       try { await this.provider.failExtraction(snapshot.sourceKey, message) } catch {}
       throw error
     }
   }
+}
+
+export interface ExtractionResult {
+  status: 'completed' | 'skipped' | 'unmounted' | 'duplicate'
+  candidateCount: number
+  directCount: number
+  auditCount: number
+  bases: Array<{ knowledgeBaseId: string; name: string; directCount: number; auditCount: number }>
+}
+
+function emptyResult(status: ExtractionResult['status']): ExtractionResult {
+  return { status, candidateCount: 0, directCount: 0, auditCount: 0, bases: [] }
 }
 
 function snapshotTurn(session: SessionLike, turn: number, maxChars: number): TurnSnapshot | undefined {
@@ -115,7 +154,8 @@ async function extractWithLlm(
   ctx: RuntimeContextLike,
   config: ResolvedConfig,
   snapshot: TurnSnapshot,
-  existing: Array<{ id: string; title: string; body: string; type: string; scope: KnowledgeScope }>,
+  mounts: ResolvedKnowledgeMount[],
+  existing: Array<{ id: string; knowledgeBaseId: string; title: string; body: string; type: string; scope: KnowledgeScope }>,
   parentSignal: AbortSignal,
 ): Promise<CandidateProposal[]> {
   const route = config.extractionProvider !== undefined && config.extractionModel !== undefined
@@ -128,8 +168,19 @@ async function extractWithLlm(
   const framed = JSON.stringify({
     defaultScope,
     conversation: { user: snapshot.userText, assistant: snapshot.assistantText },
+    destinations: mounts.map(mount => ({
+      knowledgeBaseId: mount.knowledgeBaseId,
+      name: mount.base.name,
+      description: mount.base.description,
+      defaultTags: mount.base.defaultTags,
+      requiredTags: mount.includeTags,
+      excludedTags: mount.excludeTags,
+      instructions: [mount.base.extractionInstructions, mount.extractionInstructions].filter(Boolean).join('\n'),
+      writeMode: mount.writeMode,
+    })),
     existing: existing.map(entry => ({
       id: entry.id,
+      knowledgeBaseId: entry.knowledgeBaseId,
       title: entry.title,
       body: entry.body.slice(0, 1200),
       type: entry.type,
@@ -171,20 +222,30 @@ async function extractWithLlm(
   }
   const parsed = parseJsonOutput(deltas.length > 0 ? deltas : completedText)
   const items = Array.isArray(parsed) ? parsed : isRecord(parsed) && Array.isArray(parsed.candidates) ? parsed.candidates : []
-  const existingIds = new Set(existing.map(entry => entry.id))
+  const existingById = new Map(existing.map(entry => [entry.id, entry]))
+  const mountsById = new Map(mounts.map(mount => [mount.knowledgeBaseId, mount]))
   return items.slice(0, 12).flatMap((item): CandidateProposal[] => {
     if (!isRecord(item) || item.action === 'skip') return []
     if (item.action !== 'create' && item.action !== 'update' && item.action !== 'conflict') return []
-    const targetId = typeof item.targetId === 'string' && existingIds.has(item.targetId) ? item.targetId : undefined
+    const knowledgeBaseId = typeof item.knowledgeBaseId === 'string' ? item.knowledgeBaseId : ''
+    const mount = mountsById.get(knowledgeBaseId)
+    if (mount === undefined) return []
+    const targetId = typeof item.targetId === 'string'
+      && existingById.get(item.targetId)?.knowledgeBaseId === knowledgeBaseId ? item.targetId : undefined
     if (item.action !== 'create' && targetId === undefined) return []
     if (typeof item.title !== 'string' || typeof item.body !== 'string' || !isKnowledgeType(item.type)) return []
     const scope = parseScope(item.scope, defaultScope, snapshot.projectId)
     const confidence = typeof item.confidence === 'number' ? Math.max(0, Math.min(1, item.confidence)) : 0.7
     const draft: KnowledgeDraft = {
+      knowledgeBaseId,
       title: item.title,
       body: item.body,
       type: item.type,
-      tags: Array.isArray(item.tags) ? item.tags.filter((tag): tag is string => typeof tag === 'string') : [],
+      tags: normalizeTags([
+        ...mount.base.defaultTags,
+        ...mount.includeTags,
+        ...(Array.isArray(item.tags) ? item.tags.filter((tag): tag is string => typeof tag === 'string') : []),
+      ]).filter(tag => !mount.excludeTags.includes(tag)),
       scope,
       confidence,
       source: {
@@ -213,7 +274,8 @@ Compare against existing entries and choose exactly one action per candidate:
 - skip: not reusable, sensitive, uncertain, or already covered
 Allowed types: preference, fact, decision, procedure, lesson.
 Prefer the supplied defaultScope. Project-only implementation facts must not become global.
-Return strict JSON only: {"candidates":[{"action":"skip|create|update|conflict","targetId":"optional existing id","title":"...","body":"...","type":"fact","tags":["..."],"scope":{"kind":"global"}|{"kind":"project","id":"..."},"confidence":0.0,"reason":"..."}]}`
+Choose only from the supplied destinations and follow each destination's instructions and tag constraints.
+Return strict JSON only: {"candidates":[{"action":"skip|create|update|conflict","knowledgeBaseId":"one supplied destination id","targetId":"optional existing id","title":"...","body":"...","type":"fact","tags":["..."],"scope":{"kind":"global"}|{"kind":"project","id":"..."},"confidence":0.0,"reason":"..."}]}`
 
 function parseScope(value: unknown, fallback: KnowledgeScope, projectId?: string): KnowledgeScope {
   if (!isRecord(value)) return fallback

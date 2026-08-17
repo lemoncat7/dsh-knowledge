@@ -35,6 +35,7 @@ test('remote provider interoperates with the authenticated local API', async (t)
   })
 
   const entry = await remote.create({
+    knowledgeBaseId: 'default',
     title: 'Central knowledge service',
     body: 'Other clients connect to the central knowledge API over HTTPS.',
     type: 'decision',
@@ -45,6 +46,16 @@ test('remote provider interoperates with the authenticated local API', async (t)
   assert.equal((await remote.get(entry.id))?.title, 'Central knowledge service')
   assert.equal((await remote.search({ text: 'central knowledge', limit: 5 })).length, 1)
   assert.equal((await remote.stats()).entries.active, 1)
+
+  const base = await remote.createKnowledgeBase({
+    name: 'Shared project knowledge', description: 'Mounted by remote clients.',
+    defaultTags: ['shared'], extractionInstructions: 'Keep cross-client decisions.',
+  })
+  await remote.upsertMount({
+    targetKind: 'project', targetId: '/workspace/demo', knowledgeBaseId: base.id,
+    enabled: true, recallEnabled: true, writeMode: 'audit', includeTags: ['shared'], excludeTags: [], extractionInstructions: '',
+  })
+  assert.equal((await remote.resolveMounts('remote-session', '/workspace/demo'))[0]?.knowledgeBaseId, base.id)
 
   const candidate = await remote.propose({
     action: 'update',

@@ -14,11 +14,18 @@ export function registerRecall(
     if (query.length === 0) return decision
     try {
       const projectId = payload.agent.session.header.cwd
-      const hits = await provider.search({
+      const mounts = (await provider.resolveMounts(payload.agent.session.id, projectId, payload.signal))
+        .filter(mount => mount.recallEnabled)
+      if (mounts.length === 0) return decision
+      const batches = await Promise.all(mounts.map(mount => provider.search({
         text: query,
         ...projectId === undefined ? {} : { projectId },
+        knowledgeBaseIds: [mount.knowledgeBaseId],
+        ...mount.includeTags.length === 0 ? {} : { includeTags: mount.includeTags },
+        ...mount.excludeTags.length === 0 ? {} : { excludeTags: mount.excludeTags },
         limit: config.autoRecallLimit,
-      }, payload.signal)
+      }, payload.signal)))
+      const hits = batches.flat().sort((left, right) => right.score - left.score).slice(0, config.autoRecallLimit)
       if (hits.length === 0) return decision
       const text = formatRecall(hits, config.recallMaxChars)
       return { kind: 'enter', messages: [...decision.messages, createRecallMessage(text)] }
@@ -48,7 +55,7 @@ function formatRecall(
   let output = header
   for (const { entry } of hits) {
     const scope = entry.scope.kind === 'global' ? 'global' : `project:${entry.scope.id}`
-    const item = `\n\n[knowledge id=${entry.id} type=${entry.type} scope=${scope} version=${entry.version}]\n${entry.title}\n${entry.body}`
+    const item = `\n\n[knowledge base=${entry.knowledgeBaseId} id=${entry.id} type=${entry.type} scope=${scope} version=${entry.version}]\n${entry.title}\n${entry.body}`
     if (output.length + item.length > maxChars) break
     output += item
   }

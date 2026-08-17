@@ -1,5 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { isKnowledgeType, normalizeDraft, type CandidateProposal, type KnowledgeDraft, type ReviewDecision, type TokenPermission } from './domain.js'
+import {
+  DEFAULT_KNOWLEDGE_BASE_ID, isKnowledgeType, normalizeDraft, normalizeKnowledgeBaseDraft,
+  normalizeKnowledgeMountDraft, type CandidateProposal, type KnowledgeBaseDraft, type KnowledgeDraft,
+  type KnowledgeMountDraft, type ReviewDecision, type TokenPermission,
+} from './domain.js'
 import { LocalKnowledgeProvider } from './local-provider.js'
 import type { RuntimeContextLike } from './runtime.js'
 
@@ -37,7 +41,7 @@ async function dispatch(
   const method = req.method ?? 'GET'
 
   if (method === 'GET' && segments[0] === 'health') {
-    return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 1 })
+    return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 2 })
   }
 
   const actor = authenticate(provider, req)
@@ -46,9 +50,15 @@ async function dispatch(
     requirePermission(actor.permissions, 'read')
     const types = url.searchParams.getAll('type').filter(isKnowledgeType)
     const projectId = url.searchParams.get('projectId') ?? undefined
+    const knowledgeBaseIds = url.searchParams.getAll('knowledgeBaseId').filter(Boolean)
+    const includeTags = url.searchParams.getAll('includeTag').filter(Boolean)
+    const excludeTags = url.searchParams.getAll('excludeTag').filter(Boolean)
     const result = await provider.search({
       text: url.searchParams.get('q') ?? '',
       ...projectId === undefined ? {} : { projectId },
+      ...knowledgeBaseIds.length === 0 ? {} : { knowledgeBaseIds },
+      ...includeTags.length === 0 ? {} : { includeTags },
+      ...excludeTags.length === 0 ? {} : { excludeTags },
       ...types.length === 0 ? {} : { types },
       limit: integerParam(url, 'limit', 10, 1, 100),
     })
@@ -60,17 +70,72 @@ async function dispatch(
     return sendJson(res, 200, await provider.stats())
   }
 
+  if (segments[0] === 'knowledge-bases') {
+    if (method === 'GET' && segments.length === 1) {
+      requirePermission(actor.permissions, 'read')
+      return sendJson(res, 200, await provider.listKnowledgeBases())
+    }
+    if (method === 'POST' && segments.length === 1) {
+      requirePermission(actor.permissions, 'write')
+      const body = await readObject(req)
+      return sendJson(res, 201, await provider.createKnowledgeBase(parseKnowledgeBaseDraft(body.draft)))
+    }
+    const id = segments[1]
+    if (id !== undefined && method === 'GET' && segments.length === 2) {
+      requirePermission(actor.permissions, 'read')
+      const base = await provider.getKnowledgeBase(id)
+      if (base === undefined) throw httpError(404, `knowledge base "${id}" was not found`)
+      return sendJson(res, 200, base)
+    }
+    if (id !== undefined && method === 'PUT' && segments.length === 2) {
+      requirePermission(actor.permissions, 'write')
+      const body = await readObject(req)
+      return sendJson(res, 200, await provider.updateKnowledgeBase(id, parseKnowledgeBaseDraft(body.draft)))
+    }
+    if (id !== undefined && method === 'POST' && segments[2] === 'archive' && segments.length === 3) {
+      requirePermission(actor.permissions, 'admin')
+      return sendJson(res, 200, await provider.archiveKnowledgeBase(id))
+    }
+  }
+
+  if (segments[0] === 'mounts') {
+    if (method === 'GET' && segments[1] === 'resolve' && segments.length === 2) {
+      requirePermission(actor.permissions, 'read')
+      const sessionId = url.searchParams.get('sessionId')?.trim()
+      if (!sessionId) throw httpError(400, 'sessionId is required')
+      return sendJson(res, 200, await provider.resolveMounts(sessionId, url.searchParams.get('projectId') ?? undefined))
+    }
+    if (method === 'GET' && segments.length === 1) {
+      requirePermission(actor.permissions, 'read')
+      const targetKind = url.searchParams.get('targetKind')
+      if (targetKind !== null && targetKind !== 'project' && targetKind !== 'session') throw httpError(400, 'invalid mount targetKind')
+      return sendJson(res, 200, await provider.listMounts(targetKind ?? undefined, url.searchParams.get('targetId') ?? undefined))
+    }
+    if (method === 'POST' && segments.length === 1) {
+      requirePermission(actor.permissions, 'write')
+      const body = await readObject(req)
+      return sendJson(res, 200, await provider.upsertMount(parseMountDraft(body.draft)))
+    }
+    if (method === 'DELETE' && segments[1] !== undefined && segments.length === 2) {
+      requirePermission(actor.permissions, 'write')
+      await provider.deleteMount(segments[1])
+      return sendJson(res, 204, undefined)
+    }
+  }
+
   if (segments[0] === 'entries') {
     if (method === 'GET' && segments.length === 1) {
       requirePermission(actor.permissions, 'read')
       const status = url.searchParams.get('status')
       const type = url.searchParams.get('type')
       const projectId = url.searchParams.get('projectId') ?? undefined
+      const knowledgeBaseId = url.searchParams.get('knowledgeBaseId') ?? undefined
       const cursor = url.searchParams.get('cursor') ?? undefined
       const result = await provider.list({
         ...status === 'active' || status === 'archived' ? { status } : {},
         ...type !== null && isKnowledgeType(type) ? { type } : {},
         ...projectId === undefined ? {} : { projectId },
+        ...knowledgeBaseId === undefined ? {} : { knowledgeBaseId },
         ...cursor === undefined ? {} : { cursor },
         limit: integerParam(url, 'limit', 50, 1, 100),
       })
@@ -173,6 +238,42 @@ async function dispatch(
   throw httpError(404, 'knowledge API route was not found')
 }
 
+function parseKnowledgeBaseDraft(value: unknown): KnowledgeBaseDraft {
+  if (!isRecord(value)) throw httpError(400, 'knowledge base draft is invalid')
+  try {
+    return normalizeKnowledgeBaseDraft({
+      name: typeof value.name === 'string' ? value.name : '',
+      description: typeof value.description === 'string' ? value.description : '',
+      defaultTags: Array.isArray(value.defaultTags) ? value.defaultTags.filter((tag): tag is string => typeof tag === 'string') : [],
+      extractionInstructions: typeof value.extractionInstructions === 'string' ? value.extractionInstructions : '',
+    })
+  } catch (error) {
+    throw httpError(400, error instanceof Error ? error.message : 'knowledge base draft is invalid')
+  }
+}
+
+function parseMountDraft(value: unknown): KnowledgeMountDraft {
+  if (!isRecord(value)) throw httpError(400, 'knowledge mount draft is invalid')
+  if (value.targetKind !== 'project' && value.targetKind !== 'session') {
+    throw httpError(400, 'knowledge mount targetKind must be project or session')
+  }
+  try {
+    return normalizeKnowledgeMountDraft({
+      targetKind: value.targetKind,
+      targetId: typeof value.targetId === 'string' ? value.targetId : '',
+      knowledgeBaseId: typeof value.knowledgeBaseId === 'string' ? value.knowledgeBaseId : '',
+      enabled: value.enabled !== false,
+      recallEnabled: value.recallEnabled !== false,
+      writeMode: value.writeMode === 'direct' || value.writeMode === 'none' ? value.writeMode : 'audit',
+      includeTags: Array.isArray(value.includeTags) ? value.includeTags.filter((tag): tag is string => typeof tag === 'string') : [],
+      excludeTags: Array.isArray(value.excludeTags) ? value.excludeTags.filter((tag): tag is string => typeof tag === 'string') : [],
+      extractionInstructions: typeof value.extractionInstructions === 'string' ? value.extractionInstructions : '',
+    })
+  } catch (error) {
+    throw httpError(400, error instanceof Error ? error.message : 'knowledge mount draft is invalid')
+  }
+}
+
 function authenticate(provider: LocalKnowledgeProvider, req: IncomingMessage) {
   const authorization = req.headers.authorization
   if (authorization === undefined || !authorization.startsWith('Bearer ')) throw httpError(401, 'bearer token is required')
@@ -217,6 +318,7 @@ function parseDraft(value: unknown): KnowledgeDraft {
   try {
     const source = isRecord(value.source) ? parseSource(value.source) : undefined
     return normalizeDraft({
+      knowledgeBaseId: optionalString(value.knowledgeBaseId) ?? DEFAULT_KNOWLEDGE_BASE_ID,
       title: typeof value.title === 'string' ? value.title : '',
       body: typeof value.body === 'string' ? value.body : '',
       type: value.type,

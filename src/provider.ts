@@ -2,10 +2,16 @@ import type {
   CandidateProposal,
   ExtractionJobRecord,
   KnowledgeCandidate,
+  KnowledgeBase,
+  KnowledgeBaseDraft,
   KnowledgeDraft,
   KnowledgeEntry,
   KnowledgeStats,
   KnowledgeVersion,
+  KnowledgeMount,
+  KnowledgeMountDraft,
+  KnowledgeMountTargetKind,
+  ResolvedKnowledgeMount,
   ListRequest,
   ListResult,
   ReviewDecision,
@@ -16,6 +22,15 @@ import type {
 /** Stable storage boundary shared by local SQLite and remote HTTP clients. */
 export interface KnowledgeProvider {
   readonly mode: 'local' | 'remote'
+  listKnowledgeBases(signal?: AbortSignal): Promise<KnowledgeBase[]>
+  getKnowledgeBase(id: string, signal?: AbortSignal): Promise<KnowledgeBase | undefined>
+  createKnowledgeBase(draft: KnowledgeBaseDraft, signal?: AbortSignal): Promise<KnowledgeBase>
+  updateKnowledgeBase(id: string, draft: KnowledgeBaseDraft, signal?: AbortSignal): Promise<KnowledgeBase>
+  archiveKnowledgeBase(id: string, signal?: AbortSignal): Promise<KnowledgeBase>
+  listMounts(targetKind?: KnowledgeMountTargetKind, targetId?: string, signal?: AbortSignal): Promise<KnowledgeMount[]>
+  upsertMount(draft: KnowledgeMountDraft, signal?: AbortSignal): Promise<KnowledgeMount>
+  deleteMount(id: string, signal?: AbortSignal): Promise<void>
+  resolveMounts(sessionId: string, projectId?: string, signal?: AbortSignal): Promise<ResolvedKnowledgeMount[]>
   search(request: SearchRequest, signal?: AbortSignal): Promise<SearchHit[]>
   stats(signal?: AbortSignal): Promise<KnowledgeStats>
   list(request: ListRequest, signal?: AbortSignal): Promise<ListResult<KnowledgeEntry>>

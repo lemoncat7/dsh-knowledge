@@ -2,10 +2,14 @@
 
 `dsh-knowledge` 是面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的知识库插件。它不修改 DSH Agent Loop，同一个插件既能使用本地 SQLite，也能连接远程中央知识库。
 
-当前版本 `0.2.0-alpha.3` 已实现可部署的知识库与 Web 管理台：
+当前版本 `0.3.0-alpha.1` 已实现可部署的多知识库与 Web 管理台：
 
-- 回答成功完成后，异步调用 DSH 当前模型判断是否产生知识候选。
-- `create / update / conflict / skip` 提取决策；非 `skip` 内容默认等待人工审核。
+- 回答完成后同步调用 DSH 当前模型判断是否产生知识，并在回答下方显示逐库回写结果。
+- 可创建多个知识库，分别设定说明、默认标签和提取要求。
+- 项目和会话挂载；会话默认继承项目，也可独立覆盖或关闭。
+- 每个挂载支持仅召回、审核写入、直接写入，以及包含/排除标签和额外提取要求。
+- `create / update / conflict / skip` 提取决策；直写模式下的低置信度或冲突仍进入人工审核。
+- 未挂载知识库时，不召回、不提取、不回写。
 - 全局与项目范围，以及偏好、事实、决策、流程、经验五类知识。
 - SQLite WAL、FTS5 全文搜索、原子事务、完整版本历史和幂等提取任务。
 - 审核通过的知识在下一轮 `agent/pre-step` 中作为可追踪的 `recall` 上下文注入。
@@ -13,12 +17,13 @@
 - Bearer Token 仅保存 SHA-256 摘要，支持 `read / propose / write / admin` 权限及吊销。
 - 认证 HTTP API，可作为其他 DSH 客户端和未来桌面端的中央知识库。
 - 随插件安装的响应式 Web 管理台，覆盖概览、知识维护、AI 候选审核和客户端令牌管理。
+- DSH 浏览器端插件：在左侧工作区下方显示“知识库”，并在当前页面内打开管理面板。
 - 明暗主题、键盘操作、窄屏布局以及不依赖颜色的状态标签。
 
 ## 安装
 
 ```bash
-dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.2.0-alpha.3.tgz
+dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.3.0-alpha.1.tgz
 ```
 
 卸载：
@@ -52,7 +57,7 @@ dsh plugin --profile web remove @lemoncat7/dsh-knowledge
     extractionModel: deepseek-chat
 ```
 
-提取失败只会将幂等任务标为 `failed` 并写日志，不会改变原会话，也不会阻断下一轮。
+提取失败会将幂等任务标为 `failed`，并在回答下方记录可重试的回写通知，不会阻断下一轮。
 
 ## 中央服务端
 
@@ -75,6 +80,8 @@ dsh plugin --profile web remove @lemoncat7/dsh-knowledge
 管理台功能：
 
 - 查看准确的知识、候选和提取任务统计。
+- 创建和编辑多个知识库，管理默认标签与提取要求。
+- 管理当前项目挂载和会话覆盖，设定召回、写入模式与标签范围。
 - 检索、筛选、新建、编辑、归档知识并查看版本历史。
 - 查看 AI 提取依据，直接通过、编辑后通过或拒绝候选。
 - 创建、查看和撤销客户端令牌；新令牌原文只显示一次。
@@ -85,6 +92,10 @@ dsh plugin --profile web remove @lemoncat7/dsh-knowledge
 | --- | --- | --- | --- |
 | GET | `/health` | public | 健康检查 |
 | GET | `/search` | read | FTS 检索 |
+| GET/POST | `/knowledge-bases` | read/write | 知识库列表和创建 |
+| GET/PUT | `/knowledge-bases/:id` | read/write | 知识库详情和编辑 |
+| GET/POST/DELETE | `/mounts` | read/write | 挂载查询、更新和删除 |
+| GET | `/mounts/resolve` | read | 解析项目继承与会话覆盖 |
 | GET/POST | `/entries` | read/write | 列表和直接创建 |
 | GET/PUT/DELETE | `/entries/:id` | read/write/admin | 详情、更新、彻底删除 |
 | GET | `/entries/:id/versions` | read | 版本历史 |

@@ -2,10 +2,16 @@ import type {
   CandidateProposal,
   ExtractionJobRecord,
   KnowledgeCandidate,
+  KnowledgeBase,
+  KnowledgeBaseDraft,
   KnowledgeDraft,
   KnowledgeEntry,
   KnowledgeStats,
   KnowledgeVersion,
+  KnowledgeMount,
+  KnowledgeMountDraft,
+  KnowledgeMountTargetKind,
+  ResolvedKnowledgeMount,
   ListRequest,
   ListResult,
   ReviewDecision,
@@ -28,9 +34,58 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     this.baseUrl = new URL(options.url.endsWith('/') ? options.url : `${options.url}/`)
   }
 
+  async listKnowledgeBases(signal?: AbortSignal): Promise<KnowledgeBase[]> {
+    return this.request<KnowledgeBase[]>('knowledge-bases', { signal })
+  }
+
+  async getKnowledgeBase(id: string, signal?: AbortSignal): Promise<KnowledgeBase | undefined> {
+    try {
+      return await this.request<KnowledgeBase>(`knowledge-bases/${encodeURIComponent(id)}`, { signal })
+    } catch (error) {
+      if (error instanceof RemoteProviderError && error.status === 404) return undefined
+      throw error
+    }
+  }
+
+  async createKnowledgeBase(draft: KnowledgeBaseDraft, signal?: AbortSignal): Promise<KnowledgeBase> {
+    return this.request<KnowledgeBase>('knowledge-bases', { method: 'POST', body: { draft }, signal })
+  }
+
+  async updateKnowledgeBase(id: string, draft: KnowledgeBaseDraft, signal?: AbortSignal): Promise<KnowledgeBase> {
+    return this.request<KnowledgeBase>(`knowledge-bases/${encodeURIComponent(id)}`, { method: 'PUT', body: { draft }, signal })
+  }
+
+  async archiveKnowledgeBase(id: string, signal?: AbortSignal): Promise<KnowledgeBase> {
+    return this.request<KnowledgeBase>(`knowledge-bases/${encodeURIComponent(id)}/archive`, { method: 'POST', signal })
+  }
+
+  async listMounts(targetKind?: KnowledgeMountTargetKind, targetId?: string, signal?: AbortSignal): Promise<KnowledgeMount[]> {
+    const params = new URLSearchParams()
+    if (targetKind !== undefined) params.set('targetKind', targetKind)
+    if (targetId !== undefined) params.set('targetId', targetId)
+    return this.request<KnowledgeMount[]>(`mounts?${params}`, { signal })
+  }
+
+  async upsertMount(draft: KnowledgeMountDraft, signal?: AbortSignal): Promise<KnowledgeMount> {
+    return this.request<KnowledgeMount>('mounts', { method: 'POST', body: { draft }, signal })
+  }
+
+  async deleteMount(id: string, signal?: AbortSignal): Promise<void> {
+    await this.request<unknown>(`mounts/${encodeURIComponent(id)}`, { method: 'DELETE', signal })
+  }
+
+  async resolveMounts(sessionId: string, projectId?: string, signal?: AbortSignal): Promise<ResolvedKnowledgeMount[]> {
+    const params = new URLSearchParams({ sessionId })
+    if (projectId !== undefined) params.set('projectId', projectId)
+    return this.request<ResolvedKnowledgeMount[]>(`mounts/resolve?${params}`, { signal })
+  }
+
   async search(request: SearchRequest, signal?: AbortSignal): Promise<SearchHit[]> {
     const params = new URLSearchParams({ q: request.text, limit: String(request.limit) })
     if (request.projectId !== undefined) params.set('projectId', request.projectId)
+    for (const id of request.knowledgeBaseIds ?? []) params.append('knowledgeBaseId', id)
+    for (const tag of request.includeTags ?? []) params.append('includeTag', tag)
+    for (const tag of request.excludeTags ?? []) params.append('excludeTag', tag)
     for (const type of request.types ?? []) params.append('type', type)
     return this.request<SearchHit[]>(`search?${params}`, { signal })
   }
@@ -43,6 +98,7 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     const params = new URLSearchParams({ limit: String(request.limit) })
     if (request.status !== undefined) params.set('status', request.status)
     if (request.projectId !== undefined) params.set('projectId', request.projectId)
+    if (request.knowledgeBaseId !== undefined) params.set('knowledgeBaseId', request.knowledgeBaseId)
     if (request.type !== undefined) params.set('type', request.type)
     if (request.cursor !== undefined) params.set('cursor', request.cursor)
     return this.request<ListResult<KnowledgeEntry>>(`entries?${params}`, { signal })

@@ -64,10 +64,10 @@ function sendAsset(res: ServerResponse, method: string, asset: Asset): void {
 
 function securityHeaders(): Record<string, string> {
   return {
-    'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+    'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'",
     'referrer-policy': 'no-referrer',
     'x-content-type-options': 'nosniff',
-    'x-frame-options': 'DENY',
+    'x-frame-options': 'SAMEORIGIN',
     'cross-origin-opener-policy': 'same-origin',
   }
 }

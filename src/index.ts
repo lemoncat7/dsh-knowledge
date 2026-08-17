@@ -6,7 +6,7 @@ import { LocalKnowledgeProvider } from './local-provider.js'
 import type { KnowledgeProvider } from './provider.js'
 import { registerRecall } from './recall.js'
 import { RemoteKnowledgeProvider } from './remote-provider.js'
-import type { RuntimeContextLike } from './runtime.js'
+import { createWritebackMessage, type RuntimeContextLike } from './runtime.js'
 import { registerKnowledgeWeb } from './web.js'
 
 export const Config = ConfigSchema
@@ -38,12 +38,25 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   registerRecall(runtime, provider, resolved)
 
   if (resolved.extractionEnabled) {
-    runtime.on('session/event', (session, event) => {
-      if (event.type !== 'turn/end') return
-      const reason = event.data.reason
-      const turn = event.data.turn
-      if (!isRecord(reason) || reason.kind !== 'completed' || typeof turn !== 'number') return
-      coordinator.enqueue(session, turn)
+    runtime.on('agent/turn-stopping', async ({ agent, turn, signal }) => {
+      if (agent.session.append === undefined) throw new Error('synchronous knowledge writeback requires Session.append')
+      let summary: string
+      try {
+        const result = await coordinator.run(agent.session, turn, signal)
+        if (result.status === 'duplicate') return
+        if (result.status === 'unmounted') summary = '知识库回写 · 未挂载可写知识库'
+        else if (result.status === 'skipped') summary = '知识库回写 · 当前回答无可提取内容'
+        else if (result.candidateCount === 0) summary = '知识库回写 · 无需收录'
+        else summary = `知识库回写 · ${result.bases.map(base => {
+          const parts = [base.directCount > 0 ? `直写 ${base.directCount}` : '', base.auditCount > 0 ? `待审 ${base.auditCount}` : ''].filter(Boolean)
+          return `${base.name}：${parts.join('、')}`
+        }).join('；')}`
+      } catch (error) {
+        if (signal.aborted) return
+        runtime.logger.warn(`dsh-knowledge: synchronous writeback failed: ${error instanceof Error ? error.message : String(error)}`)
+        summary = '知识库回写 · 失败，可稍后重试'
+      }
+      agent.session.append('user/message', createWritebackMessage(summary), { surfaceOp: 'append' })
     })
   }
 
@@ -67,8 +80,4 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   }, 'dsh-knowledge.close')
 
   runtime.logger.info(`dsh-knowledge: ${provider.mode} provider ready`)
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }

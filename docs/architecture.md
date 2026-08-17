@@ -22,7 +22,7 @@ The DSH core is never patched. `src/index.ts` is the composition root; every oth
 - `provider.ts` is the storage/application port. Local and remote clients implement the same asynchronous contract.
 - `local-provider.ts` owns schema migrations, transactions, FTS and token hashes.
 - `remote-provider.ts` is an authenticated, timeout-bounded HTTPS adapter.
-- `extraction.ts` snapshots completed turns, serializes background work and validates model JSON fail-closed.
+- `extraction.ts` snapshots completed turns, resolves writable mounts and validates model JSON fail-closed.
 - `recall.ts` performs bounded retrieval in the asynchronous `agent/pre-step` waterfall.
 - `api.ts` is a size-bounded HTTP adapter with permission checks and safe errors.
 - `web.ts` serves a same-origin, CSP-constrained management console from package-owned static assets.
@@ -31,8 +31,10 @@ The DSH core is never patched. `src/index.ts` is the composition root; every oth
 
 ## Data model and consistency
 
-SQLite is authoritative in local mode. Schema version 1 contains:
+SQLite is authoritative in local mode. Schema version 2 contains:
 
+- `knowledge_bases`: independently named destinations with default tags and extraction instructions.
+- `knowledge_mounts`: project/session policy overlays for recall, write mode and tag constraints.
 - `knowledge_entries`: current materialized entry state.
 - `knowledge_versions`: immutable snapshots for every create, update, archive or restore.
 - `knowledge_fts`: FTS5 index containing only active entries.
@@ -46,16 +48,18 @@ An active content hash unique index blocks byte-equivalent duplicate knowledge. 
 
 ## Extraction flow
 
-1. A successful DSH `turn/end` is observed without blocking the conversation.
-2. The relevant direct user input and final non-empty assistant message are copied into an immutable job snapshot.
-3. `extraction_jobs` atomically claims `sessionId:turn`; replaying the event cannot duplicate work.
-4. Existing scoped knowledge is retrieved and framed with the conversation as untrusted JSON.
-5. A bounded auxiliary LLM call returns strict candidate JSON.
-6. Runtime validation rejects unknown types, invalid targets, arbitrary project IDs and malformed output.
-7. Valid candidates enter `pending`; `skip` produces no row.
-8. Any failure is isolated, recorded on the job and logged without touching the session.
+1. Awaited `agent/turn-stopping` observes the completed answer before `turn/end` is committed.
+2. Project mounts are resolved and then overlaid by explicit session mounts; a disabled session mount blocks inheritance.
+3. Without a writable mount, no extraction model call or job claim occurs.
+4. The relevant direct user input and final non-empty assistant message are copied into an immutable job snapshot.
+5. `extraction_jobs` atomically claims `sessionId:turn`; replaying the event cannot duplicate work.
+6. Existing knowledge is retrieved only from mounted destinations and framed with the conversation as untrusted JSON.
+7. A bounded auxiliary LLM call returns strict candidate JSON naming one supplied destination.
+8. Runtime validation rejects unknown destinations, types, targets, arbitrary project IDs and malformed output.
+9. Audit mounts keep valid proposals pending. Direct mounts auto-approve only non-conflicts at or above the confidence threshold.
+10. A persistent DSH notice reports per-base direct and pending counts below the answer; failures produce a retryable failure notice.
 
-The extractor explicitly refuses secrets and ephemeral output in its system policy. Human review remains the final trust boundary.
+The extractor explicitly refuses secrets and ephemeral output in its system policy. Conflict and low-confidence proposals always remain behind human review.
 
 ## Recall flow
 
@@ -67,7 +71,7 @@ Recall uses `agent/pre-step`, not a synchronous prompt callback. This is intenti
 - the injected message is attributed as plugin `dsh-knowledge`, form `recall`;
 - retrieval failure is fail-open and never prevents a model response.
 
-Only active entries are searched. Exact project entries are ordered before global entries, and only a configured number and character budget are injected. The framing tells the model that knowledge is contextual data and cannot override current system or user instructions.
+Only active entries from recall-enabled resolved mounts are searched. Each search applies that mount's include/exclude tag constraints. Exact project entries are ordered before global entries, and only a configured number and character budget are injected. The framing tells the model that knowledge is contextual data and cannot override current system or user instructions.
 
 ## Local and remote topology
 

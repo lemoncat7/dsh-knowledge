@@ -1,0 +1,136 @@
+.dsh-knowledge-trigger {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% + 8px);
+  height: 34px;
+  margin: 4px -4px;
+  padding: 6px 2px 6px 10px;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 12px;
+  overflow: hidden;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  white-space: nowrap;
+}
+
+.dsh-knowledge-trigger:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.dsh-knowledge-trigger--rail {
+  width: 36px;
+  height: 36px;
+  margin: 8px 0 4px;
+  padding: 0;
+  justify-content: center;
+  gap: 0;
+  border-radius: 50%;
+}
+
+.dsh-knowledge-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.dsh-knowledge-mask {
+  position: absolute;
+  inset: 0;
+  background: var(--dsw-alias-bg-mask-1);
+  backdrop-filter: var(--dsw-mask-blur);
+}
+
+.dsh-knowledge-panel {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  width: min(1180px, 100%);
+  height: min(860px, 100%);
+  min-height: 360px;
+  border-radius: 24px;
+  overflow: hidden;
+  background: var(--dsw-alias-bg-layer-2);
+  box-shadow: var(--dsw-shadow-lv3);
+}
+
+.dsh-knowledge-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 68px;
+  padding: 10px 16px 10px 24px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--dsw-alias-divider-primary, rgba(128, 128, 128, .18));
+}
+
+.dsh-knowledge-header h2,
+.dsh-knowledge-header p {
+  margin: 0;
+}
+
+.dsh-knowledge-header h2 {
+  color: var(--dsw-alias-label-primary);
+  font-size: 17px;
+  line-height: 26px;
+  font-weight: 600;
+}
+
+.dsh-knowledge-header p {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.dsh-knowledge-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+
+.dsh-knowledge-close:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.dsh-knowledge-frame {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: var(--dsw-alias-bg-layer-1, #fff);
+}
+
+@media (max-width: 640px) {
+  .dsh-knowledge-overlay {
+    padding: 0;
+  }
+
+  .dsh-knowledge-panel {
+    width: 100%;
+    height: 100%;
+    border-radius: 0;
+  }
+}

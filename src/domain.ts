@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 
 export const KNOWLEDGE_TYPES = ['preference', 'fact', 'decision', 'procedure', 'lesson'] as const
 export type KnowledgeType = typeof KNOWLEDGE_TYPES[number]
+export const DEFAULT_KNOWLEDGE_BASE_ID = 'default'
 
 export type KnowledgeScope =
   | { kind: 'global' }
@@ -10,6 +11,46 @@ export type KnowledgeScope =
 export type KnowledgeStatus = 'active' | 'archived'
 export type CandidateAction = 'create' | 'update' | 'conflict'
 export type CandidateStatus = 'pending' | 'approved' | 'rejected'
+export type KnowledgeBaseStatus = 'active' | 'archived'
+export type KnowledgeMountTargetKind = 'project' | 'session'
+export type KnowledgeWriteMode = 'none' | 'audit' | 'direct'
+
+export interface KnowledgeBaseDraft {
+  name: string
+  description: string
+  defaultTags: string[]
+  extractionInstructions: string
+}
+
+export interface KnowledgeBase extends KnowledgeBaseDraft {
+  id: string
+  status: KnowledgeBaseStatus
+  createdAt: string
+  updatedAt: string
+}
+
+export interface KnowledgeMountDraft {
+  targetKind: KnowledgeMountTargetKind
+  targetId: string
+  knowledgeBaseId: string
+  enabled: boolean
+  recallEnabled: boolean
+  writeMode: KnowledgeWriteMode
+  includeTags: string[]
+  excludeTags: string[]
+  extractionInstructions: string
+}
+
+export interface KnowledgeMount extends KnowledgeMountDraft {
+  id: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ResolvedKnowledgeMount extends KnowledgeMount {
+  base: KnowledgeBase
+  inheritedFrom?: 'project'
+}
 
 export interface KnowledgeSource {
   sessionId?: string
@@ -19,6 +60,7 @@ export interface KnowledgeSource {
 }
 
 export interface KnowledgeDraft {
+  knowledgeBaseId: string
   title: string
   body: string
   type: KnowledgeType
@@ -64,6 +106,9 @@ export interface KnowledgeCandidate extends CandidateProposal {
 export interface SearchRequest {
   text: string
   projectId?: string
+  knowledgeBaseIds?: string[]
+  includeTags?: string[]
+  excludeTags?: string[]
   types?: KnowledgeType[]
   limit: number
 }
@@ -76,6 +121,7 @@ export interface SearchHit {
 export interface ListRequest {
   status?: KnowledgeStatus
   projectId?: string
+  knowledgeBaseId?: string
   type?: KnowledgeType
   limit: number
   cursor?: string
@@ -102,6 +148,11 @@ export interface ExtractionJobRecord {
 }
 
 export interface KnowledgeStats {
+  knowledgeBases: {
+    total: number
+    active: number
+    archived: number
+  }
   entries: {
     total: number
     active: number
@@ -151,6 +202,7 @@ export function normalizeTags(tags: readonly string[]): string[] {
 }
 
 export function normalizeDraft(input: KnowledgeDraft): KnowledgeDraft {
+  const knowledgeBaseId = input.knowledgeBaseId?.trim() || DEFAULT_KNOWLEDGE_BASE_ID
   const title = input.title.trim()
   const body = input.body.trim()
   if (title.length === 0 || title.length > 200) throw new Error('knowledge title must contain 1-200 characters')
@@ -163,6 +215,7 @@ export function normalizeDraft(input: KnowledgeDraft): KnowledgeDraft {
     throw new Error('project scope requires a non-empty id')
   }
   return {
+    knowledgeBaseId,
     title,
     body,
     type: input.type,
@@ -178,12 +231,50 @@ export function normalizeDraft(input: KnowledgeDraft): KnowledgeDraft {
 export function contentHash(draft: KnowledgeDraft): string {
   const normalized = normalizeDraft(draft)
   return createHash('sha256').update(JSON.stringify({
+    knowledgeBaseId: normalized.knowledgeBaseId,
     title: normalized.title.toLowerCase(),
     body: normalized.body.toLowerCase(),
     type: normalized.type,
     tags: normalized.tags,
     scope: normalized.scope,
   })).digest('hex')
+}
+
+export function normalizeKnowledgeBaseDraft(input: KnowledgeBaseDraft): KnowledgeBaseDraft {
+  const name = input.name.trim()
+  const description = input.description.trim()
+  const extractionInstructions = input.extractionInstructions.trim()
+  if (name.length === 0 || name.length > 100) throw new Error('knowledge base name must contain 1-100 characters')
+  if (description.length > 2000) throw new Error('knowledge base description must contain at most 2000 characters')
+  if (extractionInstructions.length > 4000) throw new Error('knowledge base extraction instructions must contain at most 4000 characters')
+  return { name, description, defaultTags: normalizeTags(input.defaultTags), extractionInstructions }
+}
+
+export function normalizeKnowledgeMountDraft(input: KnowledgeMountDraft): KnowledgeMountDraft {
+  const targetId = input.targetId.trim()
+  const knowledgeBaseId = input.knowledgeBaseId.trim()
+  if (targetId.length === 0) throw new Error('knowledge mount targetId must not be empty')
+  if (knowledgeBaseId.length === 0) throw new Error('knowledge mount knowledgeBaseId must not be empty')
+  if (input.targetKind !== 'project' && input.targetKind !== 'session') throw new Error('unsupported knowledge mount target kind')
+  if (input.writeMode !== 'none' && input.writeMode !== 'audit' && input.writeMode !== 'direct') {
+    throw new Error('unsupported knowledge write mode')
+  }
+  const extractionInstructions = input.extractionInstructions.trim()
+  if (extractionInstructions.length > 4000) throw new Error('mount extraction instructions must contain at most 4000 characters')
+  const includeTags = normalizeTags(input.includeTags)
+  const excludeTags = normalizeTags(input.excludeTags)
+  if (includeTags.some(tag => excludeTags.includes(tag))) throw new Error('a mount tag cannot be both included and excluded')
+  return {
+    targetKind: input.targetKind,
+    targetId,
+    knowledgeBaseId,
+    enabled: input.enabled,
+    recallEnabled: input.recallEnabled,
+    writeMode: input.writeMode,
+    includeTags,
+    excludeTags,
+    extractionInstructions,
+  }
 }
 
 export function isKnowledgeType(value: unknown): value is KnowledgeType {

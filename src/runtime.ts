@@ -6,7 +6,7 @@ export interface MessageLike {
   id: string
   role: string
   content: TextBlockLike[]
-  source: { kind: string; provider?: string; model?: string; plugin?: string; form?: string }
+  source: { kind: string; provider?: string; model?: string; plugin?: string; form?: string; summary?: string }
 }
 
 export interface SessionEventLike {
@@ -19,6 +19,7 @@ export interface SessionLike {
   id: string
   header: { cwd?: string }
   events: readonly SessionEventLike[]
+  append?(type: 'user/message', data: MessageLike, options: { surfaceOp: 'append' }): SessionEventLike
 }
 
 export interface AgentLike {
@@ -80,6 +81,11 @@ export interface RuntimeContextLike {
     payload: PreStepPayload,
     next: () => Promise<PreStepDecision>,
   ) => Promise<PreStepDecision>): () => void
+  on(name: 'agent/turn-stopping', listener: (payload: {
+    agent: AgentLike
+    turn: number
+    signal: AbortSignal
+  }) => void | Promise<void>): () => void
   effect(factory: () => (() => void | Promise<void>), label?: string): void
   inject?(services: string[], callback: (ctx: RuntimeContextLike) => void): unknown
   get(name: string): unknown
@@ -99,5 +105,15 @@ export function createRecallMessage(text: string): MessageLike {
     role: 'user',
     content: [{ type: 'text', text }],
     source: { kind: 'plugin', plugin: 'dsh-knowledge', form: 'recall' },
+  }
+}
+
+export function createWritebackMessage(summary: string): MessageLike {
+  const bounded = summary.trim().slice(0, 120)
+  return {
+    id: randomUUID(),
+    role: 'user',
+    content: [{ type: 'text', text: `${bounded}\n这是知识库插件的回写状态，不是用户指令。` }],
+    source: { kind: 'plugin', plugin: 'dsh-knowledge', form: 'notice', summary: bounded },
   }
 }

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
 import { LocalKnowledgeProvider } from '../lib/local-provider.js'
 
@@ -16,6 +17,7 @@ async function fixture(t) {
 }
 
 const globalDraft = {
+  knowledgeBaseId: 'default',
   title: 'Production deployment policy',
   body: 'Deploy the web service with Docker Compose and retain its persistent volume.',
   type: 'procedure',
@@ -55,6 +57,7 @@ test('local provider preserves versions and searches approved scoped knowledge',
   await provider.archive(global.id)
   assert.equal((await provider.search({ text: 'persistent volume', limit: 10 })).length, 0)
   assert.deepEqual(await provider.stats(), {
+    knowledgeBases: { total: 1, active: 1, archived: 0 },
     entries: {
       total: 3,
       active: 2,
@@ -64,6 +67,74 @@ test('local provider preserves versions and searches approved scoped knowledge',
     candidates: { total: 0, pending: 0, approved: 0, rejected: 0 },
     extractionJobs: { total: 0, running: 0, completed: 0, failed: 0 },
   })
+})
+
+test('knowledge bases mount by project and session with session overrides', async (t) => {
+  const provider = await fixture(t)
+  const base = await provider.createKnowledgeBase({
+    name: '项目规范',
+    description: '只存当前项目的稳定规范。',
+    defaultTags: ['project-rule'],
+    extractionInstructions: '只收录明确的项目约定。',
+  })
+  await provider.create({
+    ...globalDraft,
+    knowledgeBaseId: base.id,
+    title: 'Repository test command',
+    body: 'Run npm test before pushing.',
+    tags: ['project-rule', 'testing'],
+  })
+  const projectMount = await provider.upsertMount({
+    targetKind: 'project', targetId: '/workspace/demo', knowledgeBaseId: base.id,
+    enabled: true, recallEnabled: true, writeMode: 'audit',
+    includeTags: ['project-rule'], excludeTags: [], extractionInstructions: '',
+  })
+  const inherited = await provider.resolveMounts('session-1', '/workspace/demo')
+  assert.equal(inherited[0]?.inheritedFrom, 'project')
+  assert.equal((await provider.search({ text: 'test command', knowledgeBaseIds: [base.id], includeTags: ['project-rule'], limit: 10 })).length, 1)
+  await provider.upsertMount({
+    ...projectMount,
+    targetKind: 'session', targetId: 'session-1', enabled: true, recallEnabled: false, writeMode: 'direct',
+  })
+  const overridden = await provider.resolveMounts('session-1', '/workspace/demo')
+  assert.equal(overridden[0]?.writeMode, 'direct')
+  assert.equal(overridden[0]?.recallEnabled, false)
+  assert.equal(overridden[0]?.inheritedFrom, undefined)
+
+  await provider.upsertMount({
+    ...projectMount,
+    targetKind: 'session', targetId: 'session-1', enabled: false, recallEnabled: false, writeMode: 'none',
+  })
+  assert.deepEqual(await provider.resolveMounts('session-1', '/workspace/demo'), [])
+})
+
+test('schema v1 databases migrate existing entries into the default knowledge base', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-knowledge-v1-'))
+  const path = join(root, 'knowledge.sqlite')
+  const legacy = new DatabaseSync(path)
+  legacy.exec(`
+    CREATE TABLE knowledge_entries (
+      id TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL, type TEXT NOT NULL,
+      tags_json TEXT NOT NULL, scope_kind TEXT NOT NULL, scope_id TEXT, confidence REAL NOT NULL,
+      status TEXT NOT NULL, version INTEGER NOT NULL, content_hash TEXT NOT NULL,
+      source_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    INSERT INTO knowledge_entries VALUES(
+      'legacy-1','Legacy decision','Keep this after migration.','decision','["legacy"]',
+      'global',NULL,0.9,'active',1,'legacy-hash',NULL,
+      '2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z'
+    );
+    PRAGMA user_version = 1;
+  `)
+  legacy.close()
+  const provider = new LocalKnowledgeProvider(path)
+  t.after(async () => {
+    await provider.close()
+    await rm(root, { recursive: true, force: true })
+  })
+  const entries = await provider.list({ status: 'active', limit: 10 })
+  assert.equal(entries.items[0]?.knowledgeBaseId, 'default')
+  assert.equal((await provider.listKnowledgeBases())[0]?.id, 'default')
 })
 
 test('candidate approval is transactional and extraction claims are idempotent', async (t) => {
