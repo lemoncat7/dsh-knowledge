@@ -2,7 +2,7 @@
 
 `dsh-knowledge` 是面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的知识库插件。它不修改 DSH Agent Loop，同一个插件既能使用本地 SQLite，也能连接远程中央知识库。
 
-当前版本 `0.1.0-alpha.1` 已实现后端首版：
+当前版本 `0.2.0-alpha.2` 已实现可部署的知识库与 Web 管理台：
 
 - 回答成功完成后，异步调用 DSH 当前模型判断是否产生知识候选。
 - `create / update / conflict / skip` 提取决策；非 `skip` 内容默认等待人工审核。
@@ -12,13 +12,13 @@
 - 本地与远程 Provider 使用同一接口；远程模式不做隐式双向同步。
 - Bearer Token 仅保存 SHA-256 摘要，支持 `read / propose / write / admin` 权限及吊销。
 - 认证 HTTP API，可作为其他 DSH 客户端和未来桌面端的中央知识库。
-
-Web 管理界面尚未实现；目前通过 API 管理和审核。
+- 随插件安装的响应式 Web 管理台，覆盖概览、知识维护、AI 候选审核和客户端令牌管理。
+- 明暗主题、键盘操作、窄屏布局以及不依赖颜色的状态标签。
 
 ## 安装
 
 ```bash
-dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.1.0-alpha.1.tgz
+dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.2.0-alpha.2.tgz
 ```
 
 卸载：
@@ -64,9 +64,20 @@ dsh plugin --profile web remove @lemoncat7/dsh-knowledge
     exposeApi: true
     apiToken: !!js process.env.DSH_KNOWLEDGE_API_TOKEN
     apiPrefix: /knowledge-api/v1
+    exposeWeb: true
+    webPath: /knowledge
 ```
 
 `DSH_KNOWLEDGE_API_TOKEN` 至少 24 个字符。该值只用于创建或恢复 bootstrap admin 身份；数据库只保存摘要。服务端没有 TLS，非回环部署必须放在 HTTPS 反向代理之后。
+
+启用后访问 `http://<DSH 地址>:<端口>/knowledge`。管理台要求输入 API 令牌，令牌只保存在当前浏览器标签页的 `sessionStorage` 中，关闭标签页后自动清除。`exposeWeb` 必须与 `exposeApi` 一起启用，管理台和 API 均由 DSH 自身 WebServer 提供，不需要额外容器。
+
+管理台功能：
+
+- 查看准确的知识、候选和提取任务统计。
+- 检索、筛选、新建、编辑、归档知识并查看版本历史。
+- 查看 AI 提取依据，直接通过、编辑后通过或拒绝候选。
+- 创建、查看和撤销客户端令牌；新令牌原文只显示一次。
 
 主要 API：
 

@@ -54,6 +54,16 @@ test('local provider preserves versions and searches approved scoped knowledge',
   assert.equal((await provider.versions(global.id)).length, 2)
   await provider.archive(global.id)
   assert.equal((await provider.search({ text: 'persistent volume', limit: 10 })).length, 0)
+  assert.deepEqual(await provider.stats(), {
+    entries: {
+      total: 3,
+      active: 2,
+      archived: 1,
+      byType: { preference: 0, fact: 0, decision: 0, procedure: 3, lesson: 0 },
+    },
+    candidates: { total: 0, pending: 0, approved: 0, rejected: 0 },
+    extractionJobs: { total: 0, running: 0, completed: 0, failed: 0 },
+  })
 })
 
 test('candidate approval is transactional and extraction claims are idempotent', async (t) => {
@@ -80,6 +90,10 @@ test('candidate approval is transactional and extraction claims are idempotent',
   assert.equal(await provider.claimExtraction('session-1:1'), false)
   await provider.completeExtraction('session-1:1', 1)
   assert.equal((await provider.extractionJob('session-1:1'))?.status, 'completed')
+  const stats = await provider.stats()
+  assert.equal(stats.entries.active, 1)
+  assert.equal(stats.candidates.approved, 1)
+  assert.equal(stats.extractionJobs.completed, 1)
 })
 
 test('API tokens are hashed, permissioned, and revocable', async (t) => {

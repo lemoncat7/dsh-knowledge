@@ -4,6 +4,7 @@ import type {
   KnowledgeCandidate,
   KnowledgeDraft,
   KnowledgeEntry,
+  KnowledgeStats,
   KnowledgeVersion,
   ListRequest,
   ListResult,
@@ -16,6 +17,7 @@ import type {
 export interface KnowledgeProvider {
   readonly mode: 'local' | 'remote'
   search(request: SearchRequest, signal?: AbortSignal): Promise<SearchHit[]>
+  stats(signal?: AbortSignal): Promise<KnowledgeStats>
   list(request: ListRequest, signal?: AbortSignal): Promise<ListResult<KnowledgeEntry>>
   get(id: string, signal?: AbortSignal): Promise<KnowledgeEntry | undefined>
   versions(id: string, signal?: AbortSignal): Promise<KnowledgeVersion[]>

@@ -9,6 +9,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
 
 COPY tsconfig.json cordis.patch.yml README.md LICENSE ./
+COPY web ./web
 COPY docs ./docs
 COPY src ./src
 COPY test ./test

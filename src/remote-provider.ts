@@ -4,6 +4,7 @@ import type {
   KnowledgeCandidate,
   KnowledgeDraft,
   KnowledgeEntry,
+  KnowledgeStats,
   KnowledgeVersion,
   ListRequest,
   ListResult,
@@ -32,6 +33,10 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     if (request.projectId !== undefined) params.set('projectId', request.projectId)
     for (const type of request.types ?? []) params.append('type', type)
     return this.request<SearchHit[]>(`search?${params}`, { signal })
+  }
+
+  async stats(signal?: AbortSignal): Promise<KnowledgeStats> {
+    return this.request<KnowledgeStats>('stats', { signal })
   }
 
   async list(request: ListRequest, signal?: AbortSignal): Promise<ListResult<KnowledgeEntry>> {

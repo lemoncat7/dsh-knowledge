@@ -55,6 +55,11 @@ async function dispatch(
     return sendJson(res, 200, result)
   }
 
+  if (method === 'GET' && segments[0] === 'stats' && segments.length === 1) {
+    requirePermission(actor.permissions, 'read')
+    return sendJson(res, 200, await provider.stats())
+  }
+
   if (segments[0] === 'entries') {
     if (method === 'GET' && segments.length === 1) {
       requirePermission(actor.permissions, 'read')

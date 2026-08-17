@@ -7,6 +7,7 @@ import type { KnowledgeProvider } from './provider.js'
 import { registerRecall } from './recall.js'
 import { RemoteKnowledgeProvider } from './remote-provider.js'
 import type { RuntimeContextLike } from './runtime.js'
+import { registerKnowledgeWeb } from './web.js'
 
 export const Config = ConfigSchema
 export type Config = KnowledgeConfig
@@ -49,7 +50,15 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   if (resolved.exposeApi) {
     if (!(provider instanceof LocalKnowledgeProvider)) throw new Error('exposeApi is supported only by the local backend')
     provider.ensureBootstrapToken(resolved.apiToken as string)
-    registerKnowledgeApi(runtime, provider, resolved.apiPrefix)
+    if (runtime.inject === undefined) throw new Error('exposeApi requires Cordis dynamic service injection')
+    runtime.inject(['webServer'], (httpRuntime) => {
+      const disposeApi = registerKnowledgeApi(httpRuntime, provider, resolved.apiPrefix)
+      httpRuntime.effect(() => disposeApi, 'dsh-knowledge.api')
+      if (resolved.exposeWeb) {
+        const disposeWeb = registerKnowledgeWeb(httpRuntime, resolved.webPath, resolved.apiPrefix)
+        httpRuntime.effect(() => disposeWeb, 'dsh-knowledge.web')
+      }
+    })
   }
 
   runtime.effect(() => async () => {

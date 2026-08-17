@@ -14,6 +14,7 @@ import {
   type KnowledgeDraft,
   type KnowledgeEntry,
   type KnowledgeStatus,
+  type KnowledgeStats,
   type KnowledgeVersion,
   type ListRequest,
   type ListResult,
@@ -136,6 +137,37 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   private assertOpen(): void {
     if (this.closed) throw new Error('knowledge provider is closed')
+  }
+
+  async stats(): Promise<KnowledgeStats> {
+    this.assertOpen()
+    const entryRows = this.db.prepare('SELECT status, type, COUNT(*) AS count FROM knowledge_entries GROUP BY status, type').all() as SqlRow[]
+    const candidateRows = this.db.prepare('SELECT status, COUNT(*) AS count FROM knowledge_candidates GROUP BY status').all() as SqlRow[]
+    const jobRows = this.db.prepare('SELECT status, COUNT(*) AS count FROM extraction_jobs GROUP BY status').all() as SqlRow[]
+    const byType: KnowledgeStats['entries']['byType'] = {
+      preference: 0,
+      fact: 0,
+      decision: 0,
+      procedure: 0,
+      lesson: 0,
+    }
+    let active = 0
+    let archived = 0
+    for (const row of entryRows) {
+      const count = Number(row.count)
+      byType[String(row.type) as keyof typeof byType] += count
+      if (row.status === 'active') active += count
+      if (row.status === 'archived') archived += count
+    }
+    const candidates = { pending: 0, approved: 0, rejected: 0 }
+    for (const row of candidateRows) candidates[String(row.status) as keyof typeof candidates] = Number(row.count)
+    const extractionJobs = { running: 0, completed: 0, failed: 0 }
+    for (const row of jobRows) extractionJobs[String(row.status) as keyof typeof extractionJobs] = Number(row.count)
+    return {
+      entries: { total: active + archived, active, archived, byType },
+      candidates: { total: candidates.pending + candidates.approved + candidates.rejected, ...candidates },
+      extractionJobs: { total: extractionJobs.running + extractionJobs.completed + extractionJobs.failed, ...extractionJobs },
+    }
   }
 
   private transaction<T>(operation: () => T): T {

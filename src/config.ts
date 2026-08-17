@@ -9,6 +9,8 @@ export interface Config {
   exposeApi: boolean
   apiToken?: string
   apiPrefix: string
+  exposeWeb: boolean
+  webPath: string
   extractionEnabled: boolean
   extractionProvider?: string
   extractionModel?: string
@@ -29,6 +31,8 @@ export const Config: Schema<Config> = Schema.object({
   exposeApi: Schema.boolean().default(false),
   apiToken: Schema.string().role('secret'),
   apiPrefix: Schema.string().default('/knowledge-api/v1'),
+  exposeWeb: Schema.boolean().default(false),
+  webPath: Schema.string().default('/knowledge'),
   extractionEnabled: Schema.boolean().default(true),
   extractionProvider: Schema.string(),
   extractionModel: Schema.string(),
@@ -43,6 +47,8 @@ export const Config: Schema<Config> = Schema.object({
 export interface ResolvedConfig extends Config {
   remoteTimeoutMs: number
   apiPrefix: string
+  exposeWeb: boolean
+  webPath: string
   extractionMaxTokens: number
   extractionTimeoutMs: number
   extractionMaxInputChars: number
@@ -56,6 +62,8 @@ export function resolveConfig(config: Config): ResolvedConfig {
     ...config,
     remoteTimeoutMs: config.remoteTimeoutMs ?? 10_000,
     apiPrefix: normalizePrefix(config.apiPrefix ?? '/knowledge-api/v1'),
+    exposeWeb: config.exposeWeb ?? false,
+    webPath: normalizePrefix(config.webPath ?? '/knowledge'),
     extractionMaxTokens: config.extractionMaxTokens ?? 1400,
     extractionTimeoutMs: config.extractionTimeoutMs ?? 90_000,
     extractionMaxInputChars: config.extractionMaxInputChars ?? 30_000,
@@ -85,6 +93,12 @@ export function resolveConfig(config: Config): ResolvedConfig {
   }
   if (resolved.exposeApi && (resolved.apiToken === undefined || resolved.apiToken.trim().length < 24)) {
     throw new Error('exposeApi requires apiToken with at least 24 characters')
+  }
+  if (resolved.exposeWeb && !resolved.exposeApi) {
+    throw new Error('exposeWeb requires exposeApi so the management console has an authenticated API')
+  }
+  if (resolved.webPath === resolved.apiPrefix || resolved.webPath.startsWith(`${resolved.apiPrefix}/`) || resolved.apiPrefix.startsWith(`${resolved.webPath}/`)) {
+    throw new Error('webPath and apiPrefix must not overlap')
   }
   return resolved
 }

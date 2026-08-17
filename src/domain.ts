@@ -101,6 +101,27 @@ export interface ExtractionJobRecord {
   updatedAt: string
 }
 
+export interface KnowledgeStats {
+  entries: {
+    total: number
+    active: number
+    archived: number
+    byType: Record<KnowledgeType, number>
+  }
+  candidates: {
+    total: number
+    pending: number
+    approved: number
+    rejected: number
+  }
+  extractionJobs: {
+    total: number
+    running: number
+    completed: number
+    failed: number
+  }
+}
+
 export const TOKEN_PERMISSIONS = ['read', 'propose', 'write', 'admin'] as const
 export type TokenPermission = typeof TOKEN_PERMISSIONS[number]
 

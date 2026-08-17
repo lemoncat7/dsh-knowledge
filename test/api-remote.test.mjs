@@ -44,6 +44,7 @@ test('remote provider interoperates with the authenticated local API', async (t)
   })
   assert.equal((await remote.get(entry.id))?.title, 'Central knowledge service')
   assert.equal((await remote.search({ text: 'central knowledge', limit: 5 })).length, 1)
+  assert.equal((await remote.stats()).entries.active, 1)
 
   const candidate = await remote.propose({
     action: 'update',

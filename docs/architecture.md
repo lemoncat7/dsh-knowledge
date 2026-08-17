@@ -5,7 +5,7 @@
 The plugin is a modular monolith inside one DSH process. It keeps deployment simple while preserving explicit boundaries that can later become separate packages without changing the knowledge contract.
 
 ```text
-DSH events / pre-step / HTTP
+DSH events / pre-step / HTTP / Web console
               |
      extraction, recall, API
               |
@@ -25,6 +25,8 @@ The DSH core is never patched. `src/index.ts` is the composition root; every oth
 - `extraction.ts` snapshots completed turns, serializes background work and validates model JSON fail-closed.
 - `recall.ts` performs bounded retrieval in the asynchronous `agent/pre-step` waterfall.
 - `api.ts` is a size-bounded HTTP adapter with permission checks and safe errors.
+- `web.ts` serves a same-origin, CSP-constrained management console from package-owned static assets.
+- `web/` is a dependency-free browser application with a small API/state/view boundary; it stores credentials only in session storage.
 - `index.ts` validates configuration and wires lifecycle disposal.
 
 ## Data model and consistency
@@ -82,10 +84,10 @@ A local provider may expose the API and become a central service. Remote clients
 - Hard deletion and token management require admin.
 - Remote URLs require HTTPS except explicit loopback testing.
 - The embedded DSH web server has no TLS; LAN/public exposure requires an HTTPS reverse proxy.
+- The management console uses the same Bearer permissions as every other client, never puts tokens in URLs, and ships with a restrictive Content Security Policy.
 
 ## Deferred modules
 
-- Web management UI using the existing API.
 - Explicit export/import jobs.
 - Optional embeddings/reranking behind a retrieval port.
 - Retry controls for failed extraction jobs.

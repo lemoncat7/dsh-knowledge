@@ -79,6 +79,7 @@ export interface RuntimeContextLike {
     next: () => Promise<PreStepDecision>,
   ) => Promise<PreStepDecision>): () => void
   effect(factory: () => (() => void | Promise<void>), label?: string): void
+  inject?(services: string[], callback: (ctx: RuntimeContextLike) => void): unknown
   get(name: string): unknown
 }
 
