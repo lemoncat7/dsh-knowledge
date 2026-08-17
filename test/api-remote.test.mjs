@@ -51,11 +51,19 @@ test('remote provider interoperates with the authenticated local API', async (t)
     name: 'Shared project knowledge', description: 'Mounted by remote clients.',
     defaultTags: ['shared'], extractionInstructions: 'Keep cross-client decisions.',
   })
+  const patched = await remote.patchKnowledgeBase(base.id, {
+    description: 'Only conversations about the shared project qualify.',
+    defaultTags: ['shared', 'project'],
+  })
+  assert.equal(patched.description, 'Only conversations about the shared project qualify.')
+  assert.deepEqual(patched.defaultTags, ['project', 'shared'])
   await remote.upsertMount({
     targetKind: 'project', targetId: '/workspace/demo', knowledgeBaseId: base.id,
     enabled: true, recallEnabled: true, writeMode: 'audit', includeTags: ['shared'], excludeTags: [], extractionInstructions: '',
   })
   assert.equal((await remote.resolveMounts('remote-session', '/workspace/demo'))[0]?.knowledgeBaseId, base.id)
+  assert.equal((await remote.archiveKnowledgeBase(base.id)).status, 'archived')
+  assert.equal((await remote.restoreKnowledgeBase(base.id)).status, 'active')
 
   const candidate = await remote.propose({
     action: 'update',

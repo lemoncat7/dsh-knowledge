@@ -22,10 +22,12 @@ test('plugin extracts after a completed turn and recalls only approved knowledge
   const databasePath = join(root, 'knowledge.sqlite')
   const listeners = new Map()
   const disposers = []
+  let extractionRequest
   const ctx = {
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     llm: {
-      async *stream() {
+      async *stream(request) {
+        extractionRequest = request
         yield { type: 'text-delta', text: JSON.stringify({ candidates: [{
           action: 'create',
           knowledgeBaseId: 'default',
@@ -75,6 +77,9 @@ test('plugin extracts after a completed turn and recalls only approved knowledge
 
   const observer = new LocalKnowledgeProvider(databasePath)
   t.after(() => observer.close())
+  await observer.patchKnowledgeBase('default', {
+    description: 'Only reusable DSH plugin installation and operation knowledge qualifies.',
+  })
   await observer.upsertMount({
     targetKind: 'project', targetId: '/workspace/demo', knowledgeBaseId: 'default',
     enabled: true, recallEnabled: true, writeMode: 'audit', includeTags: [], excludeTags: [], extractionInstructions: '',
@@ -86,6 +91,9 @@ test('plugin extracts after a completed turn and recalls only approved knowledge
   assert.equal(pending.length, 1)
   assert.equal(session.events.at(-1).data.source.form, 'notice')
   assert.match(session.events.at(-1).data.source.summary, /待审 1/)
+  const extractionPayload = JSON.parse(extractionRequest.messages[0].content[0].text)
+  assert.equal(extractionPayload.destinations[0].routingDescription, 'Only reusable DSH plugin installation and operation knowledge qualifies.')
+  assert.match(extractionRequest.system, /routingDescription as its applicability rule/)
 
   const preStep = listeners.get('agent/pre-step')
   const beforeApproval = await preStep({ agent: { session }, messages: [user], turn: 2, step: 1, signal: new AbortController().signal }, async () => ({ kind: 'enter', messages: [user] }))

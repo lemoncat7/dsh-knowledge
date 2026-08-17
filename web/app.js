@@ -395,7 +395,7 @@ function renderKnowledgeBaseCard(base) {
       element('div', {}, element('h3', {}, base.name), element('small', {}, base.id === 'default' ? '系统默认库' : `ID · ${base.id}`)),
       badge(archived ? '已归档' : '可用', archived ? '' : 'success'),
     ),
-    element('p', {}, base.description || '未设置说明'),
+    element('div', { class: 'base-description' }, element('strong', {}, '回写匹配描述'), element('p', {}, base.description || '未设置：按通用知识库处理')),
     base.defaultTags.length
       ? element('div', { class: 'tag-row' }, base.defaultTags.map(tag => element('span', { class: 'tag' }, `#${tag}`)))
       : element('span', { class: 'field-hint' }, '无默认标签'),
@@ -407,7 +407,7 @@ function renderKnowledgeBaseCard(base) {
         state.entryFilters.knowledgeBaseId = base.id
         void navigate('entries')
       }, 'ghost small'),
-      archived ? null : actionButton('编辑', () => openKnowledgeBaseEditor(base), 'small'),
+      archived ? actionButton('恢复', () => confirmRestoreKnowledgeBase(base), 'primary small') : actionButton('编辑', () => openKnowledgeBaseEditor(base), 'small'),
       !archived && base.id !== 'default' ? actionButton('归档', () => confirmArchiveKnowledgeBase(base), 'danger small') : null,
     ),
   )
@@ -618,14 +618,14 @@ function openKnowledgeBaseEditor(base) {
   const source = base || { name: '', description: '', defaultTags: [], extractionInstructions: '' }
   const form = element('form', { class: 'form-grid' })
   const name = formField('名称', 'input', source.name, { required: true, maxlength: 100, placeholder: '例如：项目规范' })
-  const description = formField('说明', 'textarea', source.description, { maxlength: 2000, placeholder: '这个知识库用来存什么，不存什么' })
+  const description = formField('回写匹配描述', 'textarea', source.description, { maxlength: 2000, placeholder: '描述什么样的对话才属于这个库。例如：只记录 dsh-knowledge 项目的架构决策和部署规范' })
   const tags = formField('默认标签', 'input', source.defaultTags.join(', '), { placeholder: 'project-rule, backend' })
   const instructions = formField('提取要求', 'textarea', source.extractionInstructions, { maxlength: 4000, placeholder: '例如：只收录已确认、可跨会话复用的项目约定' })
   for (const field of [name, description, tags, instructions]) field.wrapper.classList.add('span-2')
   form.append(name.wrapper, description.wrapper, tags.wrapper, instructions.wrapper)
   openModal({
     title: base ? '编辑知识库' : '创建知识库',
-    description: '标签和提取要求会与挂载层的限制合并。',
+    description: '匹配描述先判断对话是否属于该库；提取要求再规定应该收录什么。',
     body: form,
     primaryLabel: base ? '保存修改' : '创建',
     onPrimary: async () => {
@@ -726,6 +726,19 @@ function confirmArchiveKnowledgeBase(base) {
     onConfirm: async () => {
       await api(`knowledge-bases/${encodeURIComponent(base.id)}/archive`, { method: 'POST' })
       showToast('知识库已归档，相关挂载已关闭。')
+      await navigate('bases')
+    },
+  })
+}
+
+function confirmRestoreKnowledgeBase(base) {
+  openConfirm({
+    title: `恢复“${base.name}”？`,
+    message: '恢复后知识库可再次挂载；之前归档时关闭的挂载不会自动重开。',
+    confirmLabel: '确认恢复', danger: false,
+    onConfirm: async () => {
+      await api(`knowledge-bases/${encodeURIComponent(base.id)}/restore`, { method: 'POST' })
+      showToast('知识库已恢复，可以重新配置挂载。')
       await navigate('bases')
     },
   })

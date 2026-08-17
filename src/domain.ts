@@ -22,6 +22,8 @@ export interface KnowledgeBaseDraft {
   extractionInstructions: string
 }
 
+export type KnowledgeBasePatch = Partial<KnowledgeBaseDraft>
+
 export interface KnowledgeBase extends KnowledgeBaseDraft {
   id: string
   status: KnowledgeBaseStatus

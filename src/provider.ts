@@ -4,6 +4,7 @@ import type {
   KnowledgeCandidate,
   KnowledgeBase,
   KnowledgeBaseDraft,
+  KnowledgeBasePatch,
   KnowledgeDraft,
   KnowledgeEntry,
   KnowledgeStats,
@@ -26,7 +27,9 @@ export interface KnowledgeProvider {
   getKnowledgeBase(id: string, signal?: AbortSignal): Promise<KnowledgeBase | undefined>
   createKnowledgeBase(draft: KnowledgeBaseDraft, signal?: AbortSignal): Promise<KnowledgeBase>
   updateKnowledgeBase(id: string, draft: KnowledgeBaseDraft, signal?: AbortSignal): Promise<KnowledgeBase>
+  patchKnowledgeBase(id: string, patch: KnowledgeBasePatch, signal?: AbortSignal): Promise<KnowledgeBase>
   archiveKnowledgeBase(id: string, signal?: AbortSignal): Promise<KnowledgeBase>
+  restoreKnowledgeBase(id: string, signal?: AbortSignal): Promise<KnowledgeBase>
   listMounts(targetKind?: KnowledgeMountTargetKind, targetId?: string, signal?: AbortSignal): Promise<KnowledgeMount[]>
   upsertMount(draft: KnowledgeMountDraft, signal?: AbortSignal): Promise<KnowledgeMount>
   deleteMount(id: string, signal?: AbortSignal): Promise<void>

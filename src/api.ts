@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
   DEFAULT_KNOWLEDGE_BASE_ID, isKnowledgeType, normalizeDraft, normalizeKnowledgeBaseDraft,
   normalizeKnowledgeMountDraft, type CandidateProposal, type KnowledgeBaseDraft, type KnowledgeDraft,
-  type KnowledgeMountDraft, type ReviewDecision, type TokenPermission,
+  type KnowledgeBasePatch, type KnowledgeMountDraft, type ReviewDecision, type TokenPermission,
 } from './domain.js'
 import { LocalKnowledgeProvider } from './local-provider.js'
 import type { RuntimeContextLike } from './runtime.js'
@@ -92,9 +92,18 @@ async function dispatch(
       const body = await readObject(req)
       return sendJson(res, 200, await provider.updateKnowledgeBase(id, parseKnowledgeBaseDraft(body.draft)))
     }
+    if (id !== undefined && method === 'PATCH' && segments.length === 2) {
+      requirePermission(actor.permissions, 'write')
+      const body = await readObject(req)
+      return sendJson(res, 200, await provider.patchKnowledgeBase(id, parseKnowledgeBasePatch(body.patch)))
+    }
     if (id !== undefined && method === 'POST' && segments[2] === 'archive' && segments.length === 3) {
       requirePermission(actor.permissions, 'admin')
       return sendJson(res, 200, await provider.archiveKnowledgeBase(id))
+    }
+    if (id !== undefined && method === 'POST' && segments[2] === 'restore' && segments.length === 3) {
+      requirePermission(actor.permissions, 'admin')
+      return sendJson(res, 200, await provider.restoreKnowledgeBase(id))
     }
   }
 
@@ -250,6 +259,31 @@ function parseKnowledgeBaseDraft(value: unknown): KnowledgeBaseDraft {
   } catch (error) {
     throw httpError(400, error instanceof Error ? error.message : 'knowledge base draft is invalid')
   }
+}
+
+function parseKnowledgeBasePatch(value: unknown): KnowledgeBasePatch {
+  if (!isRecord(value)) throw httpError(400, 'knowledge base patch is invalid')
+  const patch: KnowledgeBasePatch = {}
+  if (Object.hasOwn(value, 'name')) {
+    if (typeof value.name !== 'string') throw httpError(400, 'knowledge base patch name must be a string')
+    patch.name = value.name
+  }
+  if (Object.hasOwn(value, 'description')) {
+    if (typeof value.description !== 'string') throw httpError(400, 'knowledge base patch description must be a string')
+    patch.description = value.description
+  }
+  if (Object.hasOwn(value, 'defaultTags')) {
+    if (!Array.isArray(value.defaultTags) || value.defaultTags.some(tag => typeof tag !== 'string')) {
+      throw httpError(400, 'knowledge base patch defaultTags must be a string array')
+    }
+    patch.defaultTags = value.defaultTags as string[]
+  }
+  if (Object.hasOwn(value, 'extractionInstructions')) {
+    if (typeof value.extractionInstructions !== 'string') throw httpError(400, 'knowledge base patch extractionInstructions must be a string')
+    patch.extractionInstructions = value.extractionInstructions
+  }
+  if (Object.keys(patch).length === 0) throw httpError(400, 'knowledge base patch must contain at least one editable field')
+  return patch
 }
 
 function parseMountDraft(value: unknown): KnowledgeMountDraft {

@@ -4,6 +4,7 @@ import type {
   KnowledgeCandidate,
   KnowledgeBase,
   KnowledgeBaseDraft,
+  KnowledgeBasePatch,
   KnowledgeDraft,
   KnowledgeEntry,
   KnowledgeStats,
@@ -55,8 +56,16 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     return this.request<KnowledgeBase>(`knowledge-bases/${encodeURIComponent(id)}`, { method: 'PUT', body: { draft }, signal })
   }
 
+  async patchKnowledgeBase(id: string, patch: KnowledgeBasePatch, signal?: AbortSignal): Promise<KnowledgeBase> {
+    return this.request<KnowledgeBase>(`knowledge-bases/${encodeURIComponent(id)}`, { method: 'PATCH', body: { patch }, signal })
+  }
+
   async archiveKnowledgeBase(id: string, signal?: AbortSignal): Promise<KnowledgeBase> {
     return this.request<KnowledgeBase>(`knowledge-bases/${encodeURIComponent(id)}/archive`, { method: 'POST', signal })
+  }
+
+  async restoreKnowledgeBase(id: string, signal?: AbortSignal): Promise<KnowledgeBase> {
+    return this.request<KnowledgeBase>(`knowledge-bases/${encodeURIComponent(id)}/restore`, { method: 'POST', signal })
   }
 
   async listMounts(targetKind?: KnowledgeMountTargetKind, targetId?: string, signal?: AbortSignal): Promise<KnowledgeMount[]> {

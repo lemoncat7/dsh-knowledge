@@ -266,7 +266,9 @@ button:disabled { cursor: not-allowed; opacity: .56; }
 .base-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .base-card h3 { margin: 0; font-size: 15px; }
 .base-card small { display: block; overflow: hidden; margin-top: 3px; color: var(--text-tertiary); text-overflow: ellipsis; white-space: nowrap; }
-.base-card > p { margin: 0; color: var(--text-secondary); }
+.base-description { display: grid; gap: 3px; }
+.base-description strong { color: var(--text-tertiary); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
+.base-description p { margin: 0; color: var(--text-secondary); }
 .base-instructions { display: grid; gap: 3px; border-left: 2px solid var(--accent); padding-left: 10px; color: var(--text-secondary); font-size: 12px; }
 .base-instructions strong { color: var(--text-tertiary); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
 .base-card-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; margin-top: auto; padding-top: 3px; }

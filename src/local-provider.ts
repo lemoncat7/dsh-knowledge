@@ -16,6 +16,7 @@ import {
   type KnowledgeCandidate,
   type KnowledgeBase,
   type KnowledgeBaseDraft,
+  type KnowledgeBasePatch,
   type KnowledgeDraft,
   type KnowledgeEntry,
   type KnowledgeStatus,
@@ -157,7 +158,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       INSERT INTO knowledge_bases(
         id,name,description,default_tags_json,extraction_instructions,status,created_at,updated_at
       ) VALUES(
-        'default','默认知识库','由 0.2 版本迁移的知识。','[]','仅收录可跨会话复用、且与当前挂载范围相关的知识。','active',datetime('now'),datetime('now')
+        'default','默认知识库','','[]','仅收录可跨会话复用、且与当前挂载范围相关的知识。','active',datetime('now'),datetime('now')
       );
       ALTER TABLE knowledge_entries ADD COLUMN knowledge_base_id TEXT NOT NULL DEFAULT 'default';
       CREATE INDEX knowledge_entries_base_status ON knowledge_entries(knowledge_base_id, status, updated_at DESC);
@@ -180,6 +181,10 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       PRAGMA user_version = 2;
       COMMIT;
     `)
+    // Alpha v2 used a migration note as the default base's routing description.
+    // Clear only that exact placeholder so existing user-authored descriptions stay untouched.
+    this.db.prepare("UPDATE knowledge_bases SET description='' WHERE id=? AND description=?")
+      .run(DEFAULT_KNOWLEDGE_BASE_ID, '由 0.2 版本迁移的知识。')
   }
 
   private assertOpen(): void {
@@ -215,11 +220,23 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     const current = await this.getKnowledgeBase(id)
     if (current === undefined) throw notFound('knowledge base', id)
     const draft = normalizeKnowledgeBaseDraft(input)
-    const updated: KnowledgeBase = { ...current, ...draft, status: 'active', updatedAt: nowIso() }
+    const updated: KnowledgeBase = { ...current, ...draft, updatedAt: nowIso() }
     this.db.prepare(`
-      UPDATE knowledge_bases SET name=?,description=?,default_tags_json=?,extraction_instructions=?,status='active',updated_at=? WHERE id=?
+      UPDATE knowledge_bases SET name=?,description=?,default_tags_json=?,extraction_instructions=?,updated_at=? WHERE id=?
     `).run(updated.name, updated.description, JSON.stringify(updated.defaultTags), updated.extractionInstructions, updated.updatedAt, id)
     return updated
+  }
+
+  async patchKnowledgeBase(id: string, patch: KnowledgeBasePatch): Promise<KnowledgeBase> {
+    this.assertOpen()
+    const current = await this.getKnowledgeBase(id)
+    if (current === undefined) throw notFound('knowledge base', id)
+    return this.updateKnowledgeBase(id, {
+      name: patch.name ?? current.name,
+      description: patch.description ?? current.description,
+      defaultTags: patch.defaultTags ?? current.defaultTags,
+      extractionInstructions: patch.extractionInstructions ?? current.extractionInstructions,
+    })
   }
 
   async archiveKnowledgeBase(id: string): Promise<KnowledgeBase> {
@@ -231,6 +248,16 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     const updated: KnowledgeBase = { ...current, status: 'archived', updatedAt: nowIso() }
     this.db.prepare("UPDATE knowledge_bases SET status='archived',updated_at=? WHERE id=?").run(updated.updatedAt, id)
     this.db.prepare('UPDATE knowledge_mounts SET enabled=0,updated_at=? WHERE knowledge_base_id=?').run(updated.updatedAt, id)
+    return updated
+  }
+
+  async restoreKnowledgeBase(id: string): Promise<KnowledgeBase> {
+    this.assertOpen()
+    const current = await this.getKnowledgeBase(id)
+    if (current === undefined) throw notFound('knowledge base', id)
+    if (current.status === 'active') return current
+    const updated: KnowledgeBase = { ...current, status: 'active', updatedAt: nowIso() }
+    this.db.prepare("UPDATE knowledge_bases SET status='active',updated_at=? WHERE id=?").run(updated.updatedAt, id)
     return updated
   }
 

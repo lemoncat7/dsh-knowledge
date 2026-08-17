@@ -171,7 +171,7 @@ async function extractWithLlm(
     destinations: mounts.map(mount => ({
       knowledgeBaseId: mount.knowledgeBaseId,
       name: mount.base.name,
-      description: mount.base.description,
+      routingDescription: mount.base.description,
       defaultTags: mount.base.defaultTags,
       requiredTags: mount.includeTags,
       excludedTags: mount.excludeTags,
@@ -275,6 +275,12 @@ Compare against existing entries and choose exactly one action per candidate:
 Allowed types: preference, fact, decision, procedure, lesson.
 Prefer the supplied defaultScope. Project-only implementation facts must not become global.
 Choose only from the supplied destinations and follow each destination's instructions and tag constraints.
+Treat each destination's routingDescription as its applicability rule for this conversation:
+- a mount only makes a destination eligible; it does not mean every answer belongs there
+- choose a destination only when the reusable fact clearly matches its routingDescription
+- an empty routingDescription means the destination is general-purpose
+- when no destination description matches, return skip instead of writing to an unrelated knowledge base
+Do not duplicate the same fact across multiple destinations unless it independently satisfies each description.
 Return strict JSON only: {"candidates":[{"action":"skip|create|update|conflict","knowledgeBaseId":"one supplied destination id","targetId":"optional existing id","title":"...","body":"...","type":"fact","tags":["..."],"scope":{"kind":"global"}|{"kind":"project","id":"..."},"confidence":0.0,"reason":"..."}]}`
 
 function parseScope(value: unknown, fallback: KnowledgeScope, projectId?: string): KnowledgeScope {

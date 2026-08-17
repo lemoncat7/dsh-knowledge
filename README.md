@@ -2,7 +2,7 @@
 
 `dsh-knowledge` 是面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的知识库插件。它不修改 DSH Agent Loop，同一个插件既能使用本地 SQLite，也能连接远程中央知识库。
 
-当前版本 `0.3.0-alpha.1` 已实现可部署的多知识库与 Web 管理台：
+当前版本 `0.3.0-alpha.2` 已实现可部署的多知识库与 Web 管理台：
 
 - 回答完成后同步调用 DSH 当前模型判断是否产生知识，并在回答下方显示逐库回写结果。
 - 可创建多个知识库，分别设定说明、默认标签和提取要求。
@@ -23,7 +23,7 @@
 ## 安装
 
 ```bash
-dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.3.0-alpha.1.tgz
+dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.3.0-alpha.2.tgz
 ```
 
 卸载：
@@ -86,6 +86,23 @@ dsh plugin --profile web remove @lemoncat7/dsh-knowledge
 - 查看 AI 提取依据，直接通过、编辑后通过或拒绝候选。
 - 创建、查看和撤销客户端令牌；新令牌原文只显示一次。
 
+知识库的 `description` 是回写路由描述：提取器只有在当前对话中的可复用知识符合该描述时，才能选择这个库。挂载只表示“可选”，不代表每次回答都要写入。`extractionInstructions` 用于在匹配后继续限定具体收录规则。
+
+创建示例：
+
+```json
+{
+  "draft": {
+    "name": "DSH 项目规范",
+    "description": "只匹配 DSH 插件开发、架构决策和部署规范相关对话",
+    "defaultTags": ["dsh", "project-rule"],
+    "extractionInstructions": "只收录已确认且可跨会话复用的结论"
+  }
+}
+```
+
+局部修改标签或描述时使用 `PATCH /knowledge-bases/:id`，请求体为 `{"patch":{"description":"...","defaultTags":["..."]}}`。
+
 主要 API：
 
 | Method | Path | Permission | Purpose |
@@ -93,7 +110,9 @@ dsh plugin --profile web remove @lemoncat7/dsh-knowledge
 | GET | `/health` | public | 健康检查 |
 | GET | `/search` | read | FTS 检索 |
 | GET/POST | `/knowledge-bases` | read/write | 知识库列表和创建 |
-| GET/PUT | `/knowledge-bases/:id` | read/write | 知识库详情和编辑 |
+| GET/PUT/PATCH | `/knowledge-bases/:id` | read/write | 详情、完整替换和局部修改 |
+| POST | `/knowledge-bases/:id/archive` | admin | 归档并关闭相关挂载 |
+| POST | `/knowledge-bases/:id/restore` | admin | 恢复已归档知识库 |
 | GET/POST/DELETE | `/mounts` | read/write | 挂载查询、更新和删除 |
 | GET | `/mounts/resolve` | read | 解析项目继承与会话覆盖 |
 | GET/POST | `/entries` | read/write | 列表和直接创建 |

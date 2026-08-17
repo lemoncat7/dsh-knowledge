@@ -77,6 +77,12 @@ test('knowledge bases mount by project and session with session overrides', asyn
     defaultTags: ['project-rule'],
     extractionInstructions: '只收录明确的项目约定。',
   })
+  const patchedBase = await provider.patchKnowledgeBase(base.id, {
+    description: '只匹配当前项目的工程规范。',
+    defaultTags: ['project-rule', 'engineering'],
+  })
+  assert.equal(patchedBase.description, '只匹配当前项目的工程规范。')
+  assert.deepEqual(patchedBase.defaultTags, ['engineering', 'project-rule'])
   await provider.create({
     ...globalDraft,
     knowledgeBaseId: base.id,
@@ -106,6 +112,10 @@ test('knowledge bases mount by project and session with session overrides', asyn
     targetKind: 'session', targetId: 'session-1', enabled: false, recallEnabled: false, writeMode: 'none',
   })
   assert.deepEqual(await provider.resolveMounts('session-1', '/workspace/demo'), [])
+
+  assert.equal((await provider.archiveKnowledgeBase(base.id)).status, 'archived')
+  assert.equal((await provider.restoreKnowledgeBase(base.id)).status, 'active')
+  assert.deepEqual(await provider.resolveMounts('another-session', '/workspace/demo'), [])
 })
 
 test('schema v1 databases migrate existing entries into the default knowledge base', async (t) => {
