@@ -69,6 +69,34 @@ test('local provider preserves versions and searches approved scoped knowledge',
   })
 })
 
+test('approved entries are projected into browsable Markdown documents', async (t) => {
+  const provider = await fixture(t)
+  const readme = (await provider.listDocuments('default')).find(document => document.relPath === 'README.md')
+  assert.ok(readme)
+  assert.match(readme.content, /# 默认知识库/)
+  assert.equal(readme.entryCount, 0)
+
+  const entry = await provider.create(globalDraft)
+  let documents = await provider.listDocuments('default')
+  const procedures = documents.find(document => document.relPath === 'procedures.md')
+  assert.ok(procedures)
+  assert.equal(procedures.entryCount, 1)
+  assert.match(procedures.content, /Production deployment policy/)
+  assert.match(procedures.content, /#docker/)
+  assert.equal((await provider.getDocument(procedures.id))?.contentHash, procedures.contentHash)
+  assert.deepEqual((await provider.listDocuments('default', 'persistent volume')).map(document => document.id), [procedures.id])
+
+  await provider.update(entry.id, { ...globalDraft, type: 'decision', body: 'Use Docker Compose for production deployments.' })
+  documents = await provider.listDocuments('default')
+  assert.equal(documents.some(document => document.relPath === 'procedures.md'), false)
+  assert.match(documents.find(document => document.relPath === 'decisions.md')?.content || '', /Docker Compose/)
+
+  await provider.archive(entry.id)
+  documents = await provider.listDocuments('default')
+  assert.deepEqual(documents.map(document => document.relPath), ['README.md'])
+  assert.equal(documents[0]?.entryCount, 0)
+})
+
 test('knowledge bases mount by project and session with session overrides', async (t) => {
   const provider = await fixture(t)
   const base = await provider.createKnowledgeBase({
@@ -118,6 +146,26 @@ test('knowledge bases mount by project and session with session overrides', asyn
   assert.deepEqual(await provider.resolveMounts('another-session', '/workspace/demo'), [])
 })
 
+test('bulk mount changes commit atomically', async (t) => {
+  const provider = await fixture(t)
+  const base = await provider.createKnowledgeBase({
+    name: 'Batch target', description: '', defaultTags: [], extractionInstructions: '',
+  })
+  const draft = {
+    targetKind: 'project', targetId: '/workspace/batch', knowledgeBaseId: base.id,
+    enabled: true, recallEnabled: true, writeMode: 'audit',
+    includeTags: [], excludeTags: [], extractionInstructions: '',
+  }
+  await assert.rejects(
+    () => provider.applyMountBatch({ upserts: [draft], deleteIds: ['missing-mount'] }),
+    /was not found/,
+  )
+  assert.deepEqual(await provider.listMounts('project', '/workspace/batch'), [])
+  const committed = await provider.applyMountBatch({ upserts: [draft], deleteIds: [] })
+  assert.equal(committed.mounts.length, 1)
+  assert.equal((await provider.listMounts('project', '/workspace/batch')).length, 1)
+})
+
 test('schema v1 databases migrate existing entries into the default knowledge base', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-knowledge-v1-'))
   const path = join(root, 'knowledge.sqlite')
@@ -145,6 +193,9 @@ test('schema v1 databases migrate existing entries into the default knowledge ba
   const entries = await provider.list({ status: 'active', limit: 10 })
   assert.equal(entries.items[0]?.knowledgeBaseId, 'default')
   assert.equal((await provider.listKnowledgeBases())[0]?.id, 'default')
+  const documents = await provider.listDocuments('default')
+  assert.ok(documents.some(document => document.relPath === 'README.md'))
+  assert.match(documents.find(document => document.relPath === 'decisions.md')?.content || '', /Legacy decision/)
 })
 
 test('candidate approval is transactional and extraction claims are idempotent', async (t) => {

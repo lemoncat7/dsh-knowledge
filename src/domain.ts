@@ -20,13 +20,36 @@ export interface KnowledgeBaseDraft {
   description: string
   defaultTags: string[]
   extractionInstructions: string
+  /** Empty means use the model route from the current assistant turn. */
+  writebackProvider?: string
+  writebackModel?: string
 }
 
-export type KnowledgeBasePatch = Partial<KnowledgeBaseDraft>
+export interface KnowledgeBasePatch {
+  name?: string
+  description?: string
+  defaultTags?: string[]
+  extractionInstructions?: string
+  writebackProvider?: string | null
+  writebackModel?: string | null
+}
 
 export interface KnowledgeBase extends KnowledgeBaseDraft {
   id: string
   status: KnowledgeBaseStatus
+  createdAt: string
+  updatedAt: string
+}
+
+/** User-facing Markdown projection of approved knowledge entries. */
+export interface KnowledgeDocument {
+  id: string
+  knowledgeBaseId: string
+  relPath: string
+  title: string
+  content: string
+  entryCount: number
+  contentHash: string
   createdAt: string
   updatedAt: string
 }
@@ -47,6 +70,16 @@ export interface KnowledgeMount extends KnowledgeMountDraft {
   id: string
   createdAt: string
   updatedAt: string
+}
+
+export interface KnowledgeMountBatch {
+  upserts: KnowledgeMountDraft[]
+  deleteIds: string[]
+}
+
+export interface KnowledgeMountBatchResult {
+  mounts: KnowledgeMount[]
+  deletedIds: string[]
 }
 
 export interface ResolvedKnowledgeMount extends KnowledgeMount {
@@ -249,7 +282,26 @@ export function normalizeKnowledgeBaseDraft(input: KnowledgeBaseDraft): Knowledg
   if (name.length === 0 || name.length > 100) throw new Error('knowledge base name must contain 1-100 characters')
   if (description.length > 2000) throw new Error('knowledge base description must contain at most 2000 characters')
   if (extractionInstructions.length > 4000) throw new Error('knowledge base extraction instructions must contain at most 4000 characters')
-  return { name, description, defaultTags: normalizeTags(input.defaultTags), extractionInstructions }
+  const writebackProvider = input.writebackProvider?.trim() || undefined
+  const writebackModel = input.writebackModel?.trim() || undefined
+  if ((writebackProvider === undefined) !== (writebackModel === undefined)) {
+    throw new Error('knowledge base writebackProvider and writebackModel must be configured together')
+  }
+  if (writebackProvider !== undefined && writebackProvider.length > 100) {
+    throw new Error('knowledge base writebackProvider must contain at most 100 characters')
+  }
+  if (writebackModel !== undefined && writebackModel.length > 200) {
+    throw new Error('knowledge base writebackModel must contain at most 200 characters')
+  }
+  return {
+    name,
+    description,
+    defaultTags: normalizeTags(input.defaultTags),
+    extractionInstructions,
+    ...writebackProvider === undefined || writebackModel === undefined
+      ? {}
+      : { writebackProvider, writebackModel },
+  }
 }
 
 export function normalizeKnowledgeMountDraft(input: KnowledgeMountDraft): KnowledgeMountDraft {

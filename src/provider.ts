@@ -7,9 +7,12 @@ import type {
   KnowledgeBasePatch,
   KnowledgeDraft,
   KnowledgeEntry,
+  KnowledgeDocument,
   KnowledgeStats,
   KnowledgeVersion,
   KnowledgeMount,
+  KnowledgeMountBatch,
+  KnowledgeMountBatchResult,
   KnowledgeMountDraft,
   KnowledgeMountTargetKind,
   ResolvedKnowledgeMount,
@@ -30,8 +33,11 @@ export interface KnowledgeProvider {
   patchKnowledgeBase(id: string, patch: KnowledgeBasePatch, signal?: AbortSignal): Promise<KnowledgeBase>
   archiveKnowledgeBase(id: string, signal?: AbortSignal): Promise<KnowledgeBase>
   restoreKnowledgeBase(id: string, signal?: AbortSignal): Promise<KnowledgeBase>
+  listDocuments(knowledgeBaseId?: string, query?: string, signal?: AbortSignal): Promise<KnowledgeDocument[]>
+  getDocument(id: string, signal?: AbortSignal): Promise<KnowledgeDocument | undefined>
   listMounts(targetKind?: KnowledgeMountTargetKind, targetId?: string, signal?: AbortSignal): Promise<KnowledgeMount[]>
   upsertMount(draft: KnowledgeMountDraft, signal?: AbortSignal): Promise<KnowledgeMount>
+  applyMountBatch(batch: KnowledgeMountBatch, signal?: AbortSignal): Promise<KnowledgeMountBatchResult>
   deleteMount(id: string, signal?: AbortSignal): Promise<void>
   resolveMounts(sessionId: string, projectId?: string, signal?: AbortSignal): Promise<ResolvedKnowledgeMount[]>
   search(request: SearchRequest, signal?: AbortSignal): Promise<SearchHit[]>

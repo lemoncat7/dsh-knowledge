@@ -41,7 +41,7 @@ async function dispatch(
   const method = req.method ?? 'GET'
 
   if (method === 'GET' && segments[0] === 'health') {
-    return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 2 })
+    return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 4 })
   }
 
   const actor = authenticate(provider, req)
@@ -125,10 +125,37 @@ async function dispatch(
       const body = await readObject(req)
       return sendJson(res, 200, await provider.upsertMount(parseMountDraft(body.draft)))
     }
+    if (method === 'POST' && segments[1] === 'bulk' && segments.length === 2) {
+      requirePermission(actor.permissions, 'write')
+      const body = await readObject(req)
+      const upserts = Array.isArray(body.upserts) ? body.upserts.map(parseMountDraft) : []
+      const deleteIds = Array.isArray(body.deleteIds)
+        ? body.deleteIds.map(id => typeof id === 'string' ? id.trim() : '').filter(Boolean)
+        : []
+      if (upserts.length + deleteIds.length === 0) throw httpError(400, 'mount batch must contain at least one operation')
+      if (upserts.length + deleteIds.length > 500) throw httpError(400, 'mount batch must contain at most 500 operations')
+      return sendJson(res, 200, await provider.applyMountBatch({ upserts, deleteIds }))
+    }
     if (method === 'DELETE' && segments[1] !== undefined && segments.length === 2) {
       requirePermission(actor.permissions, 'write')
       await provider.deleteMount(segments[1])
       return sendJson(res, 204, undefined)
+    }
+  }
+
+  if (segments[0] === 'documents') {
+    if (method === 'GET' && segments.length === 1) {
+      requirePermission(actor.permissions, 'read')
+      return sendJson(res, 200, await provider.listDocuments(
+        url.searchParams.get('knowledgeBaseId') ?? undefined,
+        url.searchParams.get('q') ?? undefined,
+      ))
+    }
+    if (method === 'GET' && segments[1] !== undefined && segments.length === 2) {
+      requirePermission(actor.permissions, 'read')
+      const document = await provider.getDocument(segments[1])
+      if (document === undefined) throw httpError(404, `knowledge document "${segments[1]}" was not found`)
+      return sendJson(res, 200, document)
     }
   }
 
@@ -255,6 +282,8 @@ function parseKnowledgeBaseDraft(value: unknown): KnowledgeBaseDraft {
       description: typeof value.description === 'string' ? value.description : '',
       defaultTags: Array.isArray(value.defaultTags) ? value.defaultTags.filter((tag): tag is string => typeof tag === 'string') : [],
       extractionInstructions: typeof value.extractionInstructions === 'string' ? value.extractionInstructions : '',
+      ...typeof value.writebackProvider === 'string' ? { writebackProvider: value.writebackProvider } : {},
+      ...typeof value.writebackModel === 'string' ? { writebackModel: value.writebackModel } : {},
     })
   } catch (error) {
     throw httpError(400, error instanceof Error ? error.message : 'knowledge base draft is invalid')
@@ -281,6 +310,18 @@ function parseKnowledgeBasePatch(value: unknown): KnowledgeBasePatch {
   if (Object.hasOwn(value, 'extractionInstructions')) {
     if (typeof value.extractionInstructions !== 'string') throw httpError(400, 'knowledge base patch extractionInstructions must be a string')
     patch.extractionInstructions = value.extractionInstructions
+  }
+  if (Object.hasOwn(value, 'writebackProvider') || Object.hasOwn(value, 'writebackModel')) {
+    const provider = value.writebackProvider
+    const model = value.writebackModel
+    if (provider !== undefined && provider !== null && typeof provider !== 'string') {
+      throw httpError(400, 'knowledge base patch writebackProvider must be a string or null')
+    }
+    if (model !== undefined && model !== null && typeof model !== 'string') {
+      throw httpError(400, 'knowledge base patch writebackModel must be a string or null')
+    }
+    patch.writebackProvider = typeof provider === 'string' ? provider : null
+    patch.writebackModel = typeof model === 'string' ? model : null
   }
   if (Object.keys(patch).length === 0) throw httpError(400, 'knowledge base patch must contain at least one editable field')
   return patch

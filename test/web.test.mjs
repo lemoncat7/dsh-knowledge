@@ -37,7 +37,12 @@ test('management console serves a secured same-origin application', async (t) =>
   const script = await fetch(`${base}/knowledge/app.js`)
   assert.equal(script.status, 200)
   assert.match(script.headers.get('content-type'), /text\/javascript/)
-  assert.match(await script.text(), /sessionStorage/)
+  const application = await script.text()
+  assert.match(application, /sessionStorage/)
+  assert.match(application, /api\('documents'\)/)
+  assert.match(application, /knowledge-library-column/)
+  assert.match(application, /document-list-column/)
+  assert.match(application, /markdown-document/)
 
   const missing = await fetch(`${base}/knowledge/not-found.js`)
   assert.equal(missing.status, 404)

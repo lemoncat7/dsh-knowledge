@@ -51,6 +51,7 @@ export interface GenerateOptionsLike {
   system?: string
   maxTokens?: number
   temperature?: number
+  reasoningEffort?: 'low' | 'medium' | 'high'
   signal?: AbortSignal
   sessionId?: string
 }

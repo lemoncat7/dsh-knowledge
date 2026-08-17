@@ -7,9 +7,12 @@ import type {
   KnowledgeBasePatch,
   KnowledgeDraft,
   KnowledgeEntry,
+  KnowledgeDocument,
   KnowledgeStats,
   KnowledgeVersion,
   KnowledgeMount,
+  KnowledgeMountBatch,
+  KnowledgeMountBatchResult,
   KnowledgeMountDraft,
   KnowledgeMountTargetKind,
   ResolvedKnowledgeMount,
@@ -68,6 +71,22 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     return this.request<KnowledgeBase>(`knowledge-bases/${encodeURIComponent(id)}/restore`, { method: 'POST', signal })
   }
 
+  async listDocuments(knowledgeBaseId?: string, query?: string, signal?: AbortSignal): Promise<KnowledgeDocument[]> {
+    const params = new URLSearchParams()
+    if (knowledgeBaseId !== undefined) params.set('knowledgeBaseId', knowledgeBaseId)
+    if (query !== undefined && query.trim().length > 0) params.set('q', query.trim())
+    return this.request<KnowledgeDocument[]>(`documents?${params}`, { signal })
+  }
+
+  async getDocument(id: string, signal?: AbortSignal): Promise<KnowledgeDocument | undefined> {
+    try {
+      return await this.request<KnowledgeDocument>(`documents/${encodeURIComponent(id)}`, { signal })
+    } catch (error) {
+      if (error instanceof RemoteProviderError && error.status === 404) return undefined
+      throw error
+    }
+  }
+
   async listMounts(targetKind?: KnowledgeMountTargetKind, targetId?: string, signal?: AbortSignal): Promise<KnowledgeMount[]> {
     const params = new URLSearchParams()
     if (targetKind !== undefined) params.set('targetKind', targetKind)
@@ -77,6 +96,10 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
 
   async upsertMount(draft: KnowledgeMountDraft, signal?: AbortSignal): Promise<KnowledgeMount> {
     return this.request<KnowledgeMount>('mounts', { method: 'POST', body: { draft }, signal })
+  }
+
+  async applyMountBatch(batch: KnowledgeMountBatch, signal?: AbortSignal): Promise<KnowledgeMountBatchResult> {
+    return this.request<KnowledgeMountBatchResult>('mounts/bulk', { method: 'POST', body: batch, signal })
   }
 
   async deleteMount(id: string, signal?: AbortSignal): Promise<void> {

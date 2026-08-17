@@ -22,12 +22,12 @@ test('plugin extracts after a completed turn and recalls only approved knowledge
   const databasePath = join(root, 'knowledge.sqlite')
   const listeners = new Map()
   const disposers = []
-  let extractionRequest
+  const extractionRequests = []
   const ctx = {
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     llm: {
       async *stream(request) {
-        extractionRequest = request
+        extractionRequests.push(request)
         yield { type: 'text-delta', text: JSON.stringify({ candidates: [{
           action: 'create',
           knowledgeBaseId: 'default',
@@ -84,6 +84,14 @@ test('plugin extracts after a completed turn and recalls only approved knowledge
     targetKind: 'project', targetId: '/workspace/demo', knowledgeBaseId: 'default',
     enabled: true, recallEnabled: true, writeMode: 'audit', includeTags: [], excludeTags: [], extractionInstructions: '',
   })
+  const dedicatedBase = await observer.createKnowledgeBase({
+    name: 'Dedicated model base', description: 'Only dedicated-model knowledge qualifies.',
+    defaultTags: [], extractionInstructions: '', writebackProvider: 'kimi', writebackModel: 'kimi-k2.7-code',
+  })
+  await observer.upsertMount({
+    targetKind: 'project', targetId: '/workspace/demo', knowledgeBaseId: dedicatedBase.id,
+    enabled: true, recallEnabled: true, writeMode: 'audit', includeTags: [], excludeTags: [], extractionInstructions: '',
+  })
   await listeners.get('agent/turn-stopping')({ agent: { session }, turn: 1, signal: new AbortController().signal })
   const job = await observer.extractionJob('session-1:1')
   assert.equal(job?.status, 'completed')
@@ -91,9 +99,15 @@ test('plugin extracts after a completed turn and recalls only approved knowledge
   assert.equal(pending.length, 1)
   assert.equal(session.events.at(-1).data.source.form, 'notice')
   assert.match(session.events.at(-1).data.source.summary, /待审 1/)
+  assert.deepEqual(extractionRequests.map(request => [request.provider, request.model]).sort(), [
+    ['kimi', 'kimi-k2.7-code'], ['mock', 'extractor'],
+  ])
+  const extractionRequest = extractionRequests.find(request => request.provider === 'mock')
   const extractionPayload = JSON.parse(extractionRequest.messages[0].content[0].text)
   assert.equal(extractionPayload.destinations[0].routingDescription, 'Only reusable DSH plugin installation and operation knowledge qualifies.')
   assert.match(extractionRequest.system, /routingDescription as its applicability rule/)
+  assert.equal(extractionRequest.provider, 'mock')
+  assert.equal(extractionRequest.model, 'extractor')
 
   const preStep = listeners.get('agent/pre-step')
   const beforeApproval = await preStep({ agent: { session }, messages: [user], turn: 2, step: 1, signal: new AbortController().signal }, async () => ({ kind: 'enter', messages: [user] }))
@@ -112,12 +126,16 @@ test('direct write approves only high-confidence non-conflicts and skips unmount
   let targetId = ''
   let streamCalls = 0
   const streamBudgets = []
+  const streamRoutes = []
+  const streamReasoning = []
   const ctx = {
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     llm: {
       async *stream(request) {
         streamCalls += 1
         streamBudgets.push(request.maxTokens)
+        streamRoutes.push([request.provider, request.model])
+        streamReasoning.push(request.reasoningEffort)
         if (streamCalls === 1) {
           yield { type: 'finish', reason: { kind: 'max-tokens' } }
           return
@@ -193,6 +211,8 @@ test('direct write approves only high-confidence non-conflicts and skips unmount
   await listeners.get('agent/turn-stopping')({ agent: { session: direct }, turn: 1, signal: new AbortController().signal })
   assert.equal(streamCalls, 2)
   assert.deepEqual(streamBudgets, [1200, 2400])
+  assert.deepEqual(streamRoutes, [['mock', 'extractor'], ['mock', 'extractor']])
+  assert.deepEqual(streamReasoning, [undefined, 'low'])
   assert.equal((await observer.listCandidates('approved', 10)).length, 1)
   assert.equal((await observer.listCandidates('pending', 10)).length, 2)
   assert.equal((await observer.list({ status: 'active', limit: 10 })).items.length, 2)
