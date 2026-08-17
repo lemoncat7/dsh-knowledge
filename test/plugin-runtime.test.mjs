@@ -99,6 +99,7 @@ test('plugin extracts after a completed turn and recalls only approved knowledge
   assert.equal(pending.length, 1)
   assert.equal(session.events.at(-1).data.source.form, 'notice')
   assert.match(session.events.at(-1).data.source.summary, /待审 1/)
+  const writebackNotice = session.events.at(-1).data
   assert.deepEqual(extractionRequests.map(request => [request.provider, request.model]).sort(), [
     ['kimi', 'kimi-k2.7-code'], ['mock', 'extractor'],
   ])
@@ -110,11 +111,13 @@ test('plugin extracts after a completed turn and recalls only approved knowledge
   assert.equal(extractionRequest.model, 'extractor')
 
   const preStep = listeners.get('agent/pre-step')
-  const beforeApproval = await preStep({ agent: { session }, messages: [user], turn: 2, step: 1, signal: new AbortController().signal }, async () => ({ kind: 'enter', messages: [user] }))
+  const beforeApproval = await preStep({ agent: { session }, messages: [user, writebackNotice], turn: 2, step: 1, signal: new AbortController().signal }, async () => ({ kind: 'enter', messages: [user, writebackNotice] }))
   assert.equal(beforeApproval.messages.length, 1)
+  assert.equal(beforeApproval.messages.some(message => message.source.form === 'notice'), false)
   await observer.review(pending[0].id, { decision: 'approve' })
-  const afterApproval = await preStep({ agent: { session }, messages: [user], turn: 2, step: 1, signal: new AbortController().signal }, async () => ({ kind: 'enter', messages: [user] }))
+  const afterApproval = await preStep({ agent: { session }, messages: [user, writebackNotice], turn: 2, step: 1, signal: new AbortController().signal }, async () => ({ kind: 'enter', messages: [user, writebackNotice] }))
   assert.equal(afterApproval.messages.at(-1).source.form, 'recall')
+  assert.equal(afterApproval.messages.some(message => message.source.form === 'notice'), false)
   assert.match(afterApproval.messages.at(-1).content[0].text, /DSH plugin installation command/)
 })
 

@@ -2,9 +2,10 @@
 
 `dsh-knowledge` 是面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的知识库插件。它不修改 DSH Agent Loop，同一个插件既能使用本地 SQLite，也能连接远程中央知识库。
 
-当前版本 `0.4.0-alpha.1` 已实现可部署的多知识库与文档型 Web 管理台：
+当前版本 `0.4.0-alpha.3` 已实现可部署的多知识库与文档型 Web 管理台：
 
 - 回答完成后同步调用 DSH 当前模型判断是否产生知识，并在回答下方显示逐库回写结果。
+- 回写结果只作为 UI 状态展示，在下一次模型请求前会被移除，不占用会话上下文。
 - 可创建多个知识库，分别设定说明、默认标签和提取要求。
 - 每个知识库可选择专用回写模型；未设定时跟随当前会话模型。
 - 项目和会话挂载；会话默认继承项目，也可独立覆盖或关闭。
@@ -18,6 +19,7 @@
 - Bearer Token 仅保存 SHA-256 摘要，支持 `read / propose / write / admin` 权限及吊销。
 - 认证 HTTP API，可作为其他 DSH 客户端和未来桌面端的中央知识库。
 - Apple 风格三栏文档界面，按知识库浏览自动整理的 `README.md`、`facts.md`、`decisions.md` 等文档。
+- 知识库栏和文档栏可拖拽或用方向键调宽；DSH 内的管理窗口可缩放、最大化和还原。
 - 随插件安装的响应式 Web 管理台，覆盖概览、文档浏览、条目维护、AI 候选审核和客户端令牌管理。
 - DSH 浏览器端插件：在左侧工作区下方显示“知识库”，并在当前页面内打开管理面板。
 - 明暗主题、键盘操作、窄屏布局以及不依赖颜色的状态标签。
@@ -25,7 +27,7 @@
 ## 安装
 
 ```bash
-dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.4.0-alpha.1.tgz
+dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.4.0-alpha.3.tgz
 ```
 
 卸载：

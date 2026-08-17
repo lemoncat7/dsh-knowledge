@@ -1,6 +1,6 @@
 {
   "name": "@lemoncat7/dsh-knowledge",
-  "version": "0.4.0-alpha.1",
+  "version": "0.4.0-alpha.3",
   "description": "Installable DeepSeek Harness knowledge base plugin",
   "license": "MIT",
   "type": "module",

@@ -9,6 +9,7 @@ const WRITE_MODE_LABELS = { none: '仅召回', audit: '审核写入', direct: '�
 const TYPE_DOCUMENTS = {
   preference: 'preferences.md', fact: 'facts.md', decision: 'decisions.md', procedure: 'procedures.md', lesson: 'lessons.md',
 }
+const DOCUMENT_LAYOUT_KEY = 'dsh-knowledge.document-layout'
 const pageParams = new URLSearchParams(location.search)
 const mountContext = {
   sessionId: pageParams.get('sessionId')?.trim() || '',
@@ -16,6 +17,7 @@ const mountContext = {
 }
 const app = document.querySelector('#app')
 const toastRegion = document.querySelector('#toast-region')
+const savedDocumentLayout = readDocumentLayout()
 
 const state = {
   token: sessionStorage.getItem(TOKEN_KEY) || '',
@@ -37,12 +39,41 @@ const state = {
   nextCursor: null,
   entryFilters: { query: '', type: '', status: 'active', projectId: '', knowledgeBaseId: '' },
   documents: [],
-  documentView: { knowledgeBaseId: '', documentId: '', query: '', mode: 'documents' },
+  documentView: {
+    knowledgeBaseId: '', documentId: '', query: '', mode: 'documents',
+    libraryWidth: savedDocumentLayout.libraryWidth,
+    documentListWidth: savedDocumentLayout.documentListWidth,
+  },
   candidates: [],
   candidateStatus: 'pending',
   tokens: [],
   loading: false,
   error: '',
+}
+
+function readDocumentLayout() {
+  const fallback = { libraryWidth: 220, documentListWidth: 280 }
+  try {
+    const value = JSON.parse(localStorage.getItem(DOCUMENT_LAYOUT_KEY) || '{}')
+    return {
+      libraryWidth: clampNumber(value.libraryWidth, 170, 360, fallback.libraryWidth),
+      documentListWidth: clampNumber(value.documentListWidth, 210, 480, fallback.documentListWidth),
+    }
+  } catch { return fallback }
+}
+
+function saveDocumentLayout() {
+  try {
+    localStorage.setItem(DOCUMENT_LAYOUT_KEY, JSON.stringify({
+      libraryWidth: state.documentView.libraryWidth,
+      documentListWidth: state.documentView.documentListWidth,
+    }))
+  } catch {}
+}
+
+function clampNumber(value, minimum, maximum, fallback) {
+  const number = Number(value)
+  return Number.isFinite(number) ? Math.min(maximum, Math.max(minimum, Math.round(number))) : fallback
 }
 
 function element(tag, attributes = {}, ...children) {
@@ -638,7 +669,10 @@ function renderEntries() {
         documentViewTab('文档', 'documents'), documentViewTab('条目管理', 'entries')),
       actionButton('+ 新建知识', () => openEntryEditor(), 'primary'),
     ),
-    element('div', { class: 'document-browser' },
+    element('div', {
+      class: 'document-browser',
+      style: `--library-width:${view.libraryWidth}px;--document-list-width:${view.documentListWidth}px`,
+    },
       element('aside', { class: 'knowledge-library-column', 'aria-label': '知识库列表' },
         element('header', { class: 'column-header' }, element('div', {}, element('h2', { id: 'documents-heading' }, '知识库'), element('span', {}, `${activeBases.length} 个可用`))),
         activeBases.length ? element('div', { class: 'library-list', role: 'listbox', tabindex: '0', onKeyDown: event => moveDocumentSelection(event, 'base') },
@@ -654,6 +688,7 @@ function renderEntries() {
           })) : compactEmpty('还没有知识库'),
         element('footer', { class: 'column-footer' }, actionButton('+ 新建知识库', () => openKnowledgeBaseEditor(), 'ghost small')),
       ),
+      renderColumnResizer('library', '调整知识库栏宽度'),
       element('aside', { class: 'document-list-column', 'aria-label': '文档列表' },
         element('header', { class: 'column-header' }, element('div', {}, element('h2', {}, selectedBase?.name || '文档'), element('span', {}, query ? `找到 ${visibleDocuments.length} 篇` : `${allBaseDocuments.length} 篇文档`))),
         visibleDocuments.length ? element('div', { class: 'document-list', role: 'listbox', tabindex: '0', onKeyDown: event => moveDocumentSelection(event, 'document') },
@@ -665,9 +700,75 @@ function renderEntries() {
           element('span', { class: 'document-entry-count' }, document.entryCount))))
           : element('div', { class: 'document-empty' }, query ? '没有匹配的文档' : '这个知识库还没有文档'),
       ),
+      renderColumnResizer('documentList', '调整文档栏宽度'),
       renderDocumentReader(currentDocument, selectedBase),
     ),
   )
+}
+
+function renderColumnResizer(column, label) {
+  const isLibrary = column === 'library'
+  const minimum = isLibrary ? 170 : 210
+  const maximum = isLibrary ? 360 : 480
+  const value = isLibrary ? state.documentView.libraryWidth : state.documentView.documentListWidth
+  return element('div', {
+    class: 'column-resizer', 'data-column': column, role: 'separator', tabindex: '0',
+    'aria-label': label, 'aria-orientation': 'vertical',
+    'aria-valuemin': minimum, 'aria-valuemax': maximum, 'aria-valuenow': value,
+    onPointerDown: event => startColumnResize(event, column, minimum, maximum),
+    onKeyDown: event => resizeColumnWithKeyboard(event, column, minimum, maximum),
+  }, element('span', { 'aria-hidden': 'true' }))
+}
+
+function startColumnResize(event, column, minimum, maximum) {
+  if (event.button !== 0) return
+  event.preventDefault()
+  const handle = event.currentTarget
+  const browser = handle.closest('.document-browser')
+  if (!browser) return
+  const startX = event.clientX
+  const startWidth = column === 'library' ? state.documentView.libraryWidth : state.documentView.documentListWidth
+  handle.setPointerCapture?.(event.pointerId)
+  handle.classList.add('is-dragging')
+  document.body.classList.add('is-resizing-columns')
+  const move = moveEvent => {
+    const width = clampNumber(startWidth + moveEvent.clientX - startX, minimum, maximum, startWidth)
+    setColumnWidth(column, width, browser, handle)
+  }
+  const finish = () => {
+    handle.classList.remove('is-dragging')
+    document.body.classList.remove('is-resizing-columns')
+    handle.removeEventListener('pointermove', move)
+    handle.removeEventListener('pointerup', finish)
+    handle.removeEventListener('pointercancel', finish)
+    saveDocumentLayout()
+  }
+  handle.addEventListener('pointermove', move)
+  handle.addEventListener('pointerup', finish)
+  handle.addEventListener('pointercancel', finish)
+}
+
+function resizeColumnWithKeyboard(event, column, minimum, maximum) {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  const current = column === 'library' ? state.documentView.libraryWidth : state.documentView.documentListWidth
+  const width = event.key === 'Home' ? minimum
+    : event.key === 'End' ? maximum
+    : clampNumber(current + (event.key === 'ArrowRight' ? 16 : -16), minimum, maximum, current)
+  const browser = event.currentTarget.closest('.document-browser')
+  setColumnWidth(column, width, browser, event.currentTarget)
+  saveDocumentLayout()
+}
+
+function setColumnWidth(column, width, browser, handle) {
+  if (column === 'library') {
+    state.documentView.libraryWidth = width
+    browser?.style.setProperty('--library-width', `${width}px`)
+  } else {
+    state.documentView.documentListWidth = width
+    browser?.style.setProperty('--document-list-width', `${width}px`)
+  }
+  handle?.setAttribute('aria-valuenow', String(width))
 }
 
 function documentViewTab(label, mode) {

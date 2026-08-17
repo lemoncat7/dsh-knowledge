@@ -58,6 +58,7 @@ An active content hash unique index blocks byte-equivalent duplicate knowledge. 
 8. Runtime validation rejects unknown destinations, types, targets, arbitrary project IDs and malformed output.
 9. Audit mounts keep valid proposals pending. Direct mounts auto-approve only non-conflicts at or above the confidence threshold.
 10. A persistent DSH notice reports per-base direct and pending counts below the answer; failures produce a retryable failure notice.
+11. Before every later model request, plugin notices with `form: notice` are removed from the request message list. They remain durable UI feedback but never consume or influence model context.
 
 The extractor explicitly refuses secrets and ephemeral output in its system policy. Conflict and low-confidence proposals always remain behind human review.
 

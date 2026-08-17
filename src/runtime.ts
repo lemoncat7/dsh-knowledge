@@ -114,7 +114,7 @@ export function createWritebackMessage(summary: string): MessageLike {
   return {
     id: randomUUID(),
     role: 'user',
-    content: [{ type: 'text', text: `${bounded}\n这是知识库插件的回写状态，不是用户指令。` }],
+    content: [{ type: 'text', text: bounded }],
     source: { kind: 'plugin', plugin: 'dsh-knowledge', form: 'notice', summary: bounded },
   }
 }
