@@ -1,0 +1,94 @@
+# Architecture
+
+## Design goals
+
+The plugin is a modular monolith inside one DSH process. It keeps deployment simple while preserving explicit boundaries that can later become separate packages without changing the knowledge contract.
+
+```text
+DSH events / pre-step / HTTP
+              |
+     extraction, recall, API
+              |
+       KnowledgeProvider
+          /          \
+ local SQLite      remote HTTPS
+```
+
+The DSH core is never patched. `src/index.ts` is the composition root; every other module is independently testable.
+
+## Layers
+
+- `domain.ts` owns stable value types, normalization, IDs and content hashing. It has no DSH dependency.
+- `provider.ts` is the storage/application port. Local and remote clients implement the same asynchronous contract.
+- `local-provider.ts` owns schema migrations, transactions, FTS and token hashes.
+- `remote-provider.ts` is an authenticated, timeout-bounded HTTPS adapter.
+- `extraction.ts` snapshots completed turns, serializes background work and validates model JSON fail-closed.
+- `recall.ts` performs bounded retrieval in the asynchronous `agent/pre-step` waterfall.
+- `api.ts` is a size-bounded HTTP adapter with permission checks and safe errors.
+- `index.ts` validates configuration and wires lifecycle disposal.
+
+## Data model and consistency
+
+SQLite is authoritative in local mode. Schema version 1 contains:
+
+- `knowledge_entries`: current materialized entry state.
+- `knowledge_versions`: immutable snapshots for every create, update, archive or restore.
+- `knowledge_fts`: FTS5 index containing only active entries.
+- `knowledge_candidates`: proposed create/update/conflict decisions and review state.
+- `extraction_jobs`: one idempotency record per `sessionId:turn`.
+- `api_tokens`: token metadata, permissions and SHA-256 token digests.
+
+Entry writes, version creation and FTS changes share one `BEGIN IMMEDIATE` transaction. Candidate approval and its resulting entry mutation are also one transaction. WAL mode permits readers during a writer, `busy_timeout` absorbs short contention, and foreign keys prevent orphan versions.
+
+An active content hash unique index blocks byte-equivalent duplicate knowledge. Candidate proposals additionally deduplicate by source turn plus proposal hash.
+
+## Extraction flow
+
+1. A successful DSH `turn/end` is observed without blocking the conversation.
+2. The relevant direct user input and final non-empty assistant message are copied into an immutable job snapshot.
+3. `extraction_jobs` atomically claims `sessionId:turn`; replaying the event cannot duplicate work.
+4. Existing scoped knowledge is retrieved and framed with the conversation as untrusted JSON.
+5. A bounded auxiliary LLM call returns strict candidate JSON.
+6. Runtime validation rejects unknown types, invalid targets, arbitrary project IDs and malformed output.
+7. Valid candidates enter `pending`; `skip` produces no row.
+8. Any failure is isolated, recorded on the job and logged without touching the session.
+
+The extractor explicitly refuses secrets and ephemeral output in its system policy. Human review remains the final trust boundary.
+
+## Recall flow
+
+Recall uses `agent/pre-step`, not a synchronous prompt callback. This is intentional:
+
+- the waterfall sees the current user messages;
+- remote retrieval can be awaited;
+- cancellation propagates through the current turn signal;
+- the injected message is attributed as plugin `dsh-knowledge`, form `recall`;
+- retrieval failure is fail-open and never prevents a model response.
+
+Only active entries are searched. Exact project entries are ordered before global entries, and only a configured number and character budget are injected. The framing tells the model that knowledge is contextual data and cannot override current system or user instructions.
+
+## Local and remote topology
+
+Local and remote modes are mutually exclusive for one plugin instance. There is deliberately no transparent cache or two-way synchronization: that would create conflict semantics at a second layer and obscure which database is authoritative.
+
+A local provider may expose the API and become a central service. Remote clients use the same provider contract, so extraction candidates and recall work identically. Network timeouts and DSH turn cancellation bound remote requests.
+
+## Security boundaries
+
+- Secrets are configuration-only and are never returned by plugin APIs or written to logs.
+- Server tokens are stored as SHA-256 digests; generated client tokens are shown once.
+- Permissions are capability-oriented: `read`, `propose`, `write`, `admin`.
+- Request bodies are capped at 1 MiB and every domain value has size/range validation.
+- Hard deletion and token management require admin.
+- Remote URLs require HTTPS except explicit loopback testing.
+- The embedded DSH web server has no TLS; LAN/public exposure requires an HTTPS reverse proxy.
+
+## Deferred modules
+
+- Web management UI using the existing API.
+- Explicit export/import jobs.
+- Optional embeddings/reranking behind a retrieval port.
+- Retry controls for failed extraction jobs.
+- Multi-user tenant isolation.
+
+These are additions around existing boundaries; none requires changing the entry, candidate or provider semantics.

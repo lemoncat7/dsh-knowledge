@@ -11,6 +11,7 @@ RUN npm ci --ignore-scripts
 COPY tsconfig.json cordis.patch.yml README.md LICENSE ./
 COPY docs ./docs
 COPY src ./src
+COPY test ./test
 
 RUN npm test \
   && mkdir /out \

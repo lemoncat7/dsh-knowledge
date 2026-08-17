@@ -1,0 +1,632 @@
+import { dirname } from 'node:path'
+import { createHash, randomBytes } from 'node:crypto'
+import { mkdirSync } from 'node:fs'
+import { DatabaseSync } from 'node:sqlite'
+import {
+  contentHash,
+  newId,
+  normalizeDraft,
+  nowIso,
+  type CandidateProposal,
+  type ApiTokenRecord,
+  type ExtractionJobRecord,
+  type KnowledgeCandidate,
+  type KnowledgeDraft,
+  type KnowledgeEntry,
+  type KnowledgeStatus,
+  type KnowledgeVersion,
+  type ListRequest,
+  type ListResult,
+  type ReviewDecision,
+  type SearchHit,
+  type SearchRequest,
+  type TokenPermission,
+} from './domain.js'
+import type { KnowledgeProvider } from './provider.js'
+
+type SqlRow = Record<string, unknown>
+
+const ENTRY_COLUMNS = `
+  id, title, body, type, tags_json, scope_kind, scope_id, confidence,
+  status, version, source_json, created_at, updated_at
+`
+
+const JOINED_ENTRY_COLUMNS = `
+  e.id AS id, e.title AS title, e.body AS body, e.type AS type,
+  e.tags_json AS tags_json, e.scope_kind AS scope_kind, e.scope_id AS scope_id,
+  e.confidence AS confidence, e.status AS status, e.version AS version,
+  e.source_json AS source_json, e.created_at AS created_at, e.updated_at AS updated_at
+`
+
+export class LocalKnowledgeProvider implements KnowledgeProvider {
+  readonly mode = 'local' as const
+  private readonly db: DatabaseSync
+  private closed = false
+
+  constructor(path: string) {
+    if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })
+    this.db = new DatabaseSync(path)
+    this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
+    this.migrate()
+  }
+
+  private migrate(): void {
+    const version = Number((this.db.prepare('PRAGMA user_version').get() as SqlRow).user_version ?? 0)
+    if (version > 1) throw new Error(`knowledge database schema ${version} is newer than this plugin supports`)
+    if (version === 1) return
+    this.db.exec(`
+      BEGIN IMMEDIATE;
+      CREATE TABLE knowledge_entries (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        type TEXT NOT NULL CHECK(type IN ('preference','fact','decision','procedure','lesson')),
+        tags_json TEXT NOT NULL,
+        scope_kind TEXT NOT NULL CHECK(scope_kind IN ('global','project')),
+        scope_id TEXT,
+        confidence REAL NOT NULL CHECK(confidence >= 0 AND confidence <= 1),
+        status TEXT NOT NULL CHECK(status IN ('active','archived')),
+        version INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        source_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK((scope_kind = 'global' AND scope_id IS NULL) OR (scope_kind = 'project' AND length(scope_id) > 0))
+      );
+      CREATE INDEX knowledge_entries_scope_status ON knowledge_entries(status, scope_kind, scope_id, updated_at DESC);
+      CREATE INDEX knowledge_entries_type ON knowledge_entries(type, status);
+      CREATE UNIQUE INDEX knowledge_entries_active_hash ON knowledge_entries(content_hash) WHERE status = 'active';
+
+      CREATE TABLE knowledge_versions (
+        id TEXT PRIMARY KEY,
+        knowledge_id TEXT NOT NULL REFERENCES knowledge_entries(id) ON DELETE CASCADE,
+        version INTEGER NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        change_kind TEXT NOT NULL CHECK(change_kind IN ('create','update','archive','restore')),
+        created_at TEXT NOT NULL,
+        UNIQUE(knowledge_id, version)
+      );
+
+      CREATE TABLE knowledge_candidates (
+        id TEXT PRIMARY KEY,
+        action TEXT NOT NULL CHECK(action IN ('create','update','conflict')),
+        target_id TEXT,
+        draft_json TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected')),
+        source_key TEXT,
+        proposal_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        reviewed_at TEXT,
+        review_note TEXT
+      );
+      CREATE UNIQUE INDEX knowledge_candidates_dedupe ON knowledge_candidates(source_key, proposal_hash) WHERE source_key IS NOT NULL;
+      CREATE INDEX knowledge_candidates_status ON knowledge_candidates(status, created_at DESC);
+
+      CREATE TABLE extraction_jobs (
+        source_key TEXT PRIMARY KEY,
+        status TEXT NOT NULL CHECK(status IN ('running','completed','failed')),
+        attempts INTEGER NOT NULL,
+        candidate_count INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE api_tokens (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        permissions_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT,
+        revoked_at TEXT
+      );
+
+      CREATE VIRTUAL TABLE knowledge_fts USING fts5(
+        knowledge_id UNINDEXED,
+        title,
+        body,
+        tags,
+        tokenize = 'unicode61 remove_diacritics 2'
+      );
+      PRAGMA user_version = 1;
+      COMMIT;
+    `)
+  }
+
+  private assertOpen(): void {
+    if (this.closed) throw new Error('knowledge provider is closed')
+  }
+
+  private transaction<T>(operation: () => T): T {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const result = operation()
+      this.db.exec('COMMIT')
+      return result
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  async search(request: SearchRequest): Promise<SearchHit[]> {
+    this.assertOpen()
+    const limit = Math.max(0, Math.min(request.limit, 100))
+    if (limit === 0) return []
+    const scopeSql = request.projectId === undefined
+      ? `e.scope_kind = 'global'`
+      : `(e.scope_kind = 'global' OR (e.scope_kind = 'project' AND e.scope_id = ?))`
+    const scopeArgs = request.projectId === undefined ? [] : [request.projectId]
+    const typeSql = request.types === undefined || request.types.length === 0
+      ? ''
+      : ` AND e.type IN (${request.types.map(() => '?').join(',')})`
+    const typeArgs = request.types ?? []
+    const text = request.text.trim()
+    let rows: SqlRow[]
+    if (text.length === 0) {
+      rows = this.db.prepare(`
+        SELECT ${ENTRY_COLUMNS}, 0.0 AS rank
+        FROM knowledge_entries e
+        WHERE e.status = 'active' AND ${scopeSql}${typeSql}
+        ORDER BY CASE WHEN e.scope_kind = 'project' THEN 0 ELSE 1 END, e.updated_at DESC
+        LIMIT ?
+      `).all(...scopeArgs, ...typeArgs, limit) as SqlRow[]
+    } else {
+      const ftsQuery = toFtsQuery(text)
+      try {
+        rows = this.db.prepare(`
+          SELECT ${JOINED_ENTRY_COLUMNS}, bm25(knowledge_fts, 0.0, 4.0, 1.0, 0.5) AS rank
+          FROM knowledge_fts
+          JOIN knowledge_entries e ON e.id = knowledge_fts.knowledge_id
+          WHERE knowledge_fts MATCH ? AND e.status = 'active' AND ${scopeSql}${typeSql}
+          ORDER BY CASE WHEN e.scope_kind = 'project' THEN 0 ELSE 1 END, rank, e.updated_at DESC
+          LIMIT ?
+        `).all(ftsQuery, ...scopeArgs, ...typeArgs, limit) as SqlRow[]
+      } catch {
+        rows = []
+      }
+      if (rows.length < limit) {
+        const supplements = this.searchByTerms(text, scopeSql, scopeArgs, typeSql, typeArgs, limit)
+        const seen = new Set(rows.map(row => String(row.id)))
+        rows.push(...supplements.filter(row => !seen.has(String(row.id))).slice(0, limit - rows.length))
+      }
+    }
+    return rows.map(row => ({ entry: rowToEntry(row), score: rankToScore(Number(row.rank ?? 0)) }))
+  }
+
+  private searchByTerms(
+    text: string,
+    scopeSql: string,
+    scopeArgs: string[],
+    typeSql: string,
+    typeArgs: string[],
+    limit: number,
+  ): SqlRow[] {
+    const terms = fallbackTerms(text)
+    if (terms.length === 0) return []
+    const clauses = terms.map(() => `(e.title LIKE ? ESCAPE '\\' OR e.body LIKE ? ESCAPE '\\' OR e.tags_json LIKE ? ESCAPE '\\')`)
+    const args = terms.flatMap((term) => {
+      const like = `%${term.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')}%`
+      return [like, like, like]
+    })
+    return this.db.prepare(`
+      SELECT ${ENTRY_COLUMNS}, 3.0 AS rank
+      FROM knowledge_entries e
+      WHERE e.status = 'active' AND ${scopeSql}${typeSql} AND (${clauses.join(' OR ')})
+      ORDER BY CASE WHEN e.scope_kind = 'project' THEN 0 ELSE 1 END, e.updated_at DESC
+      LIMIT ?
+    `).all(...scopeArgs, ...typeArgs, ...args, limit) as SqlRow[]
+  }
+
+  async list(request: ListRequest): Promise<ListResult<KnowledgeEntry>> {
+    this.assertOpen()
+    const limit = Math.max(1, Math.min(request.limit, 100))
+    const where: string[] = []
+    const args: Array<string | number> = []
+    if (request.status !== undefined) { where.push('status = ?'); args.push(request.status) }
+    if (request.type !== undefined) { where.push('type = ?'); args.push(request.type) }
+    if (request.projectId !== undefined) {
+      where.push(`(scope_kind = 'global' OR (scope_kind = 'project' AND scope_id = ?))`)
+      args.push(request.projectId)
+    }
+    if (request.cursor !== undefined) {
+      const cursor = decodeCursor(request.cursor)
+      where.push('(updated_at < ? OR (updated_at = ? AND id < ?))')
+      args.push(cursor.updatedAt, cursor.updatedAt, cursor.id)
+    }
+    const sql = `SELECT ${ENTRY_COLUMNS} FROM knowledge_entries${where.length === 0 ? '' : ` WHERE ${where.join(' AND ')}`} ORDER BY updated_at DESC, id DESC LIMIT ?`
+    const rows = this.db.prepare(sql).all(...args, limit + 1) as SqlRow[]
+    const page = rows.slice(0, limit).map(rowToEntry)
+    const last = page.at(-1)
+    return {
+      items: page,
+      ...rows.length <= limit || last === undefined ? {} : { nextCursor: encodeCursor(last.updatedAt, last.id) },
+    }
+  }
+
+  async get(id: string): Promise<KnowledgeEntry | undefined> {
+    this.assertOpen()
+    const row = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM knowledge_entries WHERE id = ?`).get(id) as SqlRow | undefined
+    return row === undefined ? undefined : rowToEntry(row)
+  }
+
+  async versions(id: string): Promise<KnowledgeVersion[]> {
+    this.assertOpen()
+    const rows = this.db.prepare('SELECT * FROM knowledge_versions WHERE knowledge_id = ? ORDER BY version DESC').all(id) as SqlRow[]
+    return rows.map(rowToVersion)
+  }
+
+  async create(draft: KnowledgeDraft): Promise<KnowledgeEntry> {
+    this.assertOpen()
+    return this.transaction(() => this.insertEntry(draft))
+  }
+
+  private insertEntry(input: KnowledgeDraft): KnowledgeEntry {
+    const draft = normalizeDraft(input)
+    const id = newId()
+    const timestamp = nowIso()
+    const entry: KnowledgeEntry = { ...draft, id, status: 'active', version: 1, createdAt: timestamp, updatedAt: timestamp }
+    this.db.prepare(`
+      INSERT INTO knowledge_entries (
+        id,title,body,type,tags_json,scope_kind,scope_id,confidence,status,version,content_hash,source_json,created_at,updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      id, draft.title, draft.body, draft.type, JSON.stringify(draft.tags), draft.scope.kind,
+      draft.scope.kind === 'project' ? draft.scope.id : null, draft.confidence, 'active', 1,
+      contentHash(draft), draft.source === undefined ? null : JSON.stringify(draft.source), timestamp, timestamp,
+    )
+    this.writeVersion(entry, 'create')
+    this.upsertFts(entry)
+    return entry
+  }
+
+  async update(id: string, draft: KnowledgeDraft): Promise<KnowledgeEntry> {
+    this.assertOpen()
+    return this.transaction(() => this.updateEntry(id, draft, 'update'))
+  }
+
+  private updateEntry(id: string, input: KnowledgeDraft, changeKind: 'update' | 'restore'): KnowledgeEntry {
+    const currentRow = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM knowledge_entries WHERE id = ?`).get(id) as SqlRow | undefined
+    if (currentRow === undefined) throw notFound('knowledge entry', id)
+    const current = rowToEntry(currentRow)
+    const draft = normalizeDraft(input)
+    const timestamp = nowIso()
+    const entry: KnowledgeEntry = {
+      ...draft,
+      id,
+      status: 'active',
+      version: current.version + 1,
+      createdAt: current.createdAt,
+      updatedAt: timestamp,
+    }
+    this.db.prepare(`
+      UPDATE knowledge_entries SET
+        title=?,body=?,type=?,tags_json=?,scope_kind=?,scope_id=?,confidence=?,status='active',
+        version=?,content_hash=?,source_json=?,updated_at=?
+      WHERE id=?
+    `).run(
+      draft.title, draft.body, draft.type, JSON.stringify(draft.tags), draft.scope.kind,
+      draft.scope.kind === 'project' ? draft.scope.id : null, draft.confidence, entry.version,
+      contentHash(draft), draft.source === undefined ? null : JSON.stringify(draft.source), timestamp, id,
+    )
+    this.writeVersion(entry, changeKind)
+    this.upsertFts(entry)
+    return entry
+  }
+
+  async archive(id: string): Promise<KnowledgeEntry> {
+    this.assertOpen()
+    return this.transaction(() => {
+      const row = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM knowledge_entries WHERE id = ?`).get(id) as SqlRow | undefined
+      if (row === undefined) throw notFound('knowledge entry', id)
+      const current = rowToEntry(row)
+      if (current.status === 'archived') return current
+      const updated: KnowledgeEntry = { ...current, status: 'archived', version: current.version + 1, updatedAt: nowIso() }
+      this.db.prepare(`UPDATE knowledge_entries SET status='archived', version=?, updated_at=? WHERE id=?`).run(updated.version, updated.updatedAt, id)
+      this.writeVersion(updated, 'archive')
+      this.db.prepare('DELETE FROM knowledge_fts WHERE knowledge_id = ?').run(id)
+      return updated
+    })
+  }
+
+  async delete(id: string): Promise<void> {
+    this.assertOpen()
+    this.transaction(() => {
+      this.db.prepare('DELETE FROM knowledge_fts WHERE knowledge_id = ?').run(id)
+      const result = this.db.prepare('DELETE FROM knowledge_entries WHERE id = ?').run(id)
+      if (result.changes === 0) throw notFound('knowledge entry', id)
+    })
+  }
+
+  async propose(input: CandidateProposal, sourceKey?: string): Promise<KnowledgeCandidate> {
+    this.assertOpen()
+    const proposal: CandidateProposal = {
+      action: input.action,
+      ...input.targetId === undefined ? {} : { targetId: input.targetId },
+      draft: normalizeDraft(input.draft),
+      reason: input.reason.trim().slice(0, 2000),
+    }
+    if (proposal.action !== 'create' && proposal.targetId === undefined) {
+      throw new Error(`${proposal.action} candidate requires targetId`)
+    }
+    const hash = contentHash(proposal.draft) + `:${proposal.action}:${proposal.targetId ?? ''}`
+    if (sourceKey !== undefined) {
+      const existing = this.db.prepare('SELECT * FROM knowledge_candidates WHERE source_key = ? AND proposal_hash = ?').get(sourceKey, hash) as SqlRow | undefined
+      if (existing !== undefined) return rowToCandidate(existing)
+    }
+    const candidate: KnowledgeCandidate = {
+      ...proposal,
+      id: newId(),
+      status: 'pending',
+      ...sourceKey === undefined ? {} : { sourceKey },
+      createdAt: nowIso(),
+    }
+    this.db.prepare(`
+      INSERT INTO knowledge_candidates(id,action,target_id,draft_json,reason,status,source_key,proposal_hash,created_at)
+      VALUES(?,?,?,?,?,'pending',?,?,?)
+    `).run(candidate.id, candidate.action, candidate.targetId ?? null, JSON.stringify(candidate.draft), candidate.reason, sourceKey ?? null, hash, candidate.createdAt)
+    return candidate
+  }
+
+  async listCandidates(status: 'pending' | 'approved' | 'rejected', limit: number): Promise<KnowledgeCandidate[]> {
+    this.assertOpen()
+    return (this.db.prepare('SELECT * FROM knowledge_candidates WHERE status = ? ORDER BY created_at DESC LIMIT ?')
+      .all(status, Math.max(1, Math.min(limit, 100))) as SqlRow[]).map(rowToCandidate)
+  }
+
+  async review(id: string, decision: ReviewDecision): Promise<KnowledgeCandidate> {
+    this.assertOpen()
+    return this.transaction(() => {
+      const row = this.db.prepare('SELECT * FROM knowledge_candidates WHERE id = ?').get(id) as SqlRow | undefined
+      if (row === undefined) throw notFound('knowledge candidate', id)
+      const candidate = rowToCandidate(row)
+      if (candidate.status !== 'pending') throw conflict(`candidate ${id} was already ${candidate.status}`)
+      let draft = decision.draft === undefined ? candidate.draft : normalizeDraft(decision.draft)
+      if (decision.decision === 'approve') {
+        if (candidate.action === 'create') {
+          this.insertEntry(draft)
+        } else {
+          if (candidate.targetId === undefined) throw new Error('candidate target is missing')
+          const target = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM knowledge_entries WHERE id = ?`).get(candidate.targetId) as SqlRow | undefined
+          if (target === undefined) throw notFound('candidate target', candidate.targetId)
+          if (decision.draft === undefined) draft = candidate.draft
+          this.updateEntry(candidate.targetId, draft, 'update')
+        }
+      }
+      const status = decision.decision === 'approve' ? 'approved' : 'rejected'
+      const reviewedAt = nowIso()
+      const note = decision.note?.trim().slice(0, 2000)
+      this.db.prepare('UPDATE knowledge_candidates SET status=?, reviewed_at=?, review_note=? WHERE id=?')
+        .run(status, reviewedAt, note ?? null, id)
+      return { ...candidate, status, reviewedAt, ...note === undefined ? {} : { reviewNote: note } }
+    })
+  }
+
+  async claimExtraction(sourceKey: string): Promise<boolean> {
+    this.assertOpen()
+    const result = this.db.prepare(`
+      INSERT INTO extraction_jobs(source_key,status,attempts,candidate_count,updated_at)
+      VALUES(?,'running',1,0,?) ON CONFLICT(source_key) DO NOTHING
+    `).run(sourceKey, nowIso())
+    return result.changes === 1
+  }
+
+  async completeExtraction(sourceKey: string, candidateCount: number): Promise<void> {
+    this.assertOpen()
+    this.db.prepare(`UPDATE extraction_jobs SET status='completed', candidate_count=?, last_error=NULL, updated_at=? WHERE source_key=?`)
+      .run(candidateCount, nowIso(), sourceKey)
+  }
+
+  async failExtraction(sourceKey: string, error: string): Promise<void> {
+    this.assertOpen()
+    this.db.prepare(`UPDATE extraction_jobs SET status='failed', last_error=?, updated_at=? WHERE source_key=?`)
+      .run(error.slice(0, 4000), nowIso(), sourceKey)
+  }
+
+  async extractionJob(sourceKey: string): Promise<ExtractionJobRecord | undefined> {
+    this.assertOpen()
+    const row = this.db.prepare('SELECT * FROM extraction_jobs WHERE source_key = ?').get(sourceKey) as SqlRow | undefined
+    return row === undefined ? undefined : rowToExtractionJob(row)
+  }
+
+  ensureBootstrapToken(token: string): void {
+    this.assertOpen()
+    const value = token.trim()
+    if (value.length < 24) throw new Error('knowledge API token must contain at least 24 characters')
+    const hash = tokenHash(value)
+    const existing = this.db.prepare('SELECT id FROM api_tokens WHERE token_hash = ?').get(hash)
+    if (existing !== undefined) return
+    this.db.prepare(`INSERT INTO api_tokens(id,name,token_hash,permissions_json,created_at) VALUES(?,?,?,?,?)`)
+      .run(newId(), 'bootstrap-admin', hash, JSON.stringify(['read', 'propose', 'write', 'admin']), nowIso())
+  }
+
+  authenticate(token: string): ApiTokenRecord | undefined {
+    this.assertOpen()
+    const row = this.db.prepare('SELECT * FROM api_tokens WHERE token_hash = ? AND revoked_at IS NULL')
+      .get(tokenHash(token)) as SqlRow | undefined
+    if (row === undefined) return undefined
+    const usedAt = nowIso()
+    this.db.prepare('UPDATE api_tokens SET last_used_at = ? WHERE id = ?').run(usedAt, String(row.id))
+    return rowToToken({ ...row, last_used_at: usedAt })
+  }
+
+  createApiToken(name: string, permissions: TokenPermission[]): { record: ApiTokenRecord; token: string } {
+    this.assertOpen()
+    const cleanName = name.trim()
+    if (cleanName.length === 0 || cleanName.length > 100) throw new Error('token name must contain 1-100 characters')
+    const allowed = new Set<TokenPermission>(['read', 'propose', 'write', 'admin'])
+    const normalized = [...new Set(permissions)]
+    if (normalized.length === 0 || normalized.some(permission => !allowed.has(permission))) {
+      throw new Error('token permissions must contain read, propose, write, or admin')
+    }
+    const token = `dshk_${randomBytes(32).toString('base64url')}`
+    const record: ApiTokenRecord = { id: newId(), name: cleanName, permissions: normalized, createdAt: nowIso() }
+    this.db.prepare(`INSERT INTO api_tokens(id,name,token_hash,permissions_json,created_at) VALUES(?,?,?,?,?)`)
+      .run(record.id, record.name, tokenHash(token), JSON.stringify(record.permissions), record.createdAt)
+    return { record, token }
+  }
+
+  listApiTokens(): ApiTokenRecord[] {
+    this.assertOpen()
+    return (this.db.prepare('SELECT * FROM api_tokens ORDER BY created_at DESC').all() as SqlRow[]).map(rowToToken)
+  }
+
+  revokeApiToken(id: string): void {
+    this.assertOpen()
+    const result = this.db.prepare('UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL').run(nowIso(), id)
+    if (result.changes === 0) throw notFound('API token', id)
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) return
+    this.closed = true
+    this.db.close()
+  }
+
+  private writeVersion(entry: KnowledgeEntry, changeKind: KnowledgeVersion['changeKind']): void {
+    const snapshot: KnowledgeVersion['snapshot'] = {
+      title: entry.title,
+      body: entry.body,
+      type: entry.type,
+      tags: entry.tags,
+      scope: entry.scope,
+      confidence: entry.confidence,
+      ...entry.source === undefined ? {} : { source: entry.source },
+      status: entry.status,
+    }
+    this.db.prepare(`INSERT INTO knowledge_versions(id,knowledge_id,version,snapshot_json,change_kind,created_at) VALUES(?,?,?,?,?,?)`)
+      .run(newId(), entry.id, entry.version, JSON.stringify(snapshot), changeKind, nowIso())
+  }
+
+  private upsertFts(entry: KnowledgeEntry): void {
+    this.db.prepare('DELETE FROM knowledge_fts WHERE knowledge_id = ?').run(entry.id)
+    if (entry.status === 'active') {
+      this.db.prepare('INSERT INTO knowledge_fts(knowledge_id,title,body,tags) VALUES(?,?,?,?)')
+        .run(entry.id, entry.title, entry.body, entry.tags.join(' '))
+    }
+  }
+}
+
+function rowToEntry(row: SqlRow): KnowledgeEntry {
+  const source = row.source_json == null ? undefined : JSON.parse(String(row.source_json)) as KnowledgeDraft['source']
+  return {
+    id: String(row.id),
+    title: String(row.title),
+    body: String(row.body),
+    type: String(row.type) as KnowledgeEntry['type'],
+    tags: JSON.parse(String(row.tags_json)) as string[],
+    scope: String(row.scope_kind) === 'global'
+      ? { kind: 'global' }
+      : { kind: 'project', id: String(row.scope_id) },
+    confidence: Number(row.confidence),
+    status: String(row.status) as KnowledgeStatus,
+    version: Number(row.version),
+    ...source === undefined ? {} : { source },
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  }
+}
+
+function rowToVersion(row: SqlRow): KnowledgeVersion {
+  return {
+    id: String(row.id),
+    knowledgeId: String(row.knowledge_id),
+    version: Number(row.version),
+    snapshot: JSON.parse(String(row.snapshot_json)) as KnowledgeVersion['snapshot'],
+    changeKind: String(row.change_kind) as KnowledgeVersion['changeKind'],
+    createdAt: String(row.created_at),
+  }
+}
+
+function rowToCandidate(row: SqlRow): KnowledgeCandidate {
+  const targetId = row.target_id == null ? undefined : String(row.target_id)
+  const sourceKey = row.source_key == null ? undefined : String(row.source_key)
+  const reviewedAt = row.reviewed_at == null ? undefined : String(row.reviewed_at)
+  const reviewNote = row.review_note == null ? undefined : String(row.review_note)
+  return {
+    id: String(row.id),
+    action: String(row.action) as KnowledgeCandidate['action'],
+    ...targetId === undefined ? {} : { targetId },
+    draft: JSON.parse(String(row.draft_json)) as KnowledgeDraft,
+    reason: String(row.reason),
+    status: String(row.status) as KnowledgeCandidate['status'],
+    ...sourceKey === undefined ? {} : { sourceKey },
+    createdAt: String(row.created_at),
+    ...reviewedAt === undefined ? {} : { reviewedAt },
+    ...reviewNote === undefined ? {} : { reviewNote },
+  }
+}
+
+function rowToExtractionJob(row: SqlRow): ExtractionJobRecord {
+  const lastError = row.last_error == null ? undefined : String(row.last_error)
+  return {
+    sourceKey: String(row.source_key),
+    status: String(row.status) as ExtractionJobRecord['status'],
+    attempts: Number(row.attempts),
+    candidateCount: Number(row.candidate_count),
+    ...lastError === undefined ? {} : { lastError },
+    updatedAt: String(row.updated_at),
+  }
+}
+
+function rowToToken(row: SqlRow): ApiTokenRecord {
+  const lastUsedAt = row.last_used_at == null ? undefined : String(row.last_used_at)
+  const revokedAt = row.revoked_at == null ? undefined : String(row.revoked_at)
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    permissions: JSON.parse(String(row.permissions_json)) as TokenPermission[],
+    createdAt: String(row.created_at),
+    ...lastUsedAt === undefined ? {} : { lastUsedAt },
+    ...revokedAt === undefined ? {} : { revokedAt },
+  }
+}
+
+function tokenHash(token: string): string {
+  return createHash('sha256').update(token).digest('hex')
+}
+
+function toFtsQuery(text: string): string {
+  const terms = text.split(/\s+/u).map(term => term.trim()).filter(Boolean).slice(0, 20)
+  return terms.map(term => `"${term.replaceAll('"', '""')}"`).join(' OR ')
+}
+
+function fallbackTerms(text: string): string[] {
+  const terms = new Set<string>()
+  for (const word of text.toLowerCase().match(/[a-z0-9][a-z0-9_.-]{1,}/g) ?? []) terms.add(word)
+  for (const sequence of text.match(/\p{Script=Han}+/gu) ?? []) {
+    const chars = [...sequence]
+    if (chars.length === 1) terms.add(chars[0] as string)
+    for (let index = 0; index < chars.length - 1; index += 1) {
+      terms.add(`${chars[index]}${chars[index + 1]}`)
+    }
+  }
+  return [...terms].slice(0, 20)
+}
+
+function rankToScore(rank: number): number {
+  return 1 / (1 + Math.max(0, rank))
+}
+
+function encodeCursor(updatedAt: string, id: string): string {
+  return Buffer.from(JSON.stringify({ updatedAt, id })).toString('base64url')
+}
+
+function decodeCursor(cursor: string): { updatedAt: string; id: string } {
+  try {
+    const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<string, unknown>
+    if (typeof value.updatedAt !== 'string' || typeof value.id !== 'string') throw new Error()
+    return { updatedAt: value.updatedAt, id: value.id }
+  } catch {
+    throw Object.assign(new Error('invalid pagination cursor'), { code: 'BAD_REQUEST' })
+  }
+}
+
+function notFound(kind: string, id: string): Error {
+  return Object.assign(new Error(`${kind} "${id}" was not found`), { code: 'NOT_FOUND' })
+}
+
+function conflict(message: string): Error {
+  return Object.assign(new Error(message), { code: 'CONFLICT' })
+}

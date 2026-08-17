@@ -1,30 +1,24 @@
 # dsh-knowledge
 
-`dsh-knowledge` 是面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的可安装知识库插件。
+`dsh-knowledge` 是面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的知识库插件。它不修改 DSH Agent Loop，同一个插件既能使用本地 SQLite，也能连接远程中央知识库。
 
-当前状态：仓库与标准 DSH bundle 骨架已经建立，知识提取、持久化、远程接口和管理界面尚未实现。首个可用版本发布前请勿用于生产数据。
+当前版本 `0.1.0-alpha.1` 已实现后端首版：
 
-## 产品目标
+- 回答成功完成后，异步调用 DSH 当前模型判断是否产生知识候选。
+- `create / update / conflict / skip` 提取决策；非 `skip` 内容默认等待人工审核。
+- 全局与项目范围，以及偏好、事实、决策、流程、经验五类知识。
+- SQLite WAL、FTS5 全文搜索、原子事务、完整版本历史和幂等提取任务。
+- 审核通过的知识在下一轮 `agent/pre-step` 中作为可追踪的 `recall` 上下文注入。
+- 本地与远程 Provider 使用同一接口；远程模式不做隐式双向同步。
+- Bearer Token 仅保存 SHA-256 摘要，支持 `read / propose / write / admin` 权限及吊销。
+- 认证 HTTP API，可作为其他 DSH 客户端和未来桌面端的中央知识库。
 
-- 每次助手回答完成后异步判断本轮内容是否值得收录，不阻塞下一轮对话。
-- 与已有知识比较，并生成“跳过、新增、更新、冲突”结果。
-- 新增、更新和冲突先进入待审核区，审核通过后才参与召回。
-- 支持全局和项目范围，项目知识优先于全局知识。
-- 支持用户偏好、事实背景、决策约束、操作流程和经验结论等类型。
-- 自动召回少量相关知识，同时提供显式搜索能力。
-- 同一个插件支持本地 SQLite 与远程知识库两种后端。
-- 本地后端可选择开放认证接口，由其他 DSH 客户端或未来桌面端连接。
+Web 管理界面尚未实现；目前通过 API 管理和审核。
 
-完整的首版需求见 [docs/requirements.md](docs/requirements.md)。
-
-## DSH 插件形式
-
-本项目遵循 DSH profile bundle 规则：`package.json` 通过 `dsh.bundle.patch` 声明配置层，`cordis.patch.yml` 将插件行加入目标 profile。功能通过 Cordis 服务、事件和界面扩展点提供，不修改 DSH Agent Loop。
-
-计划发布后可安装到 Web profile：
+## 安装
 
 ```bash
-dsh plugin --profile web add @lemoncat7/dsh-knowledge
+dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.1.0-alpha.1.tgz
 ```
 
 卸载：
@@ -33,33 +27,78 @@ dsh plugin --profile web add @lemoncat7/dsh-knowledge
 dsh plugin --profile web remove @lemoncat7/dsh-knowledge
 ```
 
-## 配置模型
+插件是标准 DSH profile bundle：`package.json` 的 `dsh.bundle.patch` 指向 `cordis.patch.yml`。安装后不需要单独运行知识库容器。
 
-服务端使用本地 SQLite，并按需开放远程接口：
+## 本地模式
+
+默认配置使用 DSH 持久目录中的 SQLite 文件：
 
 ```yaml
 - id: knowledge
+  name: '@lemoncat7/dsh-knowledge'
   config:
+    backend: local
+    databasePath: !!js dshHomePath('knowledge/knowledge.sqlite')
+    extractionEnabled: true
+    defaultScope: project
+    autoRecallLimit: 5
+    exposeApi: false
+```
+
+提取模型默认沿用刚完成回答的 provider/model。也可以为知识提取指定独立模型：
+
+```yaml
+    extractionProvider: deepseek-official
+    extractionModel: deepseek-chat
+```
+
+提取失败只会将幂等任务标为 `failed` 并写日志，不会改变原会话，也不会阻断下一轮。
+
+## 中央服务端
+
+本地实例可以同时开放认证 API：
+
+```yaml
     backend: local
     databasePath: !!js dshHomePath('knowledge/knowledge.sqlite')
     exposeApi: true
     apiToken: !!js process.env.DSH_KNOWLEDGE_API_TOKEN
+    apiPrefix: /knowledge-api/v1
 ```
 
-其他客户端连接服务端知识库：
+`DSH_KNOWLEDGE_API_TOKEN` 至少 24 个字符。该值只用于创建或恢复 bootstrap admin 身份；数据库只保存摘要。服务端没有 TLS，非回环部署必须放在 HTTPS 反向代理之后。
+
+主要 API：
+
+| Method | Path | Permission | Purpose |
+| --- | --- | --- | --- |
+| GET | `/health` | public | 健康检查 |
+| GET | `/search` | read | FTS 检索 |
+| GET/POST | `/entries` | read/write | 列表和直接创建 |
+| GET/PUT/DELETE | `/entries/:id` | read/write/admin | 详情、更新、彻底删除 |
+| GET | `/entries/:id/versions` | read | 版本历史 |
+| GET/POST | `/candidates` | read/propose | 候选列表和提交 |
+| POST | `/candidates/:id/review` | write | 审核候选 |
+| GET/POST/DELETE | `/tokens` | admin | 客户端令牌管理 |
+
+路径均位于配置的 `apiPrefix` 下。创建令牌时，原始令牌只在响应中返回一次。
+
+## 远程客户端
 
 ```yaml
 - id: knowledge
+  name: '@lemoncat7/dsh-knowledge'
   config:
     backend: remote
-    remoteUrl: 'https://example.com/knowledge-api'
+    remoteUrl: 'https://knowledge.example.com/knowledge-api/v1'
     remoteToken: !!js process.env.DSH_KNOWLEDGE_REMOTE_TOKEN
-    exposeApi: false
+    extractionEnabled: true
+    autoRecallLimit: 5
 ```
 
-令牌不得写入仓库或 Docker 镜像。
+远程地址必须是 HTTPS；只有 `localhost` 和回环 IP 的测试地址允许 HTTP。普通客户端建议只分配 `read + propose` 权限。
 
-## 开发
+## 开发与 Docker 构建
 
 要求 Node.js `^22.19.0 || >=24.0.0`。
 
@@ -69,13 +108,7 @@ npm test
 npm run pack:check
 ```
 
-推荐使用 Docker 的 Node.js 24 环境编译，并把可安装的 `.tgz` 输出到 `dist/`：
-
-```bash
-docker build --target artifact --output type=local,dest=dist .
-```
-
-Docker Hub 不可达时，可以通过构建参数选择兼容镜像代理：
+推荐使用 Node 24 Docker 环境编译、测试并输出 tarball：
 
 ```bash
 docker build \
@@ -84,6 +117,6 @@ docker build \
   --output type=local,dest=dist .
 ```
 
-生成的 tarball 可通过 `dsh plugin --profile web add ./dist/<文件名>.tgz` 安装。Docker 只负责构建插件包；插件运行时仍随 DSH 应用加载，不需要单独的知识库容器。
+架构和一致性设计见 [docs/architecture.md](docs/architecture.md)，首版产品边界见 [docs/requirements.md](docs/requirements.md)。
 
 本项目采用 MIT License。

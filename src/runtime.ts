@@ -1,0 +1,100 @@
+export interface TextBlockLike { type: string; text?: string }
+
+export interface MessageLike {
+  id: string
+  role: string
+  content: TextBlockLike[]
+  source: { kind: string; provider?: string; model?: string; plugin?: string; form?: string }
+}
+
+export interface SessionEventLike {
+  type: string
+  seq: number
+  data: Record<string, unknown>
+}
+
+export interface SessionLike {
+  id: string
+  header: { cwd?: string }
+  events: readonly SessionEventLike[]
+}
+
+export interface AgentLike {
+  session: SessionLike
+}
+
+export type PreStepDecision =
+  | { kind: 'reject' }
+  | { kind: 'enter'; messages: MessageLike[] }
+
+export interface PreStepPayload {
+  agent: AgentLike
+  messages: MessageLike[]
+  turn: number
+  step: number
+  signal: AbortSignal
+}
+
+export type StreamChunkLike =
+  | { type: 'text-delta'; text: string }
+  | { type: 'block-end'; block: TextBlockLike }
+  | { type: 'finish'; reason: { kind: string; failure?: { message?: string; code?: string } } }
+  | { type: string }
+
+export interface GenerateOptionsLike {
+  provider: string
+  model: string
+  messages: MessageLike[]
+  system?: string
+  maxTokens?: number
+  temperature?: number
+  signal?: AbortSignal
+  sessionId?: string
+}
+
+export interface LlmLike {
+  stream(options: GenerateOptionsLike): AsyncIterable<StreamChunkLike>
+}
+
+export interface WebServerLike {
+  register(route: {
+    kind: 'exact' | 'prefix'
+    path: string
+    handler(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): void | Promise<void>
+  }): () => void
+}
+
+export interface RuntimeContextLike {
+  llm: LlmLike
+  webServer?: WebServerLike
+  logger: {
+    debug(message: unknown): void
+    info(message: unknown): void
+    warn(message: unknown): void
+    error(message: unknown): void
+  }
+  on(name: 'session/event', listener: (session: SessionLike, event: SessionEventLike) => void): () => void
+  on(name: 'agent/pre-step', listener: (
+    payload: PreStepPayload,
+    next: () => Promise<PreStepDecision>,
+  ) => Promise<PreStepDecision>): () => void
+  effect(factory: () => (() => void | Promise<void>), label?: string): void
+  get(name: string): unknown
+}
+
+export function messageText(message: MessageLike): string {
+  return message.content
+    .filter(block => block.type === 'text' && typeof block.text === 'string')
+    .map(block => block.text ?? '')
+    .join('\n')
+    .trim()
+}
+
+export function createRecallMessage(text: string): MessageLike {
+  return {
+    id: crypto.randomUUID(),
+    role: 'user',
+    content: [{ type: 'text', text }],
+    source: { kind: 'plugin', plugin: 'dsh-knowledge', form: 'recall' },
+  }
+}

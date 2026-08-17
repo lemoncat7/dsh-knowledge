@@ -1,52 +1,65 @@
 import type { Context } from '@deepseek-ai/cordis'
-import Schema from '@deepseek-ai/schemastery'
+import { registerKnowledgeApi } from './api.js'
+import { Config as ConfigSchema, resolveConfig, type Config as KnowledgeConfig } from './config.js'
+import { ExtractionCoordinator } from './extraction.js'
+import { LocalKnowledgeProvider } from './local-provider.js'
+import type { KnowledgeProvider } from './provider.js'
+import { registerRecall } from './recall.js'
+import { RemoteKnowledgeProvider } from './remote-provider.js'
+import type { RuntimeContextLike } from './runtime.js'
 
-/** User-configurable knowledge provider settings. */
-export interface Config {
-  /** Select a local SQLite database or a remotely hosted knowledge provider. */
-  backend: 'local' | 'remote'
-  /** SQLite file used by the local provider. */
-  databasePath?: string
-  /** HTTPS endpoint used by the remote provider. */
-  remoteUrl?: string
-  /** Client credential used by the remote provider. */
-  remoteToken?: string
-  /** Expose the local provider to authenticated remote clients. */
-  exposeApi: boolean
-  /** Credential required by clients of the exposed local provider. */
-  apiToken?: string
-  /** Extract a knowledge candidate after each completed assistant response. */
-  extractionEnabled: boolean
-  /** Maximum number of automatically recalled entries per model request. */
-  autoRecallLimit: number
-}
-
-/** Cordis configuration schema for the knowledge plugin. */
-export const Config: Schema<Config> = Schema.object({
-  backend: Schema.union(['local', 'remote']).default('local'),
-  databasePath: Schema.string(),
-  remoteUrl: Schema.string(),
-  remoteToken: Schema.string().role('secret'),
-  exposeApi: Schema.boolean().default(false),
-  apiToken: Schema.string().role('secret'),
-  extractionEnabled: Schema.boolean().default(true),
-  autoRecallLimit: Schema.number().min(0).max(20).default(5),
-})
+export const Config = ConfigSchema
+export type Config = KnowledgeConfig
+export * from './domain.js'
+export * from './provider.js'
+export { LocalKnowledgeProvider } from './local-provider.js'
+export { RemoteKnowledgeProvider, RemoteProviderError } from './remote-provider.js'
 
 /** Human-readable Cordis plugin name. */
 export const name = 'dsh-knowledge'
 
-/**
- * Mount the knowledge plugin.
- *
- * The repository currently establishes the installable DSH bundle and its
- * validated configuration. Durable storage, extraction, recall, API, and UI
- * providers will be added as independently testable Cordis contributions.
- *
- * @param ctx - Cordis context that owns plugin registrations.
- * @param config - Validated deployment configuration.
- */
-export function apply(ctx: Context, config: Config): void {
-  void ctx
-  void config
+/** Extraction requires DSH's LLM runtime; WebServer remains optional unless exposeApi is enabled. */
+export const inject = ['llm']
+
+/** Mount storage, recall, extraction, and the optional authenticated HTTP API. */
+export function apply(ctx: Context, config: KnowledgeConfig): void {
+  const runtime = ctx as unknown as RuntimeContextLike
+  const resolved = resolveConfig(config)
+  const provider: KnowledgeProvider = resolved.backend === 'local'
+    ? new LocalKnowledgeProvider(resolved.databasePath as string)
+    : new RemoteKnowledgeProvider({
+      url: resolved.remoteUrl as string,
+      token: resolved.remoteToken as string,
+      timeoutMs: resolved.remoteTimeoutMs,
+    })
+
+  const coordinator = new ExtractionCoordinator(runtime, provider, resolved)
+  registerRecall(runtime, provider, resolved)
+
+  if (resolved.extractionEnabled) {
+    runtime.on('session/event', (session, event) => {
+      if (event.type !== 'turn/end') return
+      const reason = event.data.reason
+      const turn = event.data.turn
+      if (!isRecord(reason) || reason.kind !== 'completed' || typeof turn !== 'number') return
+      coordinator.enqueue(session, turn)
+    })
+  }
+
+  if (resolved.exposeApi) {
+    if (!(provider instanceof LocalKnowledgeProvider)) throw new Error('exposeApi is supported only by the local backend')
+    provider.ensureBootstrapToken(resolved.apiToken as string)
+    registerKnowledgeApi(runtime, provider, resolved.apiPrefix)
+  }
+
+  runtime.effect(() => async () => {
+    await coordinator.close()
+    await provider.close()
+  }, 'dsh-knowledge.close')
+
+  runtime.logger.info(`dsh-knowledge: ${provider.mode} provider ready`)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }

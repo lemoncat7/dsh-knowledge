@@ -1,6 +1,6 @@
 {
   "name": "@lemoncat7/dsh-knowledge",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "description": "Installable DeepSeek Harness knowledge base plugin",
   "license": "MIT",
   "type": "module",
@@ -35,7 +35,7 @@
     "build": "tsc -p tsconfig.json",
     "clean": "node -e \"require('node:fs').rmSync('lib', { recursive: true, force: true })\"",
     "prepare": "npm run clean && npm run build",
-    "test": "npm run build",
+    "test": "npm run build && node --test test/*.test.mjs",
     "pack:check": "npm pack --dry-run"
   },
   "dependencies": {
@@ -46,6 +46,7 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
+    "@types/node": "^24.0.0",
     "typescript": "^5.9.3"
   },
   "publishConfig": {
