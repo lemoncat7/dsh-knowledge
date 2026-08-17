@@ -50,12 +50,14 @@ dsh plugin --profile web remove @lemoncat7/dsh-knowledge
     exposeApi: false
 ```
 
-提取模型默认沿用刚完成回答的 provider/model。也可以为知识提取指定独立模型：
+提取模型默认沿用刚完成回答的 provider/model。生产环境建议指定独立的轻量非 Agent 模型，避免代码 Agent 或重推理模型把输出额度消耗在 reasoning 上：
 
 ```yaml
     extractionProvider: deepseek-official
     extractionModel: deepseek-chat
 ```
+
+独立模型必须先在 DSH 的模型设置中注册。主对话仍可使用代码 Agent；知识提取只需要稳定返回严格 JSON，通常不需要工具调用或高强度推理。
 
 提取输出达到模型上限时会自动用双倍预算重试一次（最高 8192 tokens）。其他提取失败会将幂等任务标为 `failed`，失败任务最多可重新领取两次，并在回答下方记录回写通知，不会阻断下一轮。
 
