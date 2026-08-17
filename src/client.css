@@ -59,7 +59,7 @@
   flex-direction: column;
   width: min(1180px, calc(100vw - 48px));
   height: min(860px, calc(100vh - 48px));
-  min-width: 680px;
+  min-width: min(1040px, calc(100vw - 32px));
   min-height: 460px;
   max-width: calc(100vw - 32px);
   max-height: calc(100vh - 32px);

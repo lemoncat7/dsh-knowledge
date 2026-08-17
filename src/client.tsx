@@ -99,10 +99,11 @@ function KnowledgePanel({
   useEffect(() => {
     const target = panel.current
     if (target === null || typeof ResizeObserver === 'undefined') return
+    const minimumWidth = desktopPanelMinimumWidth()
     const observer = new ResizeObserver(entries => {
       if (target.classList.contains('dsh-knowledge-panel--maximized') || window.innerWidth <= 760) return
       const rect = entries[0]?.contentRect
-      if (rect === undefined || rect.width < 680 || rect.height < 460) return
+      if (rect === undefined || rect.width < minimumWidth || rect.height < 460) return
       panelSize.current = { width: Math.round(rect.width), height: Math.round(rect.height) }
       try { localStorage.setItem(PANEL_SIZE_KEY, JSON.stringify(panelSize.current)) } catch {}
     })
@@ -159,8 +160,9 @@ function KnowledgePanel({
 }
 
 function readPanelSize(): { width: number; height: number } {
+  const minimumWidth = desktopPanelMinimumWidth()
   const fallback = {
-    width: Math.min(1180, Math.max(680, window.innerWidth - 48)),
+    width: Math.min(1180, Math.max(minimumWidth, window.innerWidth - 48)),
     height: Math.min(860, Math.max(460, window.innerHeight - 48)),
   }
   try {
@@ -168,10 +170,14 @@ function readPanelSize(): { width: number; height: number } {
     const width = Number(value.width)
     const height = Number(value.height)
     return {
-      width: Number.isFinite(width) ? Math.min(window.innerWidth - 32, Math.max(680, width)) : fallback.width,
+      width: Number.isFinite(width) ? Math.min(window.innerWidth - 32, Math.max(minimumWidth, width)) : fallback.width,
       height: Number.isFinite(height) ? Math.min(window.innerHeight - 32, Math.max(460, height)) : fallback.height,
     }
   } catch { return fallback }
+}
+
+function desktopPanelMinimumWidth(): number {
+  return Math.min(1040, Math.max(320, window.innerWidth - 32))
 }
 
 function knowledgePanelUrl(sessionId?: string, projectId?: string): string {

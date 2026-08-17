@@ -48,6 +48,8 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(application, /markdown-document/)
   assert.match(application, /column-resizer/)
   assert.match(application, /app-sidebar-resizer/)
+  assert.match(application, /调整栏宽/)
+  assert.match(application, /知识库二级栏/)
   assert.match(application, /aria-valuenow/)
   const shellSource = application.slice(application.indexOf('function renderShell()'), application.indexOf('function renderSidebar()'))
   assert.doesNotMatch(shellSource, /新建知识库|新建知识/)

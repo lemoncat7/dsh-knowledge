@@ -350,11 +350,12 @@ function renderAppSidebarResizer() {
   const value = state.documentView.sidebarWidth
   return element('div', {
     class: 'app-sidebar-resizer', role: 'separator', tabindex: '0',
+    title: '拖动调整主导航栏宽度',
     'aria-label': '调整主导航栏宽度', 'aria-orientation': 'vertical',
     'aria-valuemin': minimum, 'aria-valuemax': maximum, 'aria-valuenow': value,
     onPointerDown: event => startSidebarResize(event, minimum, maximum),
     onKeyDown: event => resizeSidebarWithKeyboard(event, minimum, maximum),
-  }, element('span', { 'aria-hidden': 'true' }))
+  }, element('span', { 'aria-hidden': 'true' }, '⋮'))
 }
 
 function startSidebarResize(event, minimum, maximum) {
@@ -725,6 +726,7 @@ function renderEntries() {
       }, activeBases.map(base => element('option', { value: base.id, selected: base.id === view.knowledgeBaseId }, base.name))),
       element('div', { class: 'tabs', role: 'tablist', 'aria-label': '知识视图' },
         documentViewTab('文档', 'documents'), documentViewTab('条目管理', 'entries')),
+      actionButton('调整栏宽', openLayoutEditor, 'ghost small', { 'aria-label': '调整主导航、知识库和文档栏宽度' }),
       actionButton('+ 新建知识', () => openEntryEditor(), 'primary'),
     ),
     element('div', {
@@ -771,11 +773,63 @@ function renderColumnResizer(column, label) {
   const value = isLibrary ? state.documentView.libraryWidth : state.documentView.documentListWidth
   return element('div', {
     class: 'column-resizer', 'data-column': column, role: 'separator', tabindex: '0',
+    title: `${label}；可拖动或使用左右方向键`,
     'aria-label': label, 'aria-orientation': 'vertical',
     'aria-valuemin': minimum, 'aria-valuemax': maximum, 'aria-valuenow': value,
     onPointerDown: event => startColumnResize(event, column, minimum, maximum),
     onKeyDown: event => resizeColumnWithKeyboard(event, column, minimum, maximum),
-  }, element('span', { 'aria-hidden': 'true' }))
+  }, element('span', { 'aria-hidden': 'true' }, '⋮'))
+}
+
+function openLayoutEditor() {
+  const fields = [
+    layoutRangeField('主导航栏', state.documentView.sidebarWidth, 190, 340),
+    layoutRangeField('知识库二级栏', state.documentView.libraryWidth, 170, 360),
+    layoutRangeField('文档列表栏', state.documentView.documentListWidth, 210, 480),
+  ]
+  const reset = actionButton('恢复默认宽度', () => {
+    const defaults = [236, 220, 280]
+    fields.forEach((field, index) => field.setValue(defaults[index]))
+  }, 'ghost small')
+  const body = element('div', { class: 'layout-editor' },
+    fields.map(field => field.wrapper),
+    element('div', { class: 'layout-editor-note' },
+      element('span', {}, '也可以直接拖动栏与栏之间的三点分隔线。窗口过窄时会自动切换为紧凑布局。'),
+      reset,
+    ),
+  )
+  openModal({
+    title: '调整边栏宽度',
+    description: '分别设置管理导航、知识库二级栏和文档列表栏。',
+    body,
+    primaryLabel: '应用布局',
+    onPrimary: async () => {
+      state.documentView.sidebarWidth = fields[0].value()
+      state.documentView.libraryWidth = fields[1].value()
+      state.documentView.documentListWidth = fields[2].value()
+      saveDocumentLayout()
+      renderShell()
+      showToast('边栏宽度已保存。')
+      return true
+    },
+  })
+}
+
+function layoutRangeField(label, value, minimum, maximum) {
+  const output = element('output', { class: 'range-value' }, `${value}px`)
+  const input = element('input', {
+    type: 'range', min: minimum, max: maximum, step: '10', value,
+    'aria-label': label,
+    onInput: event => { output.textContent = `${event.target.value}px` },
+  })
+  return {
+    wrapper: element('div', { class: 'field' },
+      element('div', { class: 'layout-range-label' }, element('label', {}, label), output),
+      element('div', { class: 'range-row' }, input),
+    ),
+    value: () => Number(input.value),
+    setValue: next => { input.value = String(next); output.textContent = `${next}px` },
+  }
 }
 
 function startColumnResize(event, column, minimum, maximum) {

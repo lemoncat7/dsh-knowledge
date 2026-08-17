@@ -239,11 +239,18 @@ button:disabled { cursor: not-allowed; opacity: .56; }
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 3px;
-  height: 34px;
+  width: 18px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border-strong);
   border-radius: 999px;
-  background: var(--border-strong);
-  opacity: .52;
+  background: var(--surface-raised);
+  color: var(--text-tertiary);
+  font-size: 17px;
+  line-height: 1;
+  opacity: 1;
+  box-shadow: 0 2px 8px rgb(20 25 35 / 9%);
   transform: translate(-50%, -50%);
   transition: opacity .15s ease, background .15s ease;
 }
@@ -252,7 +259,7 @@ button:disabled { cursor: not-allowed; opacity: .56; }
 .app-sidebar-resizer.is-dragging span,
 .column-resizer:hover span,
 .column-resizer:focus-visible span,
-.column-resizer.is-dragging span { opacity: 1; background: var(--accent); }
+.column-resizer.is-dragging span { opacity: 1; border-color: var(--accent); background: var(--accent); color: #fff; }
 .app-sidebar-resizer:hover,
 .app-sidebar-resizer.is-dragging,
 .column-resizer:hover,
@@ -572,6 +579,11 @@ button:disabled { cursor: not-allowed; opacity: .56; }
 .range-row { display: flex; align-items: center; gap: 10px; }
 .range-row input { flex: 1; }
 .range-value { min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
+.layout-editor { display: grid; gap: 18px; }
+.layout-range-label { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.layout-range-label label { color: var(--text-secondary); font-size: 13px; font-weight: 600; }
+.layout-editor input[type="range"] { width: 100%; accent-color: var(--accent); }
+.layout-editor-note { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid var(--border); padding-top: 14px; color: var(--text-tertiary); font-size: 12px; }
 .check-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .check-option { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 8px; padding: 9px; }
 
@@ -640,6 +652,7 @@ button:disabled { cursor: not-allowed; opacity: .56; }
   .mount-bulk-actions .button { flex: 1 1 auto; }
   .candidate-header, .candidate-footer { align-items: flex-start; flex-direction: column; }
   .candidate-footer { gap: 9px; }
+  .layout-editor-note { align-items: flex-start; flex-direction: column; }
 }
 
 @media (max-width: 520px) {

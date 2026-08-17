@@ -9,6 +9,7 @@ test('browser bundle registers the sidebar knowledge panel', async () => {
   assert.match(source, /\/knowledge/)
   assert.match(source, /dsh-knowledge-panel-title/)
   assert.match(source, /dsh-knowledge-panel--maximized/)
+  assert.match(source, /1040/)
   assert.match(source, /dsh-knowledge-resize-grip/)
   assert.match(source, /ResizeObserver/)
 })
