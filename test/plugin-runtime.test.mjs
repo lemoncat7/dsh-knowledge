@@ -121,7 +121,7 @@ test('plugin extracts after a completed turn and recalls only approved knowledge
   assert.match(afterApproval.messages.at(-1).content[0].text, /DSH plugin installation command/)
 })
 
-test('direct write approves only high-confidence non-conflicts and skips unmounted sessions', async (t) => {
+test('direct write approves all non-conflicts and skips unmounted sessions', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-knowledge-direct-'))
   const databasePath = join(root, 'knowledge.sqlite')
   const listeners = new Map()
@@ -171,7 +171,7 @@ test('direct write approves only high-confidence non-conflicts and skips unmount
     backend: 'local', databasePath, remoteTimeoutMs: 5000, exposeApi: false,
     apiPrefix: '/knowledge-api/v1', extractionEnabled: true, extractionMaxTokens: 1200,
     extractionTimeoutMs: 5000, extractionMaxInputChars: 10000, defaultScope: 'project',
-    autoRecallLimit: 5, recallMaxChars: 6000, directWriteMinConfidence: 0.85,
+    autoRecallLimit: 5, recallMaxChars: 6000,
   })
   t.after(async () => {
     for (const dispose of disposers.reverse()) await dispose()
@@ -216,9 +216,11 @@ test('direct write approves only high-confidence non-conflicts and skips unmount
   assert.deepEqual(streamBudgets, [1200, 2400])
   assert.deepEqual(streamRoutes, [['mock', 'extractor'], ['mock', 'extractor']])
   assert.deepEqual(streamReasoning, [undefined, 'low'])
-  assert.equal((await observer.listCandidates('approved', 10)).length, 1)
-  assert.equal((await observer.listCandidates('pending', 10)).length, 2)
-  assert.equal((await observer.list({ status: 'active', limit: 10 })).items.length, 2)
-  assert.match(direct.events.at(-1).data.source.summary, /直写 1/)
-  assert.match(direct.events.at(-1).data.source.summary, /待审 2/)
+  assert.equal((await observer.listCandidates('approved', 10)).length, 2)
+  const pending = await observer.listCandidates('pending', 10)
+  assert.equal(pending.length, 1)
+  assert.equal(pending[0].action, 'conflict')
+  assert.equal((await observer.list({ status: 'active', limit: 10 })).items.length, 3)
+  assert.match(direct.events.at(-1).data.source.summary, /直写 2/)
+  assert.match(direct.events.at(-1).data.source.summary, /待审 1/)
 })

@@ -17,7 +17,6 @@ export interface Config {
   extractionMaxTokens: number
   extractionTimeoutMs: number
   extractionMaxInputChars: number
-  directWriteMinConfidence: number
   defaultScope: 'project' | 'global'
   autoRecallLimit: number
   recallMaxChars: number
@@ -40,7 +39,6 @@ export const Config: Schema<Config> = Schema.object({
   extractionMaxTokens: Schema.number().min(128).max(8192).default(4096),
   extractionTimeoutMs: Schema.number().min(1000).max(300_000).default(90_000),
   extractionMaxInputChars: Schema.number().min(1000).max(200_000).default(30_000),
-  directWriteMinConfidence: Schema.number().min(0).max(1).default(0.85),
   defaultScope: Schema.union(['project', 'global']).default('project'),
   autoRecallLimit: Schema.number().min(0).max(20).default(5),
   recallMaxChars: Schema.number().min(500).max(50_000).default(6000),
@@ -54,7 +52,6 @@ export interface ResolvedConfig extends Config {
   extractionMaxTokens: number
   extractionTimeoutMs: number
   extractionMaxInputChars: number
-  directWriteMinConfidence: number
   defaultScope: 'project' | 'global'
   autoRecallLimit: number
   recallMaxChars: number
@@ -70,7 +67,6 @@ export function resolveConfig(config: Config): ResolvedConfig {
     extractionMaxTokens: config.extractionMaxTokens ?? 4096,
     extractionTimeoutMs: config.extractionTimeoutMs ?? 90_000,
     extractionMaxInputChars: config.extractionMaxInputChars ?? 30_000,
-    directWriteMinConfidence: config.directWriteMinConfidence ?? 0.85,
     defaultScope: config.defaultScope ?? 'project',
     autoRecallLimit: config.autoRecallLimit ?? 5,
     recallMaxChars: config.recallMaxChars ?? 6000,

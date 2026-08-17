@@ -41,6 +41,7 @@ const state = {
   documents: [],
   documentView: {
     knowledgeBaseId: '', documentId: '', query: '', mode: 'documents',
+    sidebarWidth: savedDocumentLayout.sidebarWidth,
     libraryWidth: savedDocumentLayout.libraryWidth,
     documentListWidth: savedDocumentLayout.documentListWidth,
   },
@@ -52,10 +53,11 @@ const state = {
 }
 
 function readDocumentLayout() {
-  const fallback = { libraryWidth: 220, documentListWidth: 280 }
+  const fallback = { sidebarWidth: 236, libraryWidth: 220, documentListWidth: 280 }
   try {
     const value = JSON.parse(localStorage.getItem(DOCUMENT_LAYOUT_KEY) || '{}')
     return {
+      sidebarWidth: clampNumber(value.sidebarWidth, 190, 340, fallback.sidebarWidth),
       libraryWidth: clampNumber(value.libraryWidth, 170, 360, fallback.libraryWidth),
       documentListWidth: clampNumber(value.documentListWidth, 210, 480, fallback.documentListWidth),
     }
@@ -65,6 +67,7 @@ function readDocumentLayout() {
 function saveDocumentLayout() {
   try {
     localStorage.setItem(DOCUMENT_LAYOUT_KEY, JSON.stringify({
+      sidebarWidth: state.documentView.sidebarWidth,
       libraryWidth: state.documentView.libraryWidth,
       documentListWidth: state.documentView.documentListWidth,
     }))
@@ -319,20 +322,17 @@ function renderShell() {
     tokens: ['访问管理', '管理其他客户端连接中央知识库的权限'],
   }
   const [title, subtitle] = titles[state.view]
-  const shell = element('div', { class: 'app-shell', 'data-menu-open': String(state.menuOpen) },
+  const shell = element('div', {
+    class: 'app-shell', 'data-menu-open': String(state.menuOpen),
+    style: `--sidebar-width: ${state.documentView.sidebarWidth}px`,
+  },
     renderSidebar(),
+    renderAppSidebarResizer(),
     element('main', { class: 'main' },
       element('header', { class: 'topbar' },
         element('div', { class: 'topbar-title' },
           actionButton('☰', () => { state.menuOpen = !state.menuOpen; renderShell() }, 'ghost mobile-menu', { 'aria-label': '打开导航菜单' }),
           element('div', {}, element('h1', {}, title), element('p', {}, subtitle)),
-        ),
-        element('div', { class: 'topbar-actions' },
-          state.view === 'bases'
-            ? actionButton('+ 新建知识库', () => openKnowledgeBaseEditor(), 'primary')
-            : state.view === 'entries' || state.view === 'overview'
-            ? actionButton('+ 新建知识', () => openEntryEditor(), 'primary')
-            : null,
         ),
       ),
       element('div', { class: 'page' }, renderCurrentView()),
@@ -342,6 +342,64 @@ function renderShell() {
     if (event.target === shell) { state.menuOpen = false; renderShell() }
   })
   app.replaceChildren(shell)
+}
+
+function renderAppSidebarResizer() {
+  const minimum = 190
+  const maximum = 340
+  const value = state.documentView.sidebarWidth
+  return element('div', {
+    class: 'app-sidebar-resizer', role: 'separator', tabindex: '0',
+    'aria-label': '调整主导航栏宽度', 'aria-orientation': 'vertical',
+    'aria-valuemin': minimum, 'aria-valuemax': maximum, 'aria-valuenow': value,
+    onPointerDown: event => startSidebarResize(event, minimum, maximum),
+    onKeyDown: event => resizeSidebarWithKeyboard(event, minimum, maximum),
+  }, element('span', { 'aria-hidden': 'true' }))
+}
+
+function startSidebarResize(event, minimum, maximum) {
+  if (event.button !== 0) return
+  event.preventDefault()
+  const handle = event.currentTarget
+  const shell = handle.closest('.app-shell')
+  if (!shell) return
+  const startX = event.clientX
+  const startWidth = state.documentView.sidebarWidth
+  handle.setPointerCapture?.(event.pointerId)
+  handle.classList.add('is-dragging')
+  document.body.classList.add('is-resizing-columns')
+  const move = moveEvent => {
+    const width = clampNumber(startWidth + moveEvent.clientX - startX, minimum, maximum, startWidth)
+    setSidebarWidth(width, shell, handle)
+  }
+  const finish = () => {
+    handle.classList.remove('is-dragging')
+    document.body.classList.remove('is-resizing-columns')
+    handle.removeEventListener('pointermove', move)
+    handle.removeEventListener('pointerup', finish)
+    handle.removeEventListener('pointercancel', finish)
+    saveDocumentLayout()
+  }
+  handle.addEventListener('pointermove', move)
+  handle.addEventListener('pointerup', finish)
+  handle.addEventListener('pointercancel', finish)
+}
+
+function resizeSidebarWithKeyboard(event, minimum, maximum) {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  const current = state.documentView.sidebarWidth
+  const width = event.key === 'Home' ? minimum
+    : event.key === 'End' ? maximum
+    : clampNumber(current + (event.key === 'ArrowRight' ? 16 : -16), minimum, maximum, current)
+  setSidebarWidth(width, event.currentTarget.closest('.app-shell'), event.currentTarget)
+  saveDocumentLayout()
+}
+
+function setSidebarWidth(width, shell, handle) {
+  state.documentView.sidebarWidth = width
+  shell?.style.setProperty('--sidebar-width', `${width}px`)
+  handle?.setAttribute('aria-valuenow', String(width))
 }
 
 function renderSidebar() {
@@ -928,7 +986,7 @@ function renderCandidates() {
   const statuses = [['pending', '待审核'], ['approved', '已通过'], ['rejected', '已拒绝']]
   return element('section', { 'aria-labelledby': 'candidates-heading' },
     element('div', { class: 'section-heading' },
-      element('div', {}, element('h2', { id: 'candidates-heading' }, 'AI 提取候选'), element('p', {}, '候选内容由模型生成，通过人工确认后才参与后续召回。')),
+      element('div', {}, element('h2', { id: 'candidates-heading' }, 'AI 提取候选'), element('p', {}, '审核写入的结果与冲突项会在这里等待确认；直接写入的普通结果会自动生效。')),
       element('div', { class: 'tabs', role: 'tablist', 'aria-label': '候选状态' }, statuses.map(([value, label]) => element('button', {
         type: 'button', role: 'tab', class: 'tab', 'aria-selected': String(state.candidateStatus === value),
         onClick: async () => { state.candidateStatus = value; await navigate('candidates') },
@@ -1072,7 +1130,7 @@ function openBulkMountEditor() {
   const writeMode = selectField('写入方式', [
     { value: 'none', label: '仅召回（不提取、不回写）' },
     { value: 'audit', label: '审核写入（推荐）' },
-    { value: 'direct', label: '直接写入（低置信度或冲突仍待审）' },
+    { value: 'direct', label: '直接写入（普通结果自动生效；冲突仍待审）' },
   ], 'audit')
   const includeTags = formField('必须包含的标签', 'input', '', { placeholder: '可选，逗号分隔' })
   const excludeTags = formField('排除标签', 'input', '', { placeholder: '可选，逗号分隔' })
@@ -1150,7 +1208,7 @@ function openMountEditor(base, targetKind, targetId, explicit, inherited) {
   const writeMode = selectField('写入方式', [
     { value: 'none', label: '仅召回（不提取、不回写）' },
     { value: 'audit', label: '审核写入（先进待审核）' },
-    { value: 'direct', label: '直接写入（低置信度或冲突仍待审）' },
+    { value: 'direct', label: '直接写入（普通结果自动生效；冲突仍待审）' },
   ], source.writeMode)
   const includeTags = formField('必须包含的标签', 'input', source.includeTags.join(', '), { placeholder: '例如：project-rule' })
   const excludeTags = formField('排除标签', 'input', source.excludeTags.join(', '), { placeholder: '例如：personal, temporary' })

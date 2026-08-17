@@ -44,7 +44,10 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(application, /document-list-column/)
   assert.match(application, /markdown-document/)
   assert.match(application, /column-resizer/)
+  assert.match(application, /app-sidebar-resizer/)
   assert.match(application, /aria-valuenow/)
+  const shellSource = application.slice(application.indexOf('function renderShell()'), application.indexOf('function renderSidebar()'))
+  assert.doesNotMatch(shellSource, /新建知识库|新建知识/)
 
   const missing = await fetch(`${base}/knowledge/not-found.js`)
   assert.equal(missing.status, 404)

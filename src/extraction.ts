@@ -86,7 +86,6 @@ export class ExtractionCoordinator {
         candidateCount += 1
         const direct = mount.writeMode === 'direct'
           && proposal.action !== 'conflict'
-          && proposal.draft.confidence >= this.config.directWriteMinConfidence
         const counts = byBase.get(mount.knowledgeBaseId)
         if (direct) {
           await this.provider.review(candidate.id, { decision: 'approve', note: 'Automatically approved by direct-write mount policy.' }, signal)
