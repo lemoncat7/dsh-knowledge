@@ -112,6 +112,14 @@ function actionButton(label, onClick, variant = '', attributes = {}) {
   return element('button', { type: 'button', class: `button ${variant}`.trim(), onClick, ...attributes }, label)
 }
 
+function paneToggleButton(pane, visible, onClick, label) {
+  const action = `${visible ? '隐藏' : '显示'}${label}`
+  return element('button', {
+    type: 'button', class: 'pane-toggle-button', 'data-pane': pane,
+    'aria-label': action, 'aria-pressed': String(visible), title: action, onClick,
+  }, element('span', { class: `pane-icon pane-icon-${pane}`, 'aria-hidden': 'true' }))
+}
+
 function badge(label, variant = '') {
   return element('span', { class: `badge ${variant}`.trim() }, label)
 }
@@ -345,9 +353,7 @@ function renderShell() {
       element('header', { class: 'topbar' },
         element('div', { class: 'topbar-title' },
           actionButton('☰', () => { state.menuOpen = !state.menuOpen; renderShell() }, 'ghost mobile-menu', { 'aria-label': '打开导航菜单' }),
-          state.documentView.sidebarHidden
-            ? actionButton('显示导航', () => setSidebarHidden(false), 'ghost small desktop-sidebar-restore')
-            : null,
+          paneToggleButton('main', !state.documentView.sidebarHidden, () => setSidebarHidden(!state.documentView.sidebarHidden), '主导航栏'),
           element('div', {}, element('h1', {}, title), element('p', {}, subtitle)),
         ),
       ),
@@ -434,7 +440,6 @@ function renderSidebar() {
     element('div', { class: 'brand' },
       element('div', { class: 'brand-mark', 'aria-hidden': 'true' }, 'K'),
       element('div', { class: 'brand-copy' }, element('strong', {}, 'DSH Knowledge'), element('span', {}, '管理控制台')),
-      actionButton('‹', () => setSidebarHidden(true), 'ghost small desktop-sidebar-collapse', { 'aria-label': '隐藏主导航栏', title: '隐藏主导航栏' }),
     ),
     element('nav', { class: 'nav' }, navItems.map(([id, label, icon]) => element('button', {
       type: 'button', class: 'nav-button', 'aria-current': state.view === id ? 'page' : undefined,
@@ -749,8 +754,10 @@ function renderEntries() {
       }, activeBases.map(base => element('option', { value: base.id, selected: base.id === view.knowledgeBaseId }, base.name))),
       element('div', { class: 'tabs', role: 'tablist', 'aria-label': '知识视图' },
         documentViewTab('文档', 'documents'), documentViewTab('条目管理', 'entries')),
-      view.libraryHidden ? actionButton('显示知识库栏', () => setDocumentColumnHidden('library', false), 'ghost small') : null,
-      view.documentListHidden ? actionButton('显示文档栏', () => setDocumentColumnHidden('documentList', false), 'ghost small') : null,
+      element('div', { class: 'pane-toggle-group document-pane-toggles', role: 'group', 'aria-label': '文档边栏显示' },
+        paneToggleButton('library', !view.libraryHidden, () => setDocumentColumnHidden('library', !view.libraryHidden), '知识库二级栏'),
+        paneToggleButton('document', !view.documentListHidden, () => setDocumentColumnHidden('documentList', !view.documentListHidden), '文档列表栏'),
+      ),
       actionButton('调整栏宽', openLayoutEditor, 'ghost small', { 'aria-label': '调整主导航、知识库和文档栏宽度' }),
       actionButton('+ 新建知识', () => openEntryEditor(), 'primary'),
     ),
@@ -763,7 +770,6 @@ function renderEntries() {
       element('aside', { class: 'knowledge-library-column', 'aria-label': '知识库列表' },
         element('header', { class: 'column-header' },
           element('div', {}, element('h2', { id: 'documents-heading' }, '知识库'), element('span', {}, `${activeBases.length} 个可用`)),
-          actionButton('‹', () => setDocumentColumnHidden('library', true), 'ghost small column-collapse', { 'aria-label': '隐藏知识库二级栏', title: '隐藏知识库二级栏' }),
         ),
         activeBases.length ? element('div', { class: 'library-list', role: 'listbox', tabindex: '0', onKeyDown: event => moveDocumentSelection(event, 'base') },
           activeBases.map(base => {
@@ -782,7 +788,6 @@ function renderEntries() {
       element('aside', { class: 'document-list-column', 'aria-label': '文档列表' },
         element('header', { class: 'column-header' },
           element('div', {}, element('h2', {}, selectedBase?.name || '文档'), element('span', {}, query ? `找到 ${visibleDocuments.length} 篇` : `${allBaseDocuments.length} 篇文档`)),
-          actionButton('‹', () => setDocumentColumnHidden('documentList', true), 'ghost small column-collapse', { 'aria-label': '隐藏文档列表栏', title: '隐藏文档列表栏' }),
         ),
         visibleDocuments.length ? element('div', { class: 'document-list', role: 'listbox', tabindex: '0', onKeyDown: event => moveDocumentSelection(event, 'document') },
           visibleDocuments.map(document => element('button', {

@@ -50,9 +50,9 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(application, /app-sidebar-resizer/)
   assert.match(application, /调整栏宽/)
   assert.match(application, /知识库二级栏/)
-  assert.match(application, /隐藏主导航栏/)
-  assert.match(application, /显示知识库栏/)
-  assert.match(application, /隐藏文档列表栏/)
+  assert.match(application, /pane-toggle-button/)
+  assert.match(application, /aria-pressed/)
+  assert.match(application, /文档边栏显示/)
   assert.match(application, /data-sidebar-hidden/)
   assert.match(application, /data-library-hidden/)
 

@@ -185,8 +185,6 @@ button:disabled { cursor: not-allowed; opacity: .56; }
 .brand-copy { min-width: 0; }
 .brand strong { display: block; font-size: 14px; }
 .brand span { display: block; color: var(--text-tertiary); font-size: 11px; }
-.desktop-sidebar-collapse { width: 28px; min-width: 28px; margin-left: auto; padding: 0; font-size: 19px; }
-.desktop-sidebar-restore { flex: none; }
 
 .nav { display: grid; gap: 4px; }
 .nav-button {
@@ -285,8 +283,75 @@ button:disabled { cursor: not-allowed; opacity: .56; }
 }
 .topbar h1 { margin: 0; font-size: 20px; line-height: 1.25; letter-spacing: -.02em; }
 .topbar p { margin: 3px 0 0; color: var(--text-tertiary); font-size: 12px; }
+.topbar-title { display: flex; align-items: center; gap: 12px; }
 .mobile-menu { display: none; }
 .topbar-actions { display: flex; align-items: center; gap: 8px; }
+.pane-toggle-group {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 2px;
+  background: color-mix(in srgb, var(--surface-soft) 72%, transparent);
+}
+.pane-toggle-button {
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  min-height: 30px;
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  padding: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+}
+.pane-toggle-button:hover { background: var(--surface-hover); color: var(--text); }
+.pane-toggle-button[aria-pressed="true"] {
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: 0 1px 4px rgb(20 25 35 / 10%);
+}
+.pane-icon {
+  position: relative;
+  width: 17px;
+  height: 14px;
+  display: block;
+  overflow: hidden;
+  border: 1.5px solid currentColor;
+  border-radius: 3.5px;
+}
+.pane-icon-main::before,
+.pane-icon-library::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 5px;
+  border-right: 1px solid currentColor;
+  background: currentColor;
+  opacity: .22;
+}
+.pane-icon-library::after,
+.pane-icon-document::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 10px;
+  border-left: 1px solid currentColor;
+}
+.pane-icon-document::before { left: 5px; box-shadow: 5px 0 0 currentColor; }
+.pane-icon-document::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 6px;
+  width: 4px;
+  background: currentColor;
+  opacity: .18;
+}
 
 .page { width: min(100%, 1240px); margin: 0 auto; padding: 30px clamp(20px, 4vw, 52px) 56px; }
 
@@ -411,7 +476,6 @@ button:disabled { cursor: not-allowed; opacity: .56; }
   padding: 11px 13px;
 }
 .column-header > div { min-width: 0; }
-.column-collapse { width: 28px; min-width: 28px; padding: 0; font-size: 18px; }
 .column-header h2 { margin: 0; overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .column-header span { display: block; margin-top: 2px; color: var(--text-tertiary); font-size: 11px; }
 .library-list,
@@ -625,6 +689,7 @@ button:disabled { cursor: not-allowed; opacity: .56; }
   .knowledge-library-column { display: none; }
   .column-resizer[data-column="library"] { display: none; }
   .compact-library-picker { display: block; width: min(220px, 28vw); }
+  .document-pane-toggles .pane-toggle-button[data-pane="library"] { display: none; }
 }
 
 @media (min-width: 981px) {
@@ -653,14 +718,14 @@ button:disabled { cursor: not-allowed; opacity: .56; }
   :root { --sidebar-width: 0px; }
   .app-shell { display: block; }
   .app-sidebar-resizer { display: none; }
-  .desktop-sidebar-collapse,
-  .desktop-sidebar-restore { display: none; }
+  .pane-toggle-button[data-pane="main"],
+  .document-pane-toggles { display: none; }
   .sidebar { position: fixed; z-index: 40; width: min(82vw, 270px); transform: translateX(-105%); box-shadow: var(--shadow); transition: transform .2s ease; }
   .app-shell[data-menu-open="true"] .sidebar { transform: translateX(0); }
   .app-shell[data-menu-open="true"]::after { content: ""; position: fixed; inset: 0; z-index: 30; background: rgb(0 0 0 / 35%); }
   .mobile-menu { display: inline-grid; place-items: center; }
   .topbar { min-height: 64px; padding: 10px 16px; }
-  .topbar-title { display: flex; align-items: center; gap: 10px; }
+  .topbar-title { gap: 10px; }
   .topbar h1 { font-size: 17px; }
   .topbar p { display: none; }
   .page { padding: 22px 16px 42px; }
