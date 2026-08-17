@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { RuntimeContextLike } from './runtime.js'
 
@@ -11,6 +12,10 @@ const STATIC_ASSETS = new Map<string, Asset>([
   ['app.js', loadAsset('../web/app.js', 'text/javascript; charset=utf-8')],
   ['styles.css', loadAsset('../web/styles.css', 'text/css; charset=utf-8')],
 ])
+const ASSET_VERSION = createHash('sha256')
+  .update([...STATIC_ASSETS.values()].map(asset => asset.body).join(''))
+  .digest('hex')
+  .slice(0, 12)
 const INDEX_TEMPLATE = readFileSync(new URL('../web/index.html', import.meta.url), 'utf8')
 
 export function registerKnowledgeWeb(
@@ -22,7 +27,8 @@ export function registerKnowledgeWeb(
   if (webServer === undefined) throw new Error('exposeWeb requires the DSH webServer service')
   const index = Buffer.from(INDEX_TEMPLATE
     .replaceAll('__DSH_KNOWLEDGE_API_PREFIX__', escapeHtmlAttribute(apiPrefix))
-    .replaceAll('__DSH_KNOWLEDGE_WEB_PATH__', escapeHtmlAttribute(webPath)))
+    .replaceAll('__DSH_KNOWLEDGE_WEB_PATH__', escapeHtmlAttribute(webPath))
+    .replaceAll('__DSH_KNOWLEDGE_ASSET_VERSION__', ASSET_VERSION))
   return webServer.register({
     kind: 'prefix',
     path: webPath,
@@ -57,7 +63,7 @@ function sendAsset(res: ServerResponse, method: string, asset: Asset): void {
     ...securityHeaders(),
     'content-type': asset.contentType,
     'content-length': asset.body.byteLength,
-    'cache-control': asset.contentType.startsWith('text/html') ? 'no-store' : 'public, max-age=3600',
+    'cache-control': asset.contentType.startsWith('text/html') ? 'no-store' : 'public, max-age=31536000, immutable',
   })
   res.end(method === 'HEAD' ? undefined : asset.body)
 }
