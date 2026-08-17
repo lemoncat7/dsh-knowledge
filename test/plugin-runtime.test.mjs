@@ -111,11 +111,17 @@ test('direct write approves only high-confidence non-conflicts and skips unmount
   const disposers = []
   let targetId = ''
   let streamCalls = 0
+  const streamBudgets = []
   const ctx = {
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     llm: {
-      async *stream() {
+      async *stream(request) {
         streamCalls += 1
+        streamBudgets.push(request.maxTokens)
+        if (streamCalls === 1) {
+          yield { type: 'finish', reason: { kind: 'max-tokens' } }
+          return
+        }
         yield { type: 'text-delta', text: JSON.stringify({ candidates: [
           {
             action: 'create', knowledgeBaseId: 'default', title: 'Confirmed high confidence',
@@ -185,7 +191,8 @@ test('direct write approves only high-confidence non-conflicts and skips unmount
   })
   const direct = sessionFor('direct', 1)
   await listeners.get('agent/turn-stopping')({ agent: { session: direct }, turn: 1, signal: new AbortController().signal })
-  assert.equal(streamCalls, 1)
+  assert.equal(streamCalls, 2)
+  assert.deepEqual(streamBudgets, [1200, 2400])
   assert.equal((await observer.listCandidates('approved', 10)).length, 1)
   assert.equal((await observer.listCandidates('pending', 10)).length, 2)
   assert.equal((await observer.list({ status: 'active', limit: 10 })).items.length, 2)

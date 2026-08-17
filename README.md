@@ -2,7 +2,7 @@
 
 `dsh-knowledge` 是面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的知识库插件。它不修改 DSH Agent Loop，同一个插件既能使用本地 SQLite，也能连接远程中央知识库。
 
-当前版本 `0.3.0-alpha.2` 已实现可部署的多知识库与 Web 管理台：
+当前版本 `0.3.0-alpha.3` 已实现可部署的多知识库与 Web 管理台：
 
 - 回答完成后同步调用 DSH 当前模型判断是否产生知识，并在回答下方显示逐库回写结果。
 - 可创建多个知识库，分别设定说明、默认标签和提取要求。
@@ -23,7 +23,7 @@
 ## 安装
 
 ```bash
-dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.3.0-alpha.2.tgz
+dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.3.0-alpha.3.tgz
 ```
 
 卸载：
@@ -57,7 +57,7 @@ dsh plugin --profile web remove @lemoncat7/dsh-knowledge
     extractionModel: deepseek-chat
 ```
 
-提取失败会将幂等任务标为 `failed`，并在回答下方记录可重试的回写通知，不会阻断下一轮。
+提取输出达到模型上限时会自动用双倍预算重试一次（最高 8192 tokens）。其他提取失败会将幂等任务标为 `failed`，失败任务最多可重新领取两次，并在回答下方记录回写通知，不会阻断下一轮。
 
 ## 中央服务端
 

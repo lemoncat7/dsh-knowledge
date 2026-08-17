@@ -53,8 +53,11 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
         }).join('；')}`
       } catch (error) {
         if (signal.aborted) return
-        runtime.logger.warn(`dsh-knowledge: synchronous writeback failed: ${error instanceof Error ? error.message : String(error)}`)
-        summary = '知识库回写 · 失败，可稍后重试'
+        const message = error instanceof Error ? error.message : String(error)
+        runtime.logger.warn(`dsh-knowledge: synchronous writeback failed: ${message}`)
+        summary = message.includes('max-tokens')
+          ? '知识库回写 · 失败：提取结果超过模型输出上限'
+          : '知识库回写 · 失败，可稍后重试'
       }
       agent.session.append('user/message', createWritebackMessage(summary), { surfaceOp: 'append' })
     })

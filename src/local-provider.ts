@@ -651,7 +651,11 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     this.assertOpen()
     const result = this.db.prepare(`
       INSERT INTO extraction_jobs(source_key,status,attempts,candidate_count,updated_at)
-      VALUES(?,'running',1,0,?) ON CONFLICT(source_key) DO NOTHING
+      VALUES(?,'running',1,0,?)
+      ON CONFLICT(source_key) DO UPDATE SET
+        status='running', attempts=extraction_jobs.attempts+1, candidate_count=0,
+        last_error=NULL, updated_at=excluded.updated_at
+      WHERE extraction_jobs.status='failed' AND extraction_jobs.attempts < 3
     `).run(sourceKey, nowIso())
     return result.changes === 1
   }
