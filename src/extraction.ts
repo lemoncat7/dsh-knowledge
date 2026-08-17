@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { ResolvedConfig } from './config.js'
 import { isKnowledgeType, type CandidateProposal, type KnowledgeDraft, type KnowledgeScope } from './domain.js'
 import type { KnowledgeProvider } from './provider.js'
@@ -139,7 +140,7 @@ async function extractWithLlm(
   const timeout = setTimeout(() => controller.abort(new Error('knowledge extraction timed out')), config.extractionTimeoutMs)
   const signal = AbortSignal.any([parentSignal, controller.signal])
   const message: MessageLike = {
-    id: crypto.randomUUID(),
+    id: randomUUID(),
     role: 'user',
     content: [{ type: 'text', text: framed }],
     source: { kind: 'plugin' },

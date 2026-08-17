@@ -4,6 +4,18 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { apply, LocalKnowledgeProvider } from '../lib/index.js'
+import { createRecallMessage } from '../lib/runtime.js'
+
+test('message IDs do not depend on the ambient global crypto object', () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto')
+  Object.defineProperty(globalThis, 'crypto', { configurable: true, value: {} })
+  try {
+    assert.match(createRecallMessage('test').id, /^[0-9a-f-]{36}$/)
+  } finally {
+    if (descriptor === undefined) delete globalThis.crypto
+    else Object.defineProperty(globalThis, 'crypto', descriptor)
+  }
+})
 
 test('plugin extracts after a completed turn and recalls only approved knowledge', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-knowledge-runtime-'))

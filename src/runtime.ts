@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+
 export interface TextBlockLike { type: string; text?: string }
 
 export interface MessageLike {
@@ -93,7 +95,7 @@ export function messageText(message: MessageLike): string {
 
 export function createRecallMessage(text: string): MessageLike {
   return {
-    id: crypto.randomUUID(),
+    id: randomUUID(),
     role: 'user',
     content: [{ type: 'text', text }],
     source: { kind: 'plugin', plugin: 'dsh-knowledge', form: 'recall' },
