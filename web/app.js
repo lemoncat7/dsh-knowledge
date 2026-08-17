@@ -41,6 +41,9 @@ const state = {
   documents: [],
   documentView: {
     knowledgeBaseId: '', documentId: '', query: '', mode: 'documents',
+    sidebarHidden: savedDocumentLayout.sidebarHidden,
+    libraryHidden: savedDocumentLayout.libraryHidden,
+    documentListHidden: savedDocumentLayout.documentListHidden,
     sidebarWidth: savedDocumentLayout.sidebarWidth,
     libraryWidth: savedDocumentLayout.libraryWidth,
     documentListWidth: savedDocumentLayout.documentListWidth,
@@ -53,10 +56,16 @@ const state = {
 }
 
 function readDocumentLayout() {
-  const fallback = { sidebarWidth: 236, libraryWidth: 220, documentListWidth: 280 }
+  const fallback = {
+    sidebarHidden: false, libraryHidden: false, documentListHidden: false,
+    sidebarWidth: 236, libraryWidth: 220, documentListWidth: 280,
+  }
   try {
     const value = JSON.parse(localStorage.getItem(DOCUMENT_LAYOUT_KEY) || '{}')
     return {
+      sidebarHidden: value.sidebarHidden === true,
+      libraryHidden: value.libraryHidden === true,
+      documentListHidden: value.documentListHidden === true,
       sidebarWidth: clampNumber(value.sidebarWidth, 190, 340, fallback.sidebarWidth),
       libraryWidth: clampNumber(value.libraryWidth, 170, 360, fallback.libraryWidth),
       documentListWidth: clampNumber(value.documentListWidth, 210, 480, fallback.documentListWidth),
@@ -67,6 +76,9 @@ function readDocumentLayout() {
 function saveDocumentLayout() {
   try {
     localStorage.setItem(DOCUMENT_LAYOUT_KEY, JSON.stringify({
+      sidebarHidden: state.documentView.sidebarHidden,
+      libraryHidden: state.documentView.libraryHidden,
+      documentListHidden: state.documentView.documentListHidden,
       sidebarWidth: state.documentView.sidebarWidth,
       libraryWidth: state.documentView.libraryWidth,
       documentListWidth: state.documentView.documentListWidth,
@@ -324,6 +336,7 @@ function renderShell() {
   const [title, subtitle] = titles[state.view]
   const shell = element('div', {
     class: 'app-shell', 'data-menu-open': String(state.menuOpen),
+    'data-sidebar-hidden': String(state.documentView.sidebarHidden),
     style: `--sidebar-width: ${state.documentView.sidebarWidth}px`,
   },
     renderSidebar(),
@@ -332,6 +345,9 @@ function renderShell() {
       element('header', { class: 'topbar' },
         element('div', { class: 'topbar-title' },
           actionButton('☰', () => { state.menuOpen = !state.menuOpen; renderShell() }, 'ghost mobile-menu', { 'aria-label': '打开导航菜单' }),
+          state.documentView.sidebarHidden
+            ? actionButton('显示导航', () => setSidebarHidden(false), 'ghost small desktop-sidebar-restore')
+            : null,
           element('div', {}, element('h1', {}, title), element('p', {}, subtitle)),
         ),
       ),
@@ -403,6 +419,12 @@ function setSidebarWidth(width, shell, handle) {
   handle?.setAttribute('aria-valuenow', String(width))
 }
 
+function setSidebarHidden(hidden) {
+  state.documentView.sidebarHidden = hidden
+  saveDocumentLayout()
+  renderShell()
+}
+
 function renderSidebar() {
   const pending = state.stats?.candidates.pending
   const navItems = [
@@ -411,7 +433,8 @@ function renderSidebar() {
   return element('aside', { class: 'sidebar', 'aria-label': '知识库导航' },
     element('div', { class: 'brand' },
       element('div', { class: 'brand-mark', 'aria-hidden': 'true' }, 'K'),
-      element('div', {}, element('strong', {}, 'DSH Knowledge'), element('span', {}, '管理控制台')),
+      element('div', { class: 'brand-copy' }, element('strong', {}, 'DSH Knowledge'), element('span', {}, '管理控制台')),
+      actionButton('‹', () => setSidebarHidden(true), 'ghost small desktop-sidebar-collapse', { 'aria-label': '隐藏主导航栏', title: '隐藏主导航栏' }),
     ),
     element('nav', { class: 'nav' }, navItems.map(([id, label, icon]) => element('button', {
       type: 'button', class: 'nav-button', 'aria-current': state.view === id ? 'page' : undefined,
@@ -726,15 +749,22 @@ function renderEntries() {
       }, activeBases.map(base => element('option', { value: base.id, selected: base.id === view.knowledgeBaseId }, base.name))),
       element('div', { class: 'tabs', role: 'tablist', 'aria-label': '知识视图' },
         documentViewTab('文档', 'documents'), documentViewTab('条目管理', 'entries')),
+      view.libraryHidden ? actionButton('显示知识库栏', () => setDocumentColumnHidden('library', false), 'ghost small') : null,
+      view.documentListHidden ? actionButton('显示文档栏', () => setDocumentColumnHidden('documentList', false), 'ghost small') : null,
       actionButton('调整栏宽', openLayoutEditor, 'ghost small', { 'aria-label': '调整主导航、知识库和文档栏宽度' }),
       actionButton('+ 新建知识', () => openEntryEditor(), 'primary'),
     ),
     element('div', {
       class: 'document-browser',
+      'data-library-hidden': String(view.libraryHidden),
+      'data-document-list-hidden': String(view.documentListHidden),
       style: `--library-width:${view.libraryWidth}px;--document-list-width:${view.documentListWidth}px`,
     },
       element('aside', { class: 'knowledge-library-column', 'aria-label': '知识库列表' },
-        element('header', { class: 'column-header' }, element('div', {}, element('h2', { id: 'documents-heading' }, '知识库'), element('span', {}, `${activeBases.length} 个可用`))),
+        element('header', { class: 'column-header' },
+          element('div', {}, element('h2', { id: 'documents-heading' }, '知识库'), element('span', {}, `${activeBases.length} 个可用`)),
+          actionButton('‹', () => setDocumentColumnHidden('library', true), 'ghost small column-collapse', { 'aria-label': '隐藏知识库二级栏', title: '隐藏知识库二级栏' }),
+        ),
         activeBases.length ? element('div', { class: 'library-list', role: 'listbox', tabindex: '0', onKeyDown: event => moveDocumentSelection(event, 'base') },
           activeBases.map(base => {
             const documentCount = state.documents.filter(document => document.knowledgeBaseId === base.id).length
@@ -750,7 +780,10 @@ function renderEntries() {
       ),
       renderColumnResizer('library', '调整知识库栏宽度'),
       element('aside', { class: 'document-list-column', 'aria-label': '文档列表' },
-        element('header', { class: 'column-header' }, element('div', {}, element('h2', {}, selectedBase?.name || '文档'), element('span', {}, query ? `找到 ${visibleDocuments.length} 篇` : `${allBaseDocuments.length} 篇文档`))),
+        element('header', { class: 'column-header' },
+          element('div', {}, element('h2', {}, selectedBase?.name || '文档'), element('span', {}, query ? `找到 ${visibleDocuments.length} 篇` : `${allBaseDocuments.length} 篇文档`)),
+          actionButton('‹', () => setDocumentColumnHidden('documentList', true), 'ghost small column-collapse', { 'aria-label': '隐藏文档列表栏', title: '隐藏文档列表栏' }),
+        ),
         visibleDocuments.length ? element('div', { class: 'document-list', role: 'listbox', tabindex: '0', onKeyDown: event => moveDocumentSelection(event, 'document') },
           visibleDocuments.map(document => element('button', {
             type: 'button', class: 'document-row', role: 'option', 'aria-selected': String(document.id === view.documentId),
@@ -764,6 +797,13 @@ function renderEntries() {
       renderDocumentReader(currentDocument, selectedBase),
     ),
   )
+}
+
+function setDocumentColumnHidden(column, hidden) {
+  if (column === 'library') state.documentView.libraryHidden = hidden
+  else state.documentView.documentListHidden = hidden
+  saveDocumentLayout()
+  renderShell()
 }
 
 function renderColumnResizer(column, label) {
@@ -787,11 +827,18 @@ function openLayoutEditor() {
     layoutRangeField('知识库二级栏', state.documentView.libraryWidth, 170, 360),
     layoutRangeField('文档列表栏', state.documentView.documentListWidth, 210, 480),
   ]
-  const reset = actionButton('恢复默认宽度', () => {
+  const visibility = [
+    layoutVisibilityOption('显示主导航栏', !state.documentView.sidebarHidden),
+    layoutVisibilityOption('显示知识库二级栏', !state.documentView.libraryHidden),
+    layoutVisibilityOption('显示文档列表栏', !state.documentView.documentListHidden),
+  ]
+  const reset = actionButton('恢复默认布局', () => {
     const defaults = [236, 220, 280]
     fields.forEach((field, index) => field.setValue(defaults[index]))
+    visibility.forEach(option => { option.input.checked = true })
   }, 'ghost small')
   const body = element('div', { class: 'layout-editor' },
+    element('div', { class: 'layout-visibility', 'aria-label': '边栏显示设置' }, visibility.map(option => option.wrapper)),
     fields.map(field => field.wrapper),
     element('div', { class: 'layout-editor-note' },
       element('span', {}, '也可以直接拖动栏与栏之间的三点分隔线。窗口过窄时会自动切换为紧凑布局。'),
@@ -804,6 +851,9 @@ function openLayoutEditor() {
     body,
     primaryLabel: '应用布局',
     onPrimary: async () => {
+      state.documentView.sidebarHidden = !visibility[0].input.checked
+      state.documentView.libraryHidden = !visibility[1].input.checked
+      state.documentView.documentListHidden = !visibility[2].input.checked
       state.documentView.sidebarWidth = fields[0].value()
       state.documentView.libraryWidth = fields[1].value()
       state.documentView.documentListWidth = fields[2].value()
@@ -813,6 +863,14 @@ function openLayoutEditor() {
       return true
     },
   })
+}
+
+function layoutVisibilityOption(label, checked) {
+  const input = element('input', { type: 'checkbox', checked })
+  return {
+    input,
+    wrapper: element('label', { class: 'check-option' }, input, element('span', {}, element('strong', {}, label))),
+  }
 }
 
 function layoutRangeField(label, value, minimum, maximum) {
