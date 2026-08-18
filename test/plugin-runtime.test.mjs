@@ -29,7 +29,7 @@ test('plugin extracts after a completed turn and recalls only approved knowledge
     llm: {
       async *stream(request) {
         extractionRequests.push(request)
-        yield { type: 'text-delta', text: JSON.stringify({ candidates: [{
+        const candidates = [{
           action: 'create',
           knowledgeBaseId: 'default',
           title: 'DSH plugin installation command',
@@ -38,8 +38,20 @@ test('plugin extracts after a completed turn and recalls only approved knowledge
           tags: ['dsh', 'plugin'],
           scope: { kind: 'project', id: '/workspace/demo' },
           confidence: 0.93,
+          retention: { durable: true, evidence: 'explicit' },
           reason: 'Reusable DSH operation.',
-        }] }) },
+        }, ...Array.from({ length: 5 }, (_, index) => ({
+          action: 'create', knowledgeBaseId: 'default', title: `Confirmed installation detail ${index + 1}`,
+          body: `Confirmed reusable installation detail number ${index + 1}.`, type: 'procedure', tags: ['dsh'],
+          scope: { kind: 'project', id: '/workspace/demo' }, confidence: 0.91,
+          retention: { durable: true, evidence: 'verified' }, reason: 'Verified reusable detail.',
+        })), {
+          action: 'create', knowledgeBaseId: 'default', title: 'Unverified suggestion',
+          body: 'This model-generated suggestion must not pass conservative mode.', type: 'fact', tags: [],
+          scope: { kind: 'project', id: '/workspace/demo' }, confidence: 0.99,
+          retention: { durable: true, evidence: 'inferred' }, reason: 'Only inferred.',
+        }]
+        yield { type: 'text-delta', text: JSON.stringify({ candidates }) }
         yield { type: 'finish', reason: { kind: 'stop' } }
       },
     },
@@ -69,11 +81,16 @@ test('plugin extracts after a completed turn and recalls only approved knowledge
     id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'Use the DSH profile plugin add command.' }],
     source: { kind: 'model', provider: 'mock', model: 'extractor' },
   }
+  const staleNotice = {
+    id: 'notice-old', role: 'user', content: [{ type: 'text', text: 'WRITEBACK_NOTICE_MUST_NOT_ENTER_CONTEXT' }],
+    source: { kind: 'plugin', plugin: 'dsh-knowledge', form: 'notice' },
+  }
   const session = {
     id: 'session-1', header: { cwd: '/workspace/demo' }, events: [
       { type: 'turn/start', seq: 0, data: { turn: 1 } },
-      { type: 'user/message', seq: 1, data: user },
-      { type: 'assistant/message', seq: 2, data: { turn: 1, step: 1, message: assistant } },
+      { type: 'user/message', seq: 1, data: staleNotice },
+      { type: 'user/message', seq: 2, data: user },
+      { type: 'assistant/message', seq: 3, data: { turn: 1, step: 1, message: assistant } },
     ],
     append(type, data, options) {
       const event = { type, seq: this.events.length, time: Date.now(), data, ...options }
@@ -103,9 +120,9 @@ test('plugin extracts after a completed turn and recalls only approved knowledge
   const job = await observer.extractionJob('session-1:1')
   assert.equal(job?.status, 'completed')
   const pending = await observer.listCandidates('pending', 10)
-  assert.equal(pending.length, 1)
+  assert.equal(pending.length, 6)
   assert.equal(session.events.at(-1).data.source.form, 'notice')
-  assert.match(session.events.at(-1).data.source.summary, /待审 1/)
+  assert.match(session.events.at(-1).data.source.summary, /待审 6/)
   const writebackNotice = session.events.at(-1).data
   assert.deepEqual(extractionRequests.map(request => [request.provider, request.model]).sort(), [
     ['kimi', 'kimi-k2.7-code'], ['mock', 'extractor'],
@@ -113,10 +130,13 @@ test('plugin extracts after a completed turn and recalls only approved knowledge
   const extractionRequest = extractionRequests.find(request => request.provider === 'mock')
   const extractionPayload = JSON.parse(extractionRequest.messages[0].content[0].text)
   assert.equal(extractionPayload.destinations[0].routingDescription, 'Only reusable DSH plugin installation and operation knowledge qualifies.')
+  assert.equal(extractionPayload.writebackPolicy, 'conservative')
+  assert.doesNotMatch(extractionPayload.conversation.user, /WRITEBACK_NOTICE_MUST_NOT_ENTER_CONTEXT/)
   assert.match(extractionPayload.outputLanguage, /conversation\.user/)
   assert.match(extractionRequest.system, /routingDescription as its applicability rule/)
   assert.match(extractionRequest.system, /primary natural language and writing system used by conversation\.user/)
   assert.match(extractionRequest.system, /Never default to English/)
+  assert.match(extractionRequest.system, /Default to skip/)
   assert.equal(extractionRequest.provider, 'mock')
   assert.equal(extractionRequest.model, 'extractor')
 
@@ -124,7 +144,9 @@ test('plugin extracts after a completed turn and recalls only approved knowledge
   const beforeApproval = await preStep({ agent: { session }, messages: [user, writebackNotice], turn: 2, step: 1, signal: new AbortController().signal }, async () => ({ kind: 'enter', messages: [user, writebackNotice] }))
   assert.equal(beforeApproval.messages.length, 1)
   assert.equal(beforeApproval.messages.some(message => message.source.form === 'notice'), false)
-  await observer.review(pending[0].id, { decision: 'approve' })
+  const installationCandidate = pending.find(candidate => candidate.draft.title === 'DSH plugin installation command')
+  assert.ok(installationCandidate)
+  await observer.review(installationCandidate.id, { decision: 'approve' })
   const afterApproval = await preStep({ agent: { session }, messages: [user, writebackNotice], turn: 2, step: 1, signal: new AbortController().signal }, async () => ({ kind: 'enter', messages: [user, writebackNotice] }))
   assert.equal(afterApproval.messages.at(-1).source.form, 'recall')
   assert.equal(afterApproval.messages.some(message => message.source.form === 'notice'), false)
@@ -200,6 +222,7 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
   const streamBudgets = []
   const streamRoutes = []
   const streamReasoning = []
+  const streamPolicies = []
   const ctx = {
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     llm: {
@@ -208,6 +231,7 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
         streamBudgets.push(request.maxTokens)
         streamRoutes.push([request.provider, request.model])
         streamReasoning.push(request.reasoningEffort)
+        streamPolicies.push(JSON.parse(request.messages[0].content[0].text).writebackPolicy)
         if (streamCalls === 1) {
           yield { type: 'finish', reason: { kind: 'max-tokens' } }
           return
@@ -285,12 +309,14 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
     targetKind: 'project', targetId: '/workspace/direct', knowledgeBaseId: 'default',
     enabled: true, recallEnabled: true, writeMode: 'direct', includeTags: [], excludeTags: [], extractionInstructions: '',
   })
+  await observer.updateSettings({ writebackPolicy: 'proactive' })
   const direct = sessionFor('direct', 1)
   await listeners.get('agent/turn-stopping')({ agent: { session: direct }, turn: 1, signal: new AbortController().signal })
   assert.equal(streamCalls, 2)
   assert.deepEqual(streamBudgets, [1200, 2400])
   assert.deepEqual(streamRoutes, [['mock', 'extractor'], ['mock', 'extractor']])
   assert.deepEqual(streamReasoning, [undefined, 'low'])
+  assert.deepEqual(streamPolicies, ['proactive', 'proactive'])
   assert.equal((await observer.listCandidates('approved', 10)).length, 2)
   const pending = await observer.listCandidates('pending', 10)
   assert.equal(pending.length, 1)

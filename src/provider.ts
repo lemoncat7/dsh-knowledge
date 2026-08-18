@@ -15,7 +15,10 @@ import type {
   KnowledgeMountBatchResult,
   KnowledgeMountDraft,
   KnowledgeMountTargetKind,
+  KnowledgeSettings,
+  KnowledgeSettingsPatch,
   ResolvedKnowledgeMount,
+  DirectWriteResult,
   ListRequest,
   ListResult,
   ReviewDecision,
@@ -26,6 +29,8 @@ import type {
 /** Stable storage boundary shared by local SQLite and remote HTTP clients. */
 export interface KnowledgeProvider {
   readonly mode: 'local' | 'remote'
+  getSettings(signal?: AbortSignal): Promise<KnowledgeSettings>
+  updateSettings(patch: KnowledgeSettingsPatch, signal?: AbortSignal): Promise<KnowledgeSettings>
   listKnowledgeBases(signal?: AbortSignal): Promise<KnowledgeBase[]>
   getKnowledgeBase(id: string, signal?: AbortSignal): Promise<KnowledgeBase | undefined>
   createKnowledgeBase(draft: KnowledgeBaseDraft, signal?: AbortSignal): Promise<KnowledgeBase>
@@ -51,6 +56,7 @@ export interface KnowledgeProvider {
   archive(id: string, signal?: AbortSignal): Promise<KnowledgeEntry>
   delete(id: string, signal?: AbortSignal): Promise<void>
   propose(proposal: CandidateProposal, sourceKey?: string, signal?: AbortSignal): Promise<KnowledgeCandidate>
+  writeDirect(proposal: CandidateProposal, sourceKey?: string, signal?: AbortSignal): Promise<DirectWriteResult>
   listCandidates(status: 'pending' | 'approved' | 'rejected', limit: number, signal?: AbortSignal): Promise<KnowledgeCandidate[]>
   review(id: string, decision: ReviewDecision, signal?: AbortSignal): Promise<KnowledgeCandidate>
   claimExtraction(sourceKey: string, signal?: AbortSignal): Promise<boolean>

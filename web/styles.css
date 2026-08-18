@@ -416,9 +416,45 @@ button:disabled { cursor: not-allowed; opacity: .56; }
 
 .bases-page { display: grid; gap: 26px; }
 .workspace-switcher { display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--border); padding-bottom: 18px; }
+.workspace-switcher-leading { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .workspace-switcher p { max-width: 56ch; margin: 0; color: var(--text-tertiary); font-size: 12px; text-align: right; }
 .workspace-tabs { flex: none; }
 .workspace-tabs .tab { display: inline-flex; align-items: center; gap: 7px; }
+.writeback-policy-control {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border-left: 1px solid var(--border);
+  padding-left: 10px;
+}
+.writeback-policy-label { color: var(--text-tertiary); font-size: 11px; font-weight: 600; white-space: nowrap; }
+.writeback-policy-segments {
+  display: inline-flex;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 2px;
+  background: color-mix(in srgb, var(--surface-soft) 72%, transparent);
+}
+.writeback-policy-option {
+  min-width: 48px;
+  min-height: 30px;
+  border: 0;
+  border-radius: 7px;
+  padding: 5px 10px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 620;
+  transition: background .14s ease, color .14s ease, box-shadow .14s ease;
+}
+.writeback-policy-option:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
+.writeback-policy-option[aria-checked="true"] {
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: 0 1px 4px rgb(20 25 35 / 10%);
+}
 .tab-count { min-width: 20px; border-radius: 6px; padding: 1px 6px; background: color-mix(in srgb, var(--text-tertiary) 10%, transparent); color: var(--text-tertiary); font-size: 10px; font-variant-numeric: tabular-nums; }
 .tab[aria-selected="true"] .tab-count { background: var(--accent-soft); color: var(--accent); }
 .library-management, .mount-section { min-width: 0; }
@@ -805,6 +841,7 @@ button:disabled { cursor: not-allowed; opacity: .56; }
   .topbar p { display: none; }
   .page { padding: 22px 16px 42px; }
   .workspace-switcher { align-items: stretch; flex-direction: column; gap: 10px; }
+  .workspace-switcher-leading { align-items: flex-start; }
   .workspace-switcher p { text-align: left; }
   .workspace-tabs { align-self: flex-start; }
   .knowledge-base-toolbar { align-items: stretch; flex-direction: column; gap: 8px; }
@@ -857,6 +894,7 @@ button:disabled { cursor: not-allowed; opacity: .56; }
   .topbar-actions .button.primary::before { content: "+"; font-size: 18px; }
   .workspace-tabs { width: 100%; }
   .workspace-tabs .tab { min-width: 0; flex: 1; justify-content: center; padding-inline: 8px; }
+  .writeback-policy-control { width: 100%; justify-content: space-between; border-left: 0; padding-left: 0; }
   .document-toolbar-actions { width: 100%; }
   .document-toolbar-actions .button.primary { margin-left: auto; }
   .form-grid { grid-template-columns: 1fr; }

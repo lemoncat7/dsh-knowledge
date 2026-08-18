@@ -14,6 +14,16 @@ export type CandidateStatus = 'pending' | 'approved' | 'rejected'
 export type KnowledgeBaseStatus = 'active' | 'archived'
 export type KnowledgeMountTargetKind = 'project' | 'session'
 export type KnowledgeWriteMode = 'none' | 'audit' | 'direct'
+export type KnowledgeWritebackPolicy = 'conservative' | 'proactive'
+
+export interface KnowledgeSettings {
+  writebackPolicy: KnowledgeWritebackPolicy
+  updatedAt: string
+}
+
+export interface KnowledgeSettingsPatch {
+  writebackPolicy: KnowledgeWritebackPolicy
+}
 
 export interface KnowledgeBaseDraft {
   name: string
@@ -136,6 +146,14 @@ export interface KnowledgeCandidate extends CandidateProposal {
   createdAt: string
   reviewedAt?: string
   reviewNote?: string
+}
+
+export type DirectWriteOutcome = 'created' | 'merged' | 'duplicate' | 'conflict'
+
+export interface DirectWriteResult {
+  outcome: DirectWriteOutcome
+  candidate?: KnowledgeCandidate
+  entry?: KnowledgeEntry
 }
 
 export interface SearchRequest {
@@ -333,4 +351,11 @@ export function normalizeKnowledgeMountDraft(input: KnowledgeMountDraft): Knowle
 
 export function isKnowledgeType(value: unknown): value is KnowledgeType {
   return typeof value === 'string' && TYPE_SET.has(value)
+}
+
+export function normalizeKnowledgeSettings(input: KnowledgeSettingsPatch): KnowledgeSettingsPatch {
+  if (input.writebackPolicy !== 'conservative' && input.writebackPolicy !== 'proactive') {
+    throw new Error('knowledge writeback policy must be conservative or proactive')
+  }
+  return { writebackPolicy: input.writebackPolicy }
 }

@@ -52,10 +52,25 @@ async function dispatch(
   const method = req.method ?? 'GET'
 
   if (method === 'GET' && segments[0] === 'health') {
-    return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 4 })
+    return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 5 })
   }
 
   const actor = options.authMode === 'same-origin' ? authenticateSameOrigin(req) : authenticateBearer(provider, req)
+
+  if (segments[0] === 'settings' && segments.length === 1) {
+    requirePermission(actor.permissions, 'read')
+    if (method === 'GET') return sendJson(res, 200, await provider.getSettings())
+    if (method === 'PUT') {
+      requirePermission(actor.permissions, 'admin')
+      const body = await readObject(req)
+      if (!isRecord(body.patch)) throw httpError(400, 'knowledge settings patch is invalid')
+      const writebackPolicy = body.patch.writebackPolicy
+      if (writebackPolicy !== 'conservative' && writebackPolicy !== 'proactive') {
+        throw httpError(400, 'writebackPolicy must be conservative or proactive')
+      }
+      return sendJson(res, 200, await provider.updateSettings({ writebackPolicy }))
+    }
+  }
 
   if (segments[0] === 'service' && segments.length === 1 && options.service !== undefined) {
     requirePermission(actor.permissions, 'admin')
@@ -246,6 +261,12 @@ async function dispatch(
       requirePermission(actor.permissions, 'propose')
       const body = await readObject(req)
       return sendJson(res, 201, await provider.propose(parseProposal(body.proposal), optionalString(body.sourceKey)))
+    }
+    if (method === 'POST' && segments[1] === 'direct' && segments.length === 2) {
+      requirePermission(actor.permissions, 'propose')
+      requirePermission(actor.permissions, 'write')
+      const body = await readObject(req)
+      return sendJson(res, 200, await provider.writeDirect(parseProposal(body.proposal), optionalString(body.sourceKey)))
     }
     if (method === 'POST' && segments[1] !== undefined && segments[2] === 'review' && segments.length === 3) {
       requirePermission(actor.permissions, 'write')

@@ -34,6 +34,9 @@ test('remote provider interoperates with the authenticated local API', async (t)
     await rm(root, { recursive: true, force: true })
   })
 
+  assert.equal((await remote.getSettings()).writebackPolicy, 'conservative')
+  assert.equal((await remote.updateSettings({ writebackPolicy: 'proactive' })).writebackPolicy, 'proactive')
+
   const entry = await remote.create({
     knowledgeBaseId: 'default',
     title: 'Central knowledge service',
@@ -76,6 +79,17 @@ test('remote provider interoperates with the authenticated local API', async (t)
   }, 'remote-session:1')
   await remote.review(candidate.id, { decision: 'approve' })
   assert.equal((await remote.get(entry.id))?.version, 2)
+  const direct = await remote.writeDirect({
+    action: 'create',
+    draft: {
+      knowledgeBaseId: 'default', title: 'Central knowledge service',
+      body: 'Other clients connect to the central knowledge API over authenticated HTTPS. Keep client tokens private.',
+      type: 'decision', tags: ['remote', 'security'], scope: { kind: 'global' }, confidence: 0.96,
+    },
+    reason: 'Adds compatible security guidance.',
+  }, 'remote-direct:1')
+  assert.equal(direct.outcome, 'merged')
+  assert.match((await remote.get(entry.id))?.body || '', /tokens private/)
   await assert.rejects(() => remote.deleteKnowledgeBase(base.id), /must be archived/)
   await remote.archiveKnowledgeBase(base.id)
   await remote.deleteKnowledgeBase(base.id)

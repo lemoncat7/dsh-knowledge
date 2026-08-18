@@ -15,7 +15,10 @@ import type {
   KnowledgeMountBatchResult,
   KnowledgeMountDraft,
   KnowledgeMountTargetKind,
+  KnowledgeSettings,
+  KnowledgeSettingsPatch,
   ResolvedKnowledgeMount,
+  DirectWriteResult,
   ListRequest,
   ListResult,
   ReviewDecision,
@@ -36,6 +39,14 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
 
   constructor(private readonly options: RemoteProviderOptions) {
     this.baseUrl = new URL(options.url.endsWith('/') ? options.url : `${options.url}/`)
+  }
+
+  async getSettings(signal?: AbortSignal): Promise<KnowledgeSettings> {
+    return this.request<KnowledgeSettings>('settings', { signal })
+  }
+
+  async updateSettings(patch: KnowledgeSettingsPatch, signal?: AbortSignal): Promise<KnowledgeSettings> {
+    return this.request<KnowledgeSettings>('settings', { method: 'PUT', body: { patch }, signal })
   }
 
   async listKnowledgeBases(signal?: AbortSignal): Promise<KnowledgeBase[]> {
@@ -171,6 +182,10 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
 
   async propose(proposal: CandidateProposal, sourceKey?: string, signal?: AbortSignal): Promise<KnowledgeCandidate> {
     return this.request<KnowledgeCandidate>('candidates', { method: 'POST', body: { proposal, sourceKey }, signal })
+  }
+
+  async writeDirect(proposal: CandidateProposal, sourceKey?: string, signal?: AbortSignal): Promise<DirectWriteResult> {
+    return this.request<DirectWriteResult>('candidates/direct', { method: 'POST', body: { proposal, sourceKey }, signal })
   }
 
   async listCandidates(status: 'pending' | 'approved' | 'rejected', limit: number, signal?: AbortSignal): Promise<KnowledgeCandidate[]> {

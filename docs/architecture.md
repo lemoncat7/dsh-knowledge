@@ -35,7 +35,7 @@ The DSH core is never patched. `src/index.ts` is the composition root; every oth
 
 ## Data model and consistency
 
-SQLite is authoritative in local mode. Schema version 4 contains:
+SQLite is authoritative in local mode. Schema version 5 contains:
 
 - `knowledge_bases`: independently named destinations with default tags and extraction instructions.
 - `knowledge_mounts`: project/session policy overlays for recall, write mode and tag constraints.
@@ -45,6 +45,7 @@ SQLite is authoritative in local mode. Schema version 4 contains:
 - `knowledge_candidates`: proposed create/update/conflict decisions and review state.
 - `extraction_jobs`: one idempotency record per `sessionId:turn`.
 - `api_tokens`: token metadata, permissions and SHA-256 token digests.
+- `knowledge_settings`: the authoritative global conservative/proactive writeback policy shared by local and remote clients.
 
 Entry writes, version creation and FTS changes share one `BEGIN IMMEDIATE` transaction. Candidate approval and its resulting entry mutation are also one transaction. WAL mode permits readers during a writer, `busy_timeout` absorbs short contention, and foreign keys prevent orphan versions.
 
@@ -58,13 +59,13 @@ An active content hash unique index blocks byte-equivalent duplicate knowledge. 
 4. The relevant direct user input and final non-empty assistant message are copied into an immutable job snapshot.
 5. `extraction_jobs` atomically claims `sessionId:turn`; replaying the event cannot duplicate work.
 6. Existing knowledge is retrieved only from mounted destinations and framed with the conversation as untrusted JSON.
-7. A bounded auxiliary LLM call returns strict candidate JSON naming one supplied destination.
-8. Runtime validation rejects unknown destinations, types, targets, arbitrary project IDs and malformed output.
-9. Audit mounts keep valid proposals pending. Direct mounts auto-approve only non-conflicts at or above the confidence threshold.
+7. The provider's authoritative global policy is loaded for every extraction. A bounded auxiliary LLM call returns strict candidate JSON naming one supplied destination; the policy never imposes a candidate-count quota.
+8. Runtime validation rejects unknown destinations, types, targets, arbitrary project IDs and malformed output. Conservative mode additionally requires durable knowledge backed by explicit or verified evidence and high confidence.
+9. Audit mounts keep valid proposals pending. Direct mounts call the provider's atomic reconciliation operation: duplicates are skipped, compatible same-topic content is merged with a new version, and possible contradictions remain pending without overwriting the active entry.
 10. A persistent DSH notice reports per-base direct and pending counts below the answer; failures produce a retryable failure notice.
-11. Before every later model request, plugin notices with `form: notice` are removed from the request message list. They remain durable UI feedback but never consume or influence model context.
+11. Before every later model request, plugin notices with `form: notice` are removed from the final request message list. Extraction snapshots also accept only direct user messages. Notices remain durable UI feedback but never consume or influence model context.
 
-The extractor explicitly refuses secrets and ephemeral output in its system policy. Conflict and low-confidence proposals always remain behind human review.
+The extractor explicitly refuses secrets and ephemeral output in its system policy. Conflicts always remain behind human review, including on direct-write mounts.
 
 ## Recall flow
 

@@ -63,6 +63,8 @@ const state = {
   },
   candidates: [],
   candidateStatus: 'pending',
+  settings: { writebackPolicy: 'conservative', updatedAt: '' },
+  settingsSaving: false,
   tokens: [],
   service: { publicApiEnabled: false, publicApiPrefix: '/knowledge-api/v1', remote: false },
   scrollPositions: new Map(),
@@ -277,7 +279,7 @@ function renderLogin(message = '') {
 
 function signOut() {
   sessionStorage.removeItem(TOKEN_KEY)
-  Object.assign(state, { token: '', stats: null, overview: null, knowledgeBases: [], mounts: [], resolvedMounts: [], entries: [], documents: [], candidates: [], tokens: [] })
+  Object.assign(state, { token: '', stats: null, overview: null, knowledgeBases: [], mounts: [], resolvedMounts: [], entries: [], documents: [], candidates: [], settings: { writebackPolicy: 'conservative', updatedAt: '' }, tokens: [] })
   if (AUTH_MODE === 'same-origin') void boot()
   else renderLogin()
 }
@@ -313,15 +315,16 @@ async function ensureKnowledgeBases(force = false) {
 }
 
 async function loadKnowledgeBasesPage() {
-  const requests = [api('knowledge-bases'), api('mounts')]
+  const requests = [api('knowledge-bases'), api('mounts'), api('settings')]
   if (state.mountContext.sessionId) {
     const params = new URLSearchParams({ sessionId: state.mountContext.sessionId })
     if (state.mountContext.projectId) params.set('projectId', state.mountContext.projectId)
     requests.push(api(`mounts/resolve?${params}`))
   }
-  const [bases, mounts, resolved = []] = await Promise.all(requests)
+  const [bases, mounts, settings, resolved = []] = await Promise.all(requests)
   state.knowledgeBases = bases
   state.mounts = mounts
+  state.settings = settings
   state.resolvedMounts = resolved
   await refreshStats()
 }
@@ -592,16 +595,19 @@ function renderKnowledgeBases() {
   const visibleActiveBases = activeBases.filter(matchesQuery)
   const visibleArchivedBases = archivedBases.filter(matchesQuery)
   const switcher = element('div', { class: 'workspace-switcher' },
-    element('div', { class: 'tabs workspace-tabs', role: 'tablist', 'aria-label': '知识库管理范围' }, [
+    element('div', { class: 'workspace-switcher-leading' },
+      element('div', { class: 'tabs workspace-tabs', role: 'tablist', 'aria-label': '知识库管理范围' }, [
       ['libraries', '知识库', activeBases.length],
       ['mounts', '项目与会话挂载', state.mounts.filter(mount => mount.enabled).length],
     ].map(([id, label, count]) => element('button', {
       type: 'button', role: 'tab', class: 'tab', 'aria-selected': String(state.knowledgeBaseView === id),
       onClick: () => { state.knowledgeBaseView = id; renderShell() },
-    }, element('span', {}, label), element('span', { class: 'tab-count' }, count)))),
-    element('p', {}, state.knowledgeBaseView === 'libraries'
-      ? '管理知识库本身、标签和回写规则'
-      : '决定当前项目或会话可以召回、审核或直接写入哪些知识库'),
+      }, element('span', {}, label), element('span', { class: 'tab-count' }, count)))),
+      renderWritebackPolicyControl(),
+    ),
+    element('p', {}, state.settings.writebackPolicy === 'conservative'
+      ? '严谨模式只保留明确或已验证的长期知识，宁可漏记也不堆积噪声。'
+      : '主动模式会更积极地沉淀可复用内容，仍会排除敏感信息和临时输出。'),
   )
   return element('div', { class: 'bases-page' },
     switcher,
@@ -649,6 +655,43 @@ function renderKnowledgeBases() {
         : null,
     ),
   )
+}
+
+function renderWritebackPolicyControl() {
+  const policies = [
+    ['conservative', '严谨'],
+    ['proactive', '主动'],
+  ]
+  return element('div', {
+    class: 'writeback-policy-control',
+    'aria-label': '全局回写策略',
+    'aria-busy': String(state.settingsSaving),
+  },
+  element('span', { class: 'writeback-policy-label' }, '回写策略'),
+  element('div', { class: 'writeback-policy-segments', role: 'radiogroup', 'aria-label': '选择全局回写策略' }, policies.map(([value, label]) => element('button', {
+    type: 'button', role: 'radio', class: 'writeback-policy-option',
+    'aria-checked': String(state.settings.writebackPolicy === value),
+    disabled: state.settingsSaving,
+    onClick: () => void updateWritebackPolicy(value),
+  }, label))))
+}
+
+async function updateWritebackPolicy(writebackPolicy) {
+  if (state.settingsSaving || state.settings.writebackPolicy === writebackPolicy) return
+  const previous = state.settings
+  state.settings = { ...state.settings, writebackPolicy }
+  state.settingsSaving = true
+  renderShell()
+  try {
+    state.settings = await api('settings', { method: 'PUT', body: { patch: { writebackPolicy } } })
+    showToast(`全局回写策略已切换为${writebackPolicy === 'conservative' ? '严谨' : '主动'}模式`)
+  } catch (error) {
+    state.settings = previous
+    showToast(friendlyError(error), 'error')
+  } finally {
+    state.settingsSaving = false
+    renderShell()
+  }
 }
 
 function contextPill(label, value) {

@@ -9,6 +9,7 @@ import {
   normalizeDraft,
   normalizeKnowledgeBaseDraft,
   normalizeKnowledgeMountDraft,
+  normalizeKnowledgeSettings,
   nowIso,
   type CandidateProposal,
   type ApiTokenRecord,
@@ -28,7 +29,10 @@ import {
   type KnowledgeMountBatchResult,
   type KnowledgeMountDraft,
   type KnowledgeMountTargetKind,
+  type KnowledgeSettings,
+  type KnowledgeSettingsPatch,
   type ResolvedKnowledgeMount,
+  type DirectWriteResult,
   type ListRequest,
   type ListResult,
   type ReviewDecision,
@@ -66,7 +70,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   private migrate(): void {
     let version = Number((this.db.prepare('PRAGMA user_version').get() as SqlRow).user_version ?? 0)
-    if (version > 4) throw new Error(`knowledge database schema ${version} is newer than this plugin supports`)
+    if (version > 5) throw new Error(`knowledge database schema ${version} is newer than this plugin supports`)
     if (version === 0) this.db.exec(`
       BEGIN IMMEDIATE;
       CREATE TABLE knowledge_entries (
@@ -211,6 +215,19 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       PRAGMA user_version = 4;
       COMMIT;
     `)
+    if (version <= 3) version = 4
+    if (version === 4) this.db.exec(`
+      BEGIN IMMEDIATE;
+      CREATE TABLE knowledge_settings (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        writeback_policy TEXT NOT NULL CHECK(writeback_policy IN ('conservative','proactive')),
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO knowledge_settings(id,writeback_policy,updated_at)
+      VALUES(1,'conservative',datetime('now'));
+      PRAGMA user_version = 5;
+      COMMIT;
+    `)
     // Alpha v2 used a migration note as the default base's routing description.
     // Clear only that exact placeholder so existing user-authored descriptions stay untouched.
     this.db.prepare("UPDATE knowledge_bases SET description='' WHERE id=? AND description=?")
@@ -220,6 +237,24 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   private assertOpen(): void {
     if (this.closed) throw new Error('knowledge provider is closed')
+  }
+
+  async getSettings(): Promise<KnowledgeSettings> {
+    this.assertOpen()
+    const row = this.db.prepare('SELECT writeback_policy,updated_at FROM knowledge_settings WHERE id=1').get() as SqlRow
+    return {
+      writebackPolicy: String(row.writeback_policy) as KnowledgeSettings['writebackPolicy'],
+      updatedAt: String(row.updated_at),
+    }
+  }
+
+  async updateSettings(input: KnowledgeSettingsPatch): Promise<KnowledgeSettings> {
+    this.assertOpen()
+    const patch = normalizeKnowledgeSettings(input)
+    const updatedAt = nowIso()
+    this.db.prepare('UPDATE knowledge_settings SET writeback_policy=?,updated_at=? WHERE id=1')
+      .run(patch.writebackPolicy, updatedAt)
+    return { ...patch, updatedAt }
   }
 
   async listKnowledgeBases(): Promise<KnowledgeBase[]> {
@@ -703,15 +738,45 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   async propose(input: CandidateProposal, sourceKey?: string): Promise<KnowledgeCandidate> {
     this.assertOpen()
-    const proposal: CandidateProposal = {
-      action: input.action,
-      ...input.targetId === undefined ? {} : { targetId: input.targetId },
-      draft: normalizeDraft(input.draft),
-      reason: input.reason.trim().slice(0, 2000),
-    }
-    if (proposal.action !== 'create' && proposal.targetId === undefined) {
-      throw new Error(`${proposal.action} candidate requires targetId`)
-    }
+    return this.insertCandidate(normalizeProposal(input), sourceKey)
+  }
+
+  async writeDirect(input: CandidateProposal, sourceKey?: string): Promise<DirectWriteResult> {
+    this.assertOpen()
+    let touchedBaseId: string | undefined
+    const result = this.transaction((): DirectWriteResult => {
+      const resolution = this.resolveDirectProposal(normalizeProposal(input))
+      if (resolution.outcome === 'duplicate') return { outcome: 'duplicate', ...resolution.entry === undefined ? {} : { entry: resolution.entry } }
+      const candidate = this.insertCandidate(resolution.proposal, sourceKey)
+      if (candidate.status !== 'pending') return { outcome: 'duplicate', candidate }
+      if (resolution.outcome === 'conflict') return { outcome: 'conflict', candidate }
+      const entry = resolution.proposal.action === 'create'
+        ? this.insertEntry(resolution.proposal.draft)
+        : this.updateEntry(resolution.proposal.targetId as string, resolution.proposal.draft, 'update')
+      const reviewedAt = nowIso()
+      this.db.prepare('UPDATE knowledge_candidates SET status=?, reviewed_at=?, review_note=? WHERE id=?')
+        .run('approved', reviewedAt, resolution.outcome === 'merged'
+          ? 'Automatically merged by direct-write reconciliation.'
+          : 'Automatically approved by direct-write policy.', candidate.id)
+      touchedBaseId = entry.knowledgeBaseId
+      return {
+        outcome: resolution.outcome,
+        candidate: {
+          ...candidate,
+          status: 'approved',
+          reviewedAt,
+          reviewNote: resolution.outcome === 'merged'
+            ? 'Automatically merged by direct-write reconciliation.'
+            : 'Automatically approved by direct-write policy.',
+        },
+        entry,
+      }
+    })
+    if (touchedBaseId !== undefined) this.syncKnowledgeDocuments(touchedBaseId)
+    return result
+  }
+
+  private insertCandidate(proposal: CandidateProposal, sourceKey?: string): KnowledgeCandidate {
     const hash = contentHash(proposal.draft) + `:${proposal.action}:${proposal.targetId ?? ''}`
     if (sourceKey !== undefined) {
       const existing = this.db.prepare('SELECT * FROM knowledge_candidates WHERE source_key = ? AND proposal_hash = ?').get(sourceKey, hash) as SqlRow | undefined
@@ -729,6 +794,59 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       VALUES(?,?,?,?,?,'pending',?,?,?)
     `).run(candidate.id, candidate.action, candidate.targetId ?? null, JSON.stringify(candidate.draft), candidate.reason, sourceKey ?? null, hash, candidate.createdAt)
     return candidate
+  }
+
+  private resolveDirectProposal(proposal: CandidateProposal): DirectProposalResolution {
+    if (proposal.action === 'conflict') return { outcome: 'conflict', proposal }
+    if (proposal.action === 'update') {
+      const target = this.activeEntry(proposal.targetId as string)
+      if (target.knowledgeBaseId !== proposal.draft.knowledgeBaseId) {
+        throw conflict('direct-write update cannot move knowledge between knowledge bases')
+      }
+      if (!sameScope(target.scope, proposal.draft.scope)) {
+        return { outcome: 'conflict', proposal: { ...proposal, action: 'conflict' } }
+      }
+      if (potentiallyConflicts(target, proposal.draft)) {
+        return { outcome: 'conflict', proposal: { ...proposal, action: 'conflict' } }
+      }
+      const draft = mergeKnowledgeDraft(target, proposal.draft, true)
+      if (contentHash(draft) === contentHash(target)) return { outcome: 'duplicate', entry: target }
+      return { outcome: 'merged', proposal: { ...proposal, action: 'update', draft } }
+    }
+
+    const entries = this.activeEntriesForDraft(proposal.draft)
+    const bodyMatch = entries.find(entry => normalizedBody(entry.body) === normalizedBody(proposal.draft.body))
+    const titleMatch = entries.find(entry => normalizedTitle(entry.title) === normalizedTitle(proposal.draft.title))
+    const target = bodyMatch ?? titleMatch
+    if (target === undefined) return { outcome: 'created', proposal }
+    if (potentiallyConflicts(target, proposal.draft)) {
+      return {
+        outcome: 'conflict',
+        proposal: { ...proposal, action: 'conflict', targetId: target.id },
+      }
+    }
+    const draft = mergeKnowledgeDraft(target, proposal.draft, false)
+    if (contentHash(draft) === contentHash(target)) return { outcome: 'duplicate', entry: target }
+    return {
+      outcome: 'merged',
+      proposal: { ...proposal, action: 'update', targetId: target.id, draft },
+    }
+  }
+
+  private activeEntry(id: string): KnowledgeEntry {
+    const row = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM knowledge_entries WHERE id=? AND status='active'`).get(id) as SqlRow | undefined
+    if (row === undefined) throw notFound('active knowledge entry', id)
+    return rowToEntry(row)
+  }
+
+  private activeEntriesForDraft(draft: KnowledgeDraft): KnowledgeEntry[] {
+    const scopeId = draft.scope.kind === 'project' ? draft.scope.id : null
+    return (this.db.prepare(`
+      SELECT ${ENTRY_COLUMNS} FROM knowledge_entries
+      WHERE status='active' AND knowledge_base_id=? AND scope_kind=?
+        AND ((scope_id IS NULL AND ? IS NULL) OR scope_id=?)
+      ORDER BY updated_at DESC
+    `).all(draft.knowledgeBaseId, draft.scope.kind, scopeId, scopeId) as SqlRow[]).map(rowToEntry)
   }
 
   async listCandidates(status: 'pending' | 'approved' | 'rejected', limit: number): Promise<KnowledgeCandidate[]> {
@@ -1042,6 +1160,103 @@ function rowToCandidate(row: SqlRow): KnowledgeCandidate {
     ...reviewedAt === undefined ? {} : { reviewedAt },
     ...reviewNote === undefined ? {} : { reviewNote },
   }
+}
+
+type DirectProposalResolution =
+  | { outcome: 'duplicate'; entry?: KnowledgeEntry }
+  | { outcome: 'created' | 'merged' | 'conflict'; proposal: CandidateProposal }
+
+function normalizeProposal(input: CandidateProposal): CandidateProposal {
+  const proposal: CandidateProposal = {
+    action: input.action,
+    ...input.targetId === undefined ? {} : { targetId: input.targetId },
+    draft: normalizeDraft(input.draft),
+    reason: input.reason.trim().slice(0, 2000),
+  }
+  if (proposal.action !== 'create' && proposal.targetId === undefined) {
+    throw new Error(`${proposal.action} candidate requires targetId`)
+  }
+  return proposal
+}
+
+function mergeKnowledgeDraft(current: KnowledgeEntry, incoming: KnowledgeDraft, preferIncomingTitle: boolean): KnowledgeDraft {
+  return normalizeDraft({
+    knowledgeBaseId: current.knowledgeBaseId,
+    title: preferIncomingTitle ? incoming.title : current.title,
+    body: mergeBodies(current.body, incoming.body),
+    type: current.type,
+    tags: [...current.tags, ...incoming.tags],
+    scope: current.scope,
+    confidence: Math.max(current.confidence, incoming.confidence),
+    ...incoming.source === undefined
+      ? current.source === undefined ? {} : { source: current.source }
+      : { source: incoming.source },
+  })
+}
+
+function mergeBodies(current: string, incoming: string): string {
+  const currentKey = normalizedBody(current)
+  const incomingKey = normalizedBody(incoming)
+  if (currentKey === incomingKey || currentKey.includes(incomingKey)) return current.trim()
+  if (incomingKey.includes(currentKey)) return incoming.trim()
+  return `${current.trim()}\n\n${incoming.trim()}`
+}
+
+function potentiallyConflicts(current: KnowledgeEntry, incoming: KnowledgeDraft): boolean {
+  if (current.type !== incoming.type) return true
+  const currentBody = normalizedBody(current.body)
+  const incomingBody = normalizedBody(incoming.body)
+  if (currentBody === incomingBody || currentBody.includes(incomingBody) || incomingBody.includes(currentBody)) return false
+  const overlap = termOverlap(currentBody, incomingBody)
+  if (overlap < 0.35) return false
+  const currentPolarity = polarity(currentBody)
+  const incomingPolarity = polarity(incomingBody)
+  if (currentPolarity !== 0 && incomingPolarity !== 0 && currentPolarity !== incomingPolarity) return true
+  const currentValues = factualValues(currentBody)
+  const incomingValues = factualValues(incomingBody)
+  return currentValues.length > 0 && incomingValues.length > 0
+    && !currentValues.some(value => incomingValues.includes(value))
+}
+
+function normalizedTitle(value: string): string {
+  return value.normalize('NFKC').toLocaleLowerCase().replace(/[\p{P}\p{S}\s]+/gu, '')
+}
+
+function normalizedBody(value: string): string {
+  return value.normalize('NFKC').toLocaleLowerCase().replace(/\s+/gu, ' ').trim()
+}
+
+function sameScope(left: KnowledgeDraft['scope'], right: KnowledgeDraft['scope']): boolean {
+  return left.kind === right.kind && (left.kind === 'global' || left.id === (right as { kind: 'project'; id: string }).id)
+}
+
+function semanticTerms(value: string): Set<string> {
+  const terms = new Set(value.match(/[a-z0-9][a-z0-9_.:/-]*/giu)?.map(term => term.toLocaleLowerCase()) ?? [])
+  for (const sequence of value.match(/\p{Script=Han}+/gu) ?? []) {
+    const chars = [...sequence]
+    for (let index = 0; index < chars.length - 1; index += 1) terms.add(`${chars[index]}${chars[index + 1]}`)
+  }
+  return terms
+}
+
+function termOverlap(left: string, right: string): number {
+  const leftTerms = semanticTerms(left)
+  const rightTerms = semanticTerms(right)
+  const denominator = Math.min(leftTerms.size, rightTerms.size)
+  if (denominator === 0) return 0
+  let common = 0
+  for (const term of leftTerms) if (rightTerms.has(term)) common += 1
+  return common / denominator
+}
+
+function polarity(value: string): -1 | 0 | 1 {
+  const positive = /(?:\b(?:enable|enabled|allow|allowed|true|yes|must|should|use)\b|启用|允许|必须|应该|可以|使用)/iu.test(value)
+  const negative = /(?:\b(?:disable|disabled|deny|denied|false|no|never|must not|should not|do not|don't)\b|禁用|禁止|不得|不应|不可以|不要|不能|关闭|无需)/iu.test(value)
+  return positive === negative ? 0 : positive ? 1 : -1
+}
+
+function factualValues(value: string): string[] {
+  return [...new Set(value.match(/\b(?:v?\d+(?:\.\d+){0,3}|true|false|enabled|disabled)\b/giu)?.map(item => item.toLocaleLowerCase()) ?? [])]
 }
 
 function rowToKnowledgeBase(row: SqlRow): KnowledgeBase {

@@ -6,16 +6,18 @@
 
 `dsh-knowledge` 是面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的知识库插件。它不修改 DSH Agent Loop，同一个插件既能使用本地 SQLite，也能连接远程中央知识库。
 
-正式版本 `0.7.0` 提供可部署的多知识库、按需检索工具、本地与远程中央服务，以及文档型 Web 管理台：
+正式版本 `0.7.0` 提供可部署的多知识库、按需检索工具、本地与远程中央服务，以及文档型 Web 管理台。当前开发版本 `0.7.1-alpha.1` 新增全局回写策略与直写协调：
 
 - 回答完成后同步调用 DSH 当前模型判断是否产生知识，并在回答下方显示逐库回写结果。
 - 知识标题、正文、自然语言标签和提取理由默认跟随本轮用户语言；代码、命令和技术标识保持原样。
 - 回写结果只作为 UI 状态展示，在下一次模型请求前会被移除，不占用会话上下文。
+- 全局“严谨 / 主动”回写策略保存在权威知识库服务中；远程客户端自动跟随中央设置。严谨模式不限制候选数量，而是只接受明确陈述或已经验证的长期知识。
 - 可创建多个知识库，分别设定说明、默认标签和提取要求。
 - 每个知识库可选择专用回写模型；未设定时跟随当前会话模型。
 - 项目和会话挂载；会话默认继承项目，也可独立覆盖或关闭。
 - 每个挂载支持仅召回、审核写入、直接写入，以及包含/排除标签和额外提取要求。
 - `create / update / conflict / skip` 提取决策；直写模式自动写入普通结果，冲突仍进入人工审核。
+- 直接写入由服务端原子协调：兼容的同主题内容合并并保留版本，完全重复直接跳过，疑似矛盾保护原条目并转入审核。
 - 未挂载知识库时，不召回、不提取、不回写。
 - 全局与项目范围，以及偏好、事实、决策、流程、经验五类知识。
 - SQLite WAL、FTS5 全文搜索、原子事务、完整版本历史和幂等提取任务。
@@ -129,6 +131,7 @@ pnpm dsh web
 
 - 查看准确的知识、候选和提取任务统计。
 - 创建和编辑多个知识库，管理默认标签与提取要求。
+- 在知识库页切换全局“严谨 / 主动”回写策略。
 - 管理当前项目挂载和会话覆盖，设定召回、写入模式与标签范围。
 - 在三栏界面中搜索和阅读 Markdown 文档，并保留条目管理作为兼容入口。
 - 查看 AI 提取依据，直接通过、编辑后通过或拒绝候选。
@@ -156,6 +159,7 @@ pnpm dsh web
 | Method | Path | Permission | Purpose |
 | --- | --- | --- | --- |
 | GET | `/health` | public | 健康检查 |
+| GET/PUT | `/settings` | read/admin | 读取或修改全局回写策略 |
 | GET | `/search` | read | FTS 检索 |
 | GET/POST | `/knowledge-bases` | read/write | 知识库列表和创建 |
 | GET/PUT/PATCH | `/knowledge-bases/:id` | read/write | 详情、完整替换和局部修改 |
@@ -171,6 +175,7 @@ pnpm dsh web
 | GET/PUT/DELETE | `/entries/:id` | read/write/admin | 详情、更新、彻底删除 |
 | GET | `/entries/:id/versions` | read | 版本历史 |
 | GET/POST | `/candidates` | read/propose | 候选列表和提交 |
+| POST | `/candidates/direct` | propose + write | 原子直写、兼容合并、重复跳过和冲突转审 |
 | POST | `/candidates/:id/review` | write | 审核候选 |
 | GET/POST/DELETE | `/tokens` | admin | 客户端令牌管理 |
 

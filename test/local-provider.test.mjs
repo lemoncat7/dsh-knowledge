@@ -28,6 +28,8 @@ const globalDraft = {
 
 test('local provider preserves versions and searches approved scoped knowledge', async (t) => {
   const provider = await fixture(t)
+  assert.equal((await provider.getSettings()).writebackPolicy, 'conservative')
+  assert.equal((await provider.updateSettings({ writebackPolicy: 'proactive' })).writebackPolicy, 'proactive')
   const global = await provider.create(globalDraft)
   const project = await provider.create({
     ...globalDraft,
@@ -67,6 +69,74 @@ test('local provider preserves versions and searches approved scoped knowledge',
     candidates: { total: 0, pending: 0, approved: 0, rejected: 0 },
     extractionJobs: { total: 0, running: 0, completed: 0, failed: 0 },
   })
+})
+
+test('direct writes merge compatible knowledge, skip duplicates, and hold conflicts for review', async (t) => {
+  const provider = await fixture(t)
+  const existing = await provider.create({
+    knowledgeBaseId: 'default', title: 'Service port policy', body: 'Use port 8080 for the service.',
+    type: 'procedure', tags: ['service'], scope: { kind: 'global' }, confidence: 0.92,
+  })
+  const merged = await provider.writeDirect({
+    action: 'create',
+    draft: {
+      knowledgeBaseId: 'default', title: 'Service port policy',
+      body: 'Use port 8080 for the service. Keep the port documented in Docker Compose.',
+      type: 'procedure', tags: ['docker'], scope: { kind: 'global' }, confidence: 0.96,
+    },
+    reason: 'Adds compatible deployment context.',
+  }, 'direct-merge:1')
+  assert.equal(merged.outcome, 'merged')
+  assert.equal(merged.entry?.id, existing.id)
+  assert.equal(merged.entry?.version, 2)
+  assert.deepEqual(merged.entry?.tags, ['docker', 'service'])
+  assert.match(merged.entry?.body || '', /Docker Compose/)
+
+  const duplicate = await provider.writeDirect({
+    action: 'create', draft: { ...merged.entry }, reason: 'Same durable content.',
+  }, 'direct-duplicate:1')
+  assert.equal(duplicate.outcome, 'duplicate')
+  assert.equal((await provider.get(existing.id))?.version, 2)
+
+  const conflict = await provider.writeDirect({
+    action: 'create',
+    draft: {
+      knowledgeBaseId: 'default', title: 'Service port policy', body: 'Use port 9090 for the service.',
+      type: 'procedure', tags: ['service'], scope: { kind: 'global' }, confidence: 0.98,
+    },
+    reason: 'Contradictory port value.',
+  }, 'direct-conflict:1')
+  assert.equal(conflict.outcome, 'conflict')
+  assert.equal(conflict.candidate?.action, 'conflict')
+  assert.equal(conflict.candidate?.status, 'pending')
+  assert.equal((await provider.get(existing.id))?.version, 2)
+
+  await assert.rejects(
+    () => provider.writeDirect({
+      action: 'update', targetId: existing.id,
+      draft: {
+        knowledgeBaseId: 'another-base', title: 'Service port policy',
+        body: 'Move this entry to another knowledge base.', type: 'procedure', tags: ['service'],
+        scope: { kind: 'global' }, confidence: 0.99,
+      },
+      reason: 'Invalid cross-base update.',
+    }, 'direct-cross-base:1'),
+    /cannot move knowledge between knowledge bases/,
+  )
+  assert.equal((await provider.listCandidates('pending', 10)).length, 1)
+  assert.equal((await provider.get(existing.id))?.knowledgeBaseId, 'default')
+
+  const created = await provider.writeDirect({
+    action: 'create',
+    draft: {
+      knowledgeBaseId: 'default', title: 'Backup policy', body: 'Back up the volume before deployment.',
+      type: 'procedure', tags: ['backup'], scope: { kind: 'global' }, confidence: 0.95,
+    },
+    reason: 'Independent durable procedure.',
+  }, 'direct-create:1')
+  assert.equal(created.outcome, 'created')
+  assert.equal(created.candidate?.status, 'approved')
+  assert.equal((await provider.list({ status: 'active', limit: 10 })).items.length, 2)
 })
 
 test('approved entries are projected into browsable Markdown documents', async (t) => {

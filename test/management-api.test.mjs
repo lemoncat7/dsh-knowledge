@@ -42,6 +42,12 @@ test('same-origin management API controls public access and deletes revoked toke
   })).status, 403)
 
   const headers = { 'x-dsh-knowledge-client': 'management-web' }
+  assert.equal((await (await fetch(`${base}/settings`, { headers })).json()).writebackPolicy, 'conservative')
+  const policy = await (await fetch(`${base}/settings`, {
+    method: 'PUT', headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ patch: { writebackPolicy: 'proactive' } }),
+  })).json()
+  assert.equal(policy.writebackPolicy, 'proactive')
   const initial = await (await fetch(`${base}/service`, { headers })).json()
   assert.deepEqual(initial, { publicApiEnabled: false, publicApiPrefix: '/knowledge-api/v1' })
   const updated = await (await fetch(`${base}/service`, {
