@@ -89,6 +89,8 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.doesNotMatch(sidebarSource, /interfaceIcon|nav-icon/)
   const legacyEntriesSource = application.slice(application.indexOf('function renderLegacyEntries()'), application.indexOf('function renderEntryCard('))
   assert.match(legacyEntriesSource, /renderDocumentModeTabs/)
+  const documentsSource = application.slice(application.indexOf("return element('section', { class: 'document-page', 'aria-labelledby': 'documents-heading' }"), application.indexOf('function renderDocumentColumnControls()'))
+  assert.ok(documentsSource.indexOf('renderDocumentModeTabs()') < documentsSource.indexOf('document-global-search'), 'document view tabs must stay at the leading edge of the toolbar')
 
   const missing = await fetch(`${base}/knowledge/not-found.js`)
   assert.equal(missing.status, 404)

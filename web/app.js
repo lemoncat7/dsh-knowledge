@@ -866,12 +866,12 @@ function renderEntries() {
 
   return element('section', { class: 'document-page', 'aria-labelledby': 'documents-heading' },
     element('div', { class: 'document-page-toolbar' },
+      renderDocumentModeTabs(),
       element('div', { class: 'search-box document-global-search' }, interfaceIcon('search', 'search-symbol'), search),
       element('select', {
         class: 'select compact-library-picker', 'aria-label': '选择知识库', value: view.knowledgeBaseId,
         onChange: (event) => { view.knowledgeBaseId = event.target.value; view.documentId = ''; selectDefaultDocument(); renderShell() },
       }, activeBases.map(base => element('option', { value: base.id, selected: base.id === view.knowledgeBaseId }, base.name))),
-      renderDocumentModeTabs(),
       element('div', { class: 'document-toolbar-actions' },
         renderDocumentColumnControls(),
         actionButton('+ 新建知识', () => openEntryEditor(), 'primary'),
