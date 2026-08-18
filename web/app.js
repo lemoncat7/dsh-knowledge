@@ -53,9 +53,12 @@ const state = {
   candidateStatus: 'pending',
   tokens: [],
   service: { publicApiEnabled: false, publicApiPrefix: '/knowledge-api/v1', remote: false },
+  scrollPositions: new Map(),
   loading: false,
   error: '',
 }
+
+let scrollRestoreFrame = 0
 
 function readDocumentLayout() {
   const fallback = {
@@ -91,6 +94,37 @@ function saveDocumentLayout() {
 function clampNumber(value, minimum, maximum, fallback) {
   const number = Number(value)
   return Number.isFinite(number) ? Math.min(maximum, Math.max(minimum, Math.round(number))) : fallback
+}
+
+function captureScrollPosition() {
+  const shell = app.querySelector('.app-shell[data-view]')
+  if (!shell || shell.dataset.loading === 'true') return
+  const regions = {}
+  shell.querySelectorAll('[data-scroll-key]').forEach(node => {
+    const key = node.getAttribute('data-scroll-key')
+    if (key) regions[key] = { left: node.scrollLeft, top: node.scrollTop }
+  })
+  state.scrollPositions.set(shell.dataset.view, {
+    window: { left: window.scrollX, top: window.scrollY },
+    regions,
+  })
+}
+
+function restoreScrollPosition(view) {
+  if (state.loading) return
+  const saved = state.scrollPositions.get(view)
+  if (!saved) return
+  if (scrollRestoreFrame) window.cancelAnimationFrame(scrollRestoreFrame)
+  scrollRestoreFrame = window.requestAnimationFrame(() => {
+    window.scrollTo(saved.window.left, saved.window.top)
+    app.querySelectorAll('[data-scroll-key]').forEach(node => {
+      const position = saved.regions[node.getAttribute('data-scroll-key')]
+      if (!position) return
+      node.scrollLeft = position.left
+      node.scrollTop = position.top
+    })
+    scrollRestoreFrame = 0
+  })
 }
 
 function element(tag, attributes = {}, ...children) {
@@ -346,6 +380,7 @@ async function loadTokens() {
 }
 
 function renderShell() {
+  captureScrollPosition()
   const titles = {
     overview: ['概览', '知识库运行状态与最近活动'],
     bases: ['知识库', '创建知识库，并限定项目与会话的召回和写入范围'],
@@ -356,6 +391,7 @@ function renderShell() {
   const [title, subtitle] = titles[state.view]
   const shell = element('div', {
     class: 'app-shell', 'data-menu-open': String(state.menuOpen),
+    'data-view': state.view, 'data-loading': String(state.loading),
     'data-sidebar-hidden': String(state.documentView.sidebarHidden),
     style: `--sidebar-width: ${state.documentView.sidebarWidth}px`,
   },
@@ -376,6 +412,7 @@ function renderShell() {
     if (event.target === shell) { state.menuOpen = false; renderShell() }
   })
   app.replaceChildren(shell)
+  restoreScrollPosition(state.view)
 }
 
 function renderAppSidebarResizer() {
@@ -666,7 +703,7 @@ function renderMountManager(activeBases) {
       element('span', { class: 'field-hint' }, `显示 ${visibleRows.length} / ${activeBases.length}`),
     ),
     visibleRows.length
-      ? element('div', { class: 'mount-table', role: 'list', 'aria-label': '知识库挂载列表' }, visibleRows.map(({ base, view }) => renderMountListRow(base, view, manager.targetKind, targetId)))
+      ? element('div', { class: 'mount-table', role: 'list', 'aria-label': '知识库挂载列表', 'data-scroll-key': 'mount-table' }, visibleRows.map(({ base, view }) => renderMountListRow(base, view, manager.targetKind, targetId)))
       : emptyState('没有匹配的知识库', '调整搜索词或筛选条件。'),
     element('div', { class: 'mount-bulk-bar', 'aria-live': 'polite' },
       element('strong', {}, `已选择 ${selectedCount} 个`),
@@ -784,7 +821,7 @@ function renderEntries() {
         element('header', { class: 'column-header' },
           element('div', {}, element('h2', { id: 'documents-heading' }, '知识库'), element('span', {}, `${activeBases.length} 个可用`)),
         ),
-        activeBases.length ? element('div', { class: 'library-list', role: 'listbox', tabindex: '0', onKeyDown: event => moveDocumentSelection(event, 'base') },
+        activeBases.length ? element('div', { class: 'library-list', role: 'listbox', tabindex: '0', 'data-scroll-key': 'library-list', onKeyDown: event => moveDocumentSelection(event, 'base') },
           activeBases.map(base => {
             const documentCount = state.documents.filter(document => document.knowledgeBaseId === base.id).length
             const selected = base.id === view.knowledgeBaseId
@@ -802,7 +839,7 @@ function renderEntries() {
         element('header', { class: 'column-header' },
           element('div', {}, element('h2', {}, selectedBase?.name || '文档'), element('span', {}, query ? `找到 ${visibleDocuments.length} 篇` : `${allBaseDocuments.length} 篇文档`)),
         ),
-        visibleDocuments.length ? element('div', { class: 'document-list', role: 'listbox', tabindex: '0', onKeyDown: event => moveDocumentSelection(event, 'document') },
+        visibleDocuments.length ? element('div', { class: 'document-list', role: 'listbox', tabindex: '0', 'data-scroll-key': 'document-list', onKeyDown: event => moveDocumentSelection(event, 'document') },
           visibleDocuments.map(document => element('button', {
             type: 'button', class: 'document-row', role: 'option', 'aria-selected': String(document.id === view.documentId),
             onClick: () => { view.documentId = document.id; renderShell() },
@@ -1002,7 +1039,7 @@ function renderDocumentReader(document, base) {
         .map(item => element('option', { value: item.id, selected: item.id === document.id }, item.relPath))),
       element('div', { class: 'reader-actions' }, badge(`${document.entryCount} 条知识`), actionButton('添加内容', () => openEntryEditor(), 'small')),
     ),
-    element('article', { class: 'markdown-document' }, renderMarkdown(document.content)),
+    element('article', { class: 'markdown-document', 'data-scroll-key': 'document-reader' }, renderMarkdown(document.content)),
     element('footer', { class: 'reader-footer' },
       element('span', {}, `自动整理 · ${formatDate(document.updatedAt)}`),
       element('span', {}, `SHA-256 · ${document.contentHash.slice(0, 8)}`),

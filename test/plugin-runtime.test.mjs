@@ -141,8 +141,39 @@ test('plugin extracts after a completed turn and recalls only approved knowledge
   assert.match(catalog.contexts[0].text, /Only reusable DSH plugin installation/)
   assert.match(catalog.contexts[0].text, /knowledge_search/)
 
-  assert.deepEqual([...tools.keys()].sort(), ['knowledge_read', 'knowledge_search'])
+  assert.deepEqual([...tools.keys()].sort(), [
+    'knowledge_base_create',
+    'knowledge_base_update',
+    'knowledge_read',
+    'knowledge_search',
+  ])
   const toolExec = { agent: { session }, signal: new AbortController().signal }
+  const created = JSON.parse(await tools.get('knowledge_base_create').execute({
+    name: 'Tool-managed base',
+    description: 'Reusable knowledge managed through DSH tools.',
+    defaultTags: ['DSH', 'tools', 'dsh'],
+    extractionInstructions: 'Keep only confirmed reusable conclusions.',
+  }, toolExec))
+  assert.equal(created.storage, 'local')
+  assert.equal(created.operation, 'created')
+  assert.equal(created.mountsChanged, false)
+  assert.deepEqual(created.knowledgeBase.defaultTags, ['dsh', 'tools'])
+
+  const updated = JSON.parse(await tools.get('knowledge_base_update').execute({
+    base: created.knowledgeBase.id,
+    name: 'Updated tool-managed base',
+    description: 'Updated routing description.',
+    defaultTags: ['updated', 'DSH'],
+    extractionInstructions: '',
+  }, toolExec))
+  assert.equal(updated.storage, 'local')
+  assert.equal(updated.operation, 'updated')
+  assert.equal(updated.mountsChanged, false)
+  assert.equal(updated.knowledgeBase.name, 'Updated tool-managed base')
+  assert.equal(updated.knowledgeBase.description, 'Updated routing description.')
+  assert.deepEqual(updated.knowledgeBase.defaultTags, ['dsh', 'updated'])
+  assert.equal(updated.knowledgeBase.extractionInstructions, '')
+
   const searchOutput = await tools.get('knowledge_search').execute({ query: 'DSH plugin installation' }, toolExec)
   assert.match(searchOutput, /DSH plugin installation command/)
   const handle = /handle: (k1\.[^\s]+)/.exec(searchOutput)?.[1]

@@ -63,6 +63,10 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(application, /复制地址/)
   assert.match(application, /开启远程 API/)
   assert.match(application, /已撤销令牌已永久删除/)
+  assert.match(application, /captureScrollPosition/)
+  assert.match(application, /restoreScrollPosition/)
+  assert.match(application, /data-scroll-key/)
+  assert.match(application, /document-reader/)
 
   const stylesheet = await fetch(`${base}/knowledge/styles.css`)
   assert.equal(stylesheet.status, 200)

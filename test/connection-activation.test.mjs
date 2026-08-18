@@ -22,9 +22,15 @@ async function listen(server) {
 function createRuntime() {
   let controlHandler
   const disposers = []
+  const tools = new Map()
   const runtime = {
     llm: { async *stream() {} },
-    tools: { register() { return () => {} } },
+    tools: {
+      register(definition) {
+        tools.set(definition.name, definition)
+        return () => tools.delete(definition.name)
+      },
+    },
     webServer: {
       register(route) {
         if (route.path === '/knowledge-control/v1/connection') controlHandler = route.handler
@@ -39,6 +45,7 @@ function createRuntime() {
   }
   return {
     runtime,
+    tools,
     handler: () => controlHandler,
     async dispose() {
       for (const disposer of disposers.reverse()) await disposer?.()
@@ -49,16 +56,49 @@ function createRuntime() {
 test('plugin verifies, persists, hot-switches, and restores remote connections', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-knowledge-activation-'))
   const token = 'valid_activation_token_longer_than_24_chars'
+  const centralRequests = []
+  const centralBases = []
   const central = createServer((req, res) => {
-    if (req.url !== '/knowledge-api/v1/stats') {
+    void (async () => {
+      if (req.headers.authorization !== `Bearer ${token}`) {
+        res.writeHead(401, { 'content-type': 'application/json' }).end('{"error":"invalid token"}')
+        return
+      }
+      const url = new URL(req.url, 'http://central.test')
+      centralRequests.push([req.method, url.pathname])
+      if (req.method === 'GET' && url.pathname === '/knowledge-api/v1/stats') {
+        res.writeHead(200, { 'content-type': 'application/json' }).end('{"entries":{"active":0,"archived":0},"candidates":{"pending":0,"approved":0,"rejected":0}}')
+        return
+      }
+      if (req.method === 'GET' && url.pathname === '/knowledge-api/v1/knowledge-bases') {
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(centralBases))
+        return
+      }
+      if (req.method === 'POST' && url.pathname === '/knowledge-api/v1/knowledge-bases') {
+        const { draft } = await readJsonRequest(req)
+        const timestamp = new Date().toISOString()
+        const base = { ...draft, id: `remote-${centralBases.length + 1}`, status: 'active', createdAt: timestamp, updatedAt: timestamp }
+        centralBases.push(base)
+        res.writeHead(201, { 'content-type': 'application/json' }).end(JSON.stringify(base))
+        return
+      }
+      const match = /^\/knowledge-api\/v1\/knowledge-bases\/([^/]+)$/.exec(url.pathname)
+      if (req.method === 'PATCH' && match) {
+        const id = decodeURIComponent(match[1])
+        const index = centralBases.findIndex(base => base.id === id)
+        if (index < 0) {
+          res.writeHead(404, { 'content-type': 'application/json' }).end('{"error":"not found"}')
+          return
+        }
+        const { patch } = await readJsonRequest(req)
+        centralBases[index] = { ...centralBases[index], ...patch, updatedAt: new Date().toISOString() }
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(centralBases[index]))
+        return
+      }
       res.writeHead(404, { 'content-type': 'application/json' }).end('{"error":"not found"}')
-      return
-    }
-    if (req.headers.authorization !== `Bearer ${token}`) {
-      res.writeHead(401, { 'content-type': 'application/json' }).end('{"error":"invalid token"}')
-      return
-    }
-    res.writeHead(200, { 'content-type': 'application/json' }).end('{"entries":{"active":0,"archived":0},"candidates":{"pending":0,"approved":0,"rejected":0}}')
+    })().catch(error => {
+      res.writeHead(500, { 'content-type': 'application/json' }).end(JSON.stringify({ error: error.message }))
+    })
   })
   const centralPort = await listen(central)
   const connectionPath = join(root, 'connection.json')
@@ -105,6 +145,41 @@ test('plugin verifies, persists, hot-switches, and restores remote connections',
   assert.equal(view.remoteToken, undefined)
   assert.equal(JSON.parse(await readFile(connectionPath, 'utf8')).remoteToken, token)
 
+  const toolExec = {
+    agent: { session: { id: 'remote-tool-session', header: {}, events: [] } },
+    signal: new AbortController().signal,
+  }
+  const created = JSON.parse(await first.tools.get('knowledge_base_create').execute({
+    name: 'Central tool base',
+    description: 'Created through the currently active remote provider.',
+    defaultTags: ['central'],
+  }, toolExec))
+  assert.equal(created.storage, 'remote')
+  assert.equal(created.operation, 'created')
+  assert.equal(created.mountsChanged, false)
+  assert.equal(created.knowledgeBase.id, 'remote-1')
+
+  const updated = JSON.parse(await first.tools.get('knowledge_base_update').execute({
+    base: 'Central tool base',
+    name: 'Updated central tool base',
+    description: 'Updated only on the central service.',
+    defaultTags: ['remote', 'managed'],
+  }, toolExec))
+  assert.equal(updated.storage, 'remote')
+  assert.equal(updated.operation, 'updated')
+  assert.equal(updated.mountsChanged, false)
+  assert.equal(updated.knowledgeBase.name, 'Updated central tool base')
+  assert.deepEqual(updated.knowledgeBase.defaultTags, ['managed', 'remote'])
+  assert.deepEqual(centralRequests.slice(-3), [
+    ['POST', '/knowledge-api/v1/knowledge-bases'],
+    ['GET', '/knowledge-api/v1/knowledge-bases'],
+    ['PATCH', '/knowledge-api/v1/knowledge-bases/remote-1'],
+  ])
+
+  const localObserver = new KnowledgePlugin.LocalKnowledgeProvider(config.databasePath)
+  assert.equal((await localObserver.listKnowledgeBases()).some(base => base.name === 'Central tool base'), false)
+  await localObserver.close()
+
   await closeServer(control)
   await first.dispose()
   const restarted = createRuntime()
@@ -117,3 +192,9 @@ test('plugin verifies, persists, hot-switches, and restores remote connections',
   await closeServer(restartedControl)
   await restarted.dispose()
 })
+
+async function readJsonRequest(req) {
+  const chunks = []
+  for await (const chunk of req) chunks.push(chunk)
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+}
