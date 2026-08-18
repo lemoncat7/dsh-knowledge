@@ -14,14 +14,13 @@ const DOCUMENT_LAYOUT_KEY = 'dsh-knowledge.document-layout'
 const DOCUMENT_COLUMN_LAYOUTS = Object.freeze({
   library: {
     widthKey: 'libraryWidth', hiddenKey: 'libraryHidden', cssVariable: '--library-width',
-    minimum: 170, maximum: 360, collapseThreshold: 88, controls: 'knowledge-library-column',
+    minimum: 170, maximum: 360, controls: 'knowledge-library-column',
   },
   documentList: {
     widthKey: 'documentListWidth', hiddenKey: 'documentListHidden', cssVariable: '--document-list-width',
-    minimum: 210, maximum: 480, collapseThreshold: 88, controls: 'document-list-column',
+    minimum: 210, maximum: 480, controls: 'document-list-column',
   },
 })
-const COLUMN_REOPEN_DISTANCE = 36
 const pageParams = new URLSearchParams(location.search)
 const mountContext = {
   sessionId: pageParams.get('sessionId')?.trim() || '',
@@ -427,6 +426,7 @@ function renderShell() {
           paneToggleButton('main', !state.documentView.sidebarHidden, () => setSidebarHidden(!state.documentView.sidebarHidden), '主导航栏'),
           element('div', {}, element('h1', {}, title), element('p', {}, subtitle)),
         ),
+        state.view === 'entries' && state.documentView.mode === 'documents' ? renderDocumentColumnControls() : null,
       ),
       element('div', { class: 'page' }, renderCurrentView()),
     ),
@@ -929,25 +929,39 @@ function setDocumentColumnHidden(column, hidden) {
   renderShell()
 }
 
+function renderDocumentColumnControls() {
+  return element('div', { class: 'document-column-controls', role: 'group', 'aria-label': '显示文档栏位' },
+    element('span', { class: 'document-column-controls-label', 'aria-hidden': 'true' }, '显示'),
+    documentColumnControl('library', '知识库栏'),
+    documentColumnControl('documentList', '文档栏'),
+  )
+}
+
+function documentColumnControl(column, label) {
+  const layout = DOCUMENT_COLUMN_LAYOUTS[column]
+  const visible = !state.documentView[layout.hiddenKey]
+  const action = `${visible ? '收起' : '展开'}${label}`
+  return element('button', {
+    type: 'button', class: 'document-column-control', 'data-column': column,
+    'aria-label': action, 'aria-pressed': String(visible), title: action,
+    onClick: () => setDocumentColumnHidden(column, visible),
+  }, label)
+}
+
 function renderColumnResizer(column, label) {
   const layout = DOCUMENT_COLUMN_LAYOUTS[column]
   const hidden = state.documentView[layout.hiddenKey]
+  if (hidden) return null
   const value = state.documentView[layout.widthKey]
   return element('div', {
-    class: 'column-resizer', 'data-column': column, 'data-collapsed': String(hidden), 'data-label': label,
-    role: 'separator', tabindex: '0', title: columnResizeTitle(label, hidden),
+    class: 'column-resizer', 'data-column': column, role: 'separator', tabindex: '0',
+    title: `${label}；可拖动或使用左右方向键`,
     'aria-label': label, 'aria-controls': layout.controls, 'aria-orientation': 'vertical',
-    'aria-valuemin': 0, 'aria-valuemax': layout.maximum, 'aria-valuenow': hidden ? 0 : value,
-    'aria-valuetext': hidden ? '已隐藏' : `${value} 像素`, 'aria-expanded': String(!hidden),
+    'aria-valuemin': layout.minimum, 'aria-valuemax': layout.maximum, 'aria-valuenow': value,
+    'aria-valuetext': `${value} 像素`,
     onPointerDown: event => startColumnResize(event, column),
     onKeyDown: event => resizeColumnWithKeyboard(event, column),
   }, element('span', { 'aria-hidden': 'true' }, '⋮'))
-}
-
-function columnResizeTitle(label, hidden) {
-  return hidden
-    ? `${label.replace('调整', '')}已隐藏；向右拖动或按右方向键展开`
-    : `${label}；向左拖到底可隐藏，也可使用左右方向键`
 }
 
 function openLayoutEditor() {
@@ -970,7 +984,7 @@ function openLayoutEditor() {
     element('div', { class: 'layout-visibility', 'aria-label': '边栏显示设置' }, visibility.map(option => option.wrapper)),
     fields.map(field => field.wrapper),
     element('div', { class: 'layout-editor-note' },
-      element('span', {}, '也可以直接拖动栏与栏之间的三点分隔线。窗口过窄时会自动切换为紧凑布局。'),
+      element('span', {}, '拖动栏与栏之间的分隔线可调整宽度；收起和展开请使用文档标题栏的栏位开关。窗口过窄时会自动切换为紧凑布局。'),
       reset,
     ),
   )
@@ -1028,28 +1042,12 @@ function startColumnResize(event, column) {
   if (!browser) return
   const startX = event.clientX
   const startWidth = state.documentView[layout.widthKey]
-  const startedHidden = state.documentView[layout.hiddenKey]
   handle.setPointerCapture?.(event.pointerId)
   handle.classList.add('is-dragging')
   document.body.classList.add('is-resizing-columns')
   const move = moveEvent => {
-    const distance = moveEvent.clientX - startX
-    if (startedHidden) {
-      if (distance < COLUMN_REOPEN_DISTANCE) {
-        updateDocumentColumnLayout(column, { hidden: true }, browser, handle)
-        return
-      }
-      const width = clampNumber(startWidth + distance - COLUMN_REOPEN_DISTANCE, layout.minimum, layout.maximum, startWidth)
-      updateDocumentColumnLayout(column, { hidden: false, width }, browser, handle)
-      return
-    }
-    const rawWidth = startWidth + distance
-    if (rawWidth <= layout.collapseThreshold) {
-      updateDocumentColumnLayout(column, { hidden: true }, browser, handle)
-      return
-    }
-    const width = clampNumber(rawWidth, layout.minimum, layout.maximum, startWidth)
-    updateDocumentColumnLayout(column, { hidden: false, width }, browser, handle)
+    const width = clampNumber(startWidth + moveEvent.clientX - startX, layout.minimum, layout.maximum, startWidth)
+    setDocumentColumnWidth(column, width, browser, handle)
   }
   const finish = () => {
     handle.classList.remove('is-dragging')
@@ -1069,42 +1067,20 @@ function resizeColumnWithKeyboard(event, column) {
   event.preventDefault()
   const layout = DOCUMENT_COLUMN_LAYOUTS[column]
   const current = state.documentView[layout.widthKey]
-  const hidden = state.documentView[layout.hiddenKey]
   const browser = event.currentTarget.closest('.document-browser')
-  if (hidden) {
-    if (!['ArrowRight', 'End'].includes(event.key)) return
-    const width = event.key === 'End' ? layout.maximum : current
-    updateDocumentColumnLayout(column, { hidden: false, width }, browser, event.currentTarget)
-    saveDocumentLayout()
-    return
-  }
-  if (event.key === 'Home' || (event.key === 'ArrowLeft' && current <= layout.minimum)) {
-    updateDocumentColumnLayout(column, { hidden: true }, browser, event.currentTarget)
-    saveDocumentLayout()
-    return
-  }
-  const width = event.key === 'End' ? layout.maximum
+  const width = event.key === 'Home' ? layout.minimum
+    : event.key === 'End' ? layout.maximum
     : clampNumber(current + (event.key === 'ArrowRight' ? 16 : -16), layout.minimum, layout.maximum, current)
-  updateDocumentColumnLayout(column, { hidden: false, width }, browser, event.currentTarget)
+  setDocumentColumnWidth(column, width, browser, event.currentTarget)
   saveDocumentLayout()
 }
 
-function updateDocumentColumnLayout(column, { hidden, width }, browser, handle) {
+function setDocumentColumnWidth(column, width, browser, handle) {
   const layout = DOCUMENT_COLUMN_LAYOUTS[column]
-  if (Number.isFinite(width)) {
-    state.documentView[layout.widthKey] = width
-    browser?.style.setProperty(layout.cssVariable, `${width}px`)
-  }
-  state.documentView[layout.hiddenKey] = hidden
-  if (browser) browser.dataset[layout.hiddenKey] = String(hidden)
-  if (!handle) return
-  const currentWidth = state.documentView[layout.widthKey]
-  const label = handle.dataset.label || handle.getAttribute('aria-label') || '调整栏宽度'
-  handle.dataset.collapsed = String(hidden)
-  handle.title = columnResizeTitle(label, hidden)
-  handle.setAttribute('aria-valuenow', String(hidden ? 0 : currentWidth))
-  handle.setAttribute('aria-valuetext', hidden ? '已隐藏' : `${currentWidth} 像素`)
-  handle.setAttribute('aria-expanded', String(!hidden))
+  state.documentView[layout.widthKey] = width
+  browser?.style.setProperty(layout.cssVariable, `${width}px`)
+  handle?.setAttribute('aria-valuenow', String(width))
+  handle?.setAttribute('aria-valuetext', `${width} 像素`)
 }
 
 function documentViewTab(label, mode) {

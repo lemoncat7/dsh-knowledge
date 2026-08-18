@@ -279,35 +279,6 @@ button:disabled { cursor: not-allowed; opacity: .56; }
 .column-resizer:hover,
 .column-resizer.is-dragging { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .column-resizer:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.column-resizer[data-collapsed="true"] {
-  width: 10px;
-  min-width: 10px;
-}
-.column-resizer[data-collapsed="true"] span {
-  width: 10px;
-  height: 32px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--text-tertiary);
-  opacity: .72;
-  box-shadow: none;
-}
-.column-resizer[data-collapsed="true"] span::before {
-  content: "›";
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1;
-  transform: translateY(-1px);
-}
-.column-resizer[data-collapsed="true"]:hover span,
-.column-resizer[data-collapsed="true"]:focus-visible span,
-.column-resizer[data-collapsed="true"].is-dragging span {
-  background: var(--accent-soft);
-  color: var(--accent);
-  opacity: 1;
-}
-
 .main { min-width: 0; grid-column: 3; }
 .topbar {
   position: sticky;
@@ -328,6 +299,36 @@ button:disabled { cursor: not-allowed; opacity: .56; }
 .topbar-title { display: flex; align-items: center; gap: 12px; }
 .mobile-menu { display: none; }
 .topbar-actions { display: flex; align-items: center; gap: 8px; }
+.document-column-controls {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 2px;
+  background: color-mix(in srgb, var(--surface-soft) 72%, transparent);
+}
+.document-column-controls-label { padding: 0 7px 0 8px; color: var(--text-tertiary); font-size: 10px; font-weight: 550; }
+.document-column-control {
+  min-height: 30px;
+  border: 0;
+  border-radius: 7px;
+  padding: 5px 10px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background .14s ease, color .14s ease, box-shadow .14s ease;
+}
+.document-column-control:hover { background: var(--surface-hover); color: var(--text); }
+.document-column-control:active { transform: translateY(1px); }
+.document-column-control[aria-pressed="true"] {
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: 0 1px 4px rgb(20 25 35 / 9%);
+}
 .pane-toggle-group {
   flex: none;
   display: inline-flex;
@@ -779,13 +780,14 @@ button:disabled { cursor: not-allowed; opacity: .56; }
 @media (min-width: 981px) {
   .document-browser[data-library-hidden="true"] .knowledge-library-column,
   .document-browser[data-document-list-hidden="true"] .document-list-column { display: none; }
-  .document-browser[data-library-hidden="true"][data-document-list-hidden="false"] { grid-template-columns: 10px min(var(--document-list-width, 280px), 34%) 6px minmax(320px, 1fr); }
-  .document-browser[data-library-hidden="false"][data-document-list-hidden="true"] { grid-template-columns: min(var(--library-width, 220px), 28%) 6px 10px minmax(320px, 1fr); }
-  .document-browser[data-library-hidden="true"][data-document-list-hidden="true"] { grid-template-columns: 10px 10px minmax(320px, 1fr); }
+  .document-browser[data-library-hidden="true"][data-document-list-hidden="false"] { grid-template-columns: min(var(--document-list-width, 280px), 34%) 6px minmax(320px, 1fr); }
+  .document-browser[data-library-hidden="false"][data-document-list-hidden="true"] { grid-template-columns: min(var(--library-width, 220px), 28%) 6px minmax(320px, 1fr); }
+  .document-browser[data-library-hidden="true"][data-document-list-hidden="true"] { grid-template-columns: minmax(320px, 1fr); }
 }
 
 @media (min-width: 761px) and (max-width: 980px) {
-  .document-browser[data-document-list-hidden="true"] { grid-template-columns: 10px minmax(320px, 1fr); }
+  .document-column-control[data-column="library"] { display: none; }
+  .document-browser[data-document-list-hidden="true"] { grid-template-columns: minmax(320px, 1fr); }
   .document-browser[data-document-list-hidden="true"] .document-list-column { display: none; }
 }
 
@@ -800,6 +802,7 @@ button:disabled { cursor: not-allowed; opacity: .56; }
   .app-shell { display: block; }
   .app-sidebar-resizer { display: none; }
   .pane-toggle-button[data-pane="main"] { display: none; }
+  .document-column-controls { display: none; }
   .sidebar { position: fixed; z-index: 40; width: min(82vw, 270px); transform: translateX(-105%); box-shadow: var(--shadow); transition: transform .2s ease; }
   .app-shell[data-menu-open="true"] .sidebar { transform: translateX(0); }
   .app-shell[data-menu-open="true"]::after { content: ""; position: fixed; inset: 0; z-index: 30; background: rgb(0 0 0 / 35%); }
