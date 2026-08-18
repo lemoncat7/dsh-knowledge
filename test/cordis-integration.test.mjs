@@ -33,7 +33,6 @@ test('real Cordis context dynamically mounts API and Web routes', async (t) => {
   class FakeSystemPrompt extends Service {
     constructor(inner) { super(inner, 'systemPrompt') }
   }
-
   await ctx.plugin(FakeLlm).await()
   await ctx.plugin(FakeTools).await()
   await ctx.plugin(FakeSystemPrompt).await()
@@ -47,6 +46,7 @@ test('real Cordis context dynamically mounts API and Web routes', async (t) => {
   }).await()
 
   assert.deepEqual(routes.map(route => [route.kind, route.path]), [
+    ['exact', '/knowledge-control/v1/connection'],
     ['prefix', '/knowledge-api/v1'],
     ['prefix', '/knowledge'],
   ])

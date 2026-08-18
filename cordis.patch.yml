@@ -6,6 +6,7 @@
       config:
         backend: local
         databasePath: !!js dshHomePath('knowledge/knowledge.sqlite')
+        connectionPath: !!js dshHomePath('knowledge/connection.json')
         exposeApi: false
         extractionEnabled: true
         autoRecallLimit: 3

@@ -27,6 +27,17 @@ interface ClientContext {
   effect(setup: () => void | (() => void), label?: string): unknown
 }
 
+interface KnowledgeConnectionView {
+  backend: 'local' | 'remote'
+  remoteUrl?: string
+  remoteTimeoutMs: number
+  tokenConfigured: boolean
+  canSwitchRemote: boolean
+  writable: boolean
+}
+
+const CONNECTION_CONTROL_PATH = '/knowledge-control/v1/connection'
+
 /** Cordis services needed by the browser half. */
 export const inject = ['slots']
 
@@ -38,6 +49,200 @@ export function apply(ctx: ClientContext): void {
     id: 'knowledge',
     order: -10,
   }, KnowledgeLauncher))
+
+  ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
+    name: 'settings.plugin.item',
+    id: 'dsh-knowledge-connection',
+    order: 25,
+  }, KnowledgeConnectionCard))
+}
+
+function KnowledgeConnectionCard() {
+  const [current, setCurrent] = useState<KnowledgeConnectionView>()
+  const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [loadError, setLoadError] = useState('')
+  const [open, setOpen] = useState(false)
+  const [backend, setBackend] = useState<'local' | 'remote'>('local')
+  const [remoteUrl, setRemoteUrl] = useState('')
+  const [remoteToken, setRemoteToken] = useState('')
+  const [timeout, setTimeoutValue] = useState('10000')
+  const [dirty, setDirty] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState<{ kind: 'success' | 'error'; text: string }>()
+
+  const load = useCallback(async (signal?: AbortSignal): Promise<void> => {
+    setLoadState('loading')
+    setLoadError('')
+    try {
+      const value = await requestConnection('GET', undefined, signal)
+      setCurrent(value)
+      setLoadState('ready')
+    } catch (error) {
+      if (signal?.aborted) return
+      setLoadError(connectionErrorMessage(error))
+      setLoadState('error')
+    }
+  }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void load(controller.signal)
+    return () => { controller.abort() }
+  }, [load])
+
+  useEffect(() => {
+    if (dirty || current === undefined) return
+    setBackend(current.backend)
+    setRemoteUrl(current.remoteUrl ?? '')
+    setTimeoutValue(String(current.remoteTimeoutMs ?? 10000))
+  }, [current, dirty])
+
+  const timeoutNumber = Number(timeout)
+  const urlError = backend === 'remote' ? validateRemoteUrl(remoteUrl) : undefined
+  const tokenError = backend === 'remote' && !current?.tokenConfigured && remoteToken.trim().length === 0
+    ? '首次连接必须填写客户端令牌。'
+    : remoteToken.length > 0 && remoteToken.trim().length < 24 ? '令牌至少需要 24 个字符。' : undefined
+  const timeoutError = !Number.isInteger(timeoutNumber) || timeoutNumber < 100 || timeoutNumber > 120000
+    ? '超时必须是 100 到 120000 毫秒之间的整数。'
+    : undefined
+  const invalid = urlError !== undefined || tokenError !== undefined || timeoutError !== undefined
+
+  const edit = (action: () => void): void => {
+    action()
+    setDirty(true)
+    setMessage(undefined)
+  }
+  const reset = (): void => {
+    setBackend(current?.backend ?? 'local')
+    setRemoteUrl(current?.remoteUrl ?? '')
+    setRemoteToken('')
+    setTimeoutValue(String(current?.remoteTimeoutMs ?? 10000))
+    setDirty(false)
+    setMessage(undefined)
+  }
+  const save = async (): Promise<void> => {
+    if (!dirty || invalid || !current?.writable || saving) return
+    setSaving(true)
+    setMessage(undefined)
+    try {
+      const next = await requestConnection('PUT', {
+        backend,
+        remoteTimeoutMs: timeoutNumber,
+        ...backend === 'remote' ? { remoteUrl: remoteUrl.trim() } : {},
+        ...backend === 'remote' && remoteToken.trim().length > 0 ? { remoteToken: remoteToken.trim() } : {},
+      })
+      setCurrent(next)
+      setRemoteToken('')
+      setDirty(false)
+      setMessage({
+        kind: 'success',
+        text: backend === 'remote' ? '已验证并切换至远程知识库。' : '已切换至本地知识库。',
+      })
+    } catch (error) {
+      setMessage({ kind: 'error', text: connectionErrorMessage(error) })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <li className={`dsh-knowledge-settings-card${open ? ' dsh-knowledge-settings-card--open' : ''}`}>
+      <button type="button" className="dsh-knowledge-settings-header" aria-expanded={open} onClick={() => { setOpen(value => !value) }}>
+        <span>
+          <strong>知识库连接</strong>
+          <small>选择本机知识库，或连接一台中央 DSH 知识库</small>
+        </span>
+        <span className="dsh-knowledge-settings-summary">{loadState === 'loading' ? '读取中' : loadState === 'error' ? '连接入口' : current?.backend === 'remote' ? '远程' : '本地'} · {open ? '收起' : '设置'}</span>
+      </button>
+      {open && <div className="dsh-knowledge-settings-body">
+        {loadState === 'loading' ? <p className="dsh-knowledge-settings-note" role="status">正在读取连接配置…</p>
+          : loadState === 'error' ? <div className="dsh-knowledge-settings-load-error" role="alert">
+            <p>{loadError}</p>
+            <button type="button" onClick={() => { void load() }}>重新读取</button>
+          </div> : <>
+          <fieldset className="dsh-knowledge-source-picker">
+            <legend>知识库来源</legend>
+            <label className={backend === 'local' ? 'is-selected' : ''}>
+              <input type="radio" name="dsh-knowledge-backend" checked={backend === 'local'} onChange={() => edit(() => { setBackend('local') })} />
+              <span><strong>本地</strong><small>数据保存在当前 DSH 的 SQLite 中</small></span>
+            </label>
+            <label className={`${backend === 'remote' ? 'is-selected' : ''}${!current?.canSwitchRemote ? ' is-disabled' : ''}`}>
+              <input type="radio" name="dsh-knowledge-backend" checked={backend === 'remote'} disabled={!current?.canSwitchRemote} onChange={() => edit(() => { setBackend('remote') })} />
+              <span><strong>远程</strong><small>召回和回写统一使用中央知识库</small></span>
+            </label>
+          </fieldset>
+          {!current?.canSwitchRemote && <p className="dsh-knowledge-settings-note">当前实例是中央知识库服务，不能再切换到另一台远程服务。</p>}
+          {backend === 'remote' && <div className="dsh-knowledge-remote-fields">
+            <label htmlFor="dsh-knowledge-remote-url">服务器地址
+              <input id="dsh-knowledge-remote-url" type="url" value={remoteUrl} placeholder="https://example.com/knowledge-api/v1" autoComplete="url" onChange={event => edit(() => { setRemoteUrl(event.target.value) })} aria-invalid={urlError !== undefined} aria-describedby={urlError ? 'dsh-knowledge-url-error' : undefined} />
+              {urlError && <small id="dsh-knowledge-url-error" className="dsh-knowledge-field-error">{urlError}</small>}
+            </label>
+            <label htmlFor="dsh-knowledge-remote-token">客户端令牌
+              <input id="dsh-knowledge-remote-token" type="password" value={remoteToken} placeholder={current?.tokenConfigured ? '已保存；留空则保持不变' : '粘贴客户端令牌'} autoComplete="new-password" onChange={event => edit(() => { setRemoteToken(event.target.value) })} aria-invalid={tokenError !== undefined} aria-describedby="dsh-knowledge-token-help" />
+              <small id="dsh-knowledge-token-help" className={tokenError ? 'dsh-knowledge-field-error' : undefined}>{tokenError ?? (current?.tokenConfigured ? '令牌已安全保存，页面无法读取；输入新令牌可覆盖。' : '令牌保存后不可读取，只能覆盖。')}</small>
+            </label>
+          </div>}
+          <label className="dsh-knowledge-timeout-field" htmlFor="dsh-knowledge-timeout">请求超时（毫秒）
+            <input id="dsh-knowledge-timeout" type="number" min="100" max="120000" step="100" value={timeout} onChange={event => edit(() => { setTimeoutValue(event.target.value) })} aria-invalid={timeoutError !== undefined} />
+            {timeoutError && <small className="dsh-knowledge-field-error">{timeoutError}</small>}
+          </label>
+          {!current?.writable && <p className="dsh-knowledge-settings-note">当前插件没有配置持久化路径，无法保存连接。</p>}
+          {message && <p className={`dsh-knowledge-settings-message is-${message.kind}`} role={message.kind === 'error' ? 'alert' : 'status'} aria-live="polite">{message.text}</p>}
+          <div className="dsh-knowledge-settings-actions">
+            <button type="button" onClick={reset} disabled={!dirty || saving}>放弃更改</button>
+            <button type="button" className="is-primary" onClick={() => { void save() }} disabled={!dirty || invalid || saving || !current?.writable}>{saving ? '正在验证…' : '验证并连接'}</button>
+          </div>
+        </>}
+      </div>}
+    </li>
+  )
+}
+
+function validateRemoteUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value.trim())
+    const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1'
+    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) return '远程知识库必须使用 HTTPS。'
+    return undefined
+  } catch { return '请输入完整的知识库 API 地址。' }
+}
+
+function connectionErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  if (message.includes('Failed to fetch')) return '无法访问插件连接接口，请确认插件服务已加载。'
+  return message || '连接配置操作失败，请检查地址、令牌和 DSH 日志。'
+}
+
+async function requestConnection(
+  method: 'GET' | 'PUT',
+  body?: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<KnowledgeConnectionView> {
+  const response = await fetch(CONNECTION_CONTROL_PATH, {
+    method,
+    headers: { accept: 'application/json', ...body === undefined ? {} : { 'content-type': 'application/json' } },
+    ...body === undefined ? {} : { body: JSON.stringify(body) },
+    ...signal === undefined ? {} : { signal },
+  })
+  const payload = await response.json().catch(() => undefined) as unknown
+  if (!response.ok) {
+    const message = payload !== null && typeof payload === 'object' && typeof (payload as { error?: unknown }).error === 'string'
+      ? (payload as { error: string }).error
+      : `连接接口返回 HTTP ${response.status}`
+    throw new Error(message)
+  }
+  if (!isConnectionView(payload)) throw new Error('插件连接接口返回了无效数据。')
+  return payload
+}
+
+function isConnectionView(value: unknown): value is KnowledgeConnectionView {
+  if (value === null || typeof value !== 'object') return false
+  const item = value as Partial<KnowledgeConnectionView>
+  return (item.backend === 'local' || item.backend === 'remote')
+    && Number.isInteger(item.remoteTimeoutMs)
+    && typeof item.tokenConfigured === 'boolean'
+    && typeof item.canSwitchRemote === 'boolean'
+    && typeof item.writable === 'boolean'
 }
 
 function KnowledgeLauncher({ wide, useSessions }: SidebarActionProps) {

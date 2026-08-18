@@ -113,7 +113,10 @@ test('plugin extracts after a completed turn and recalls only approved knowledge
   const extractionRequest = extractionRequests.find(request => request.provider === 'mock')
   const extractionPayload = JSON.parse(extractionRequest.messages[0].content[0].text)
   assert.equal(extractionPayload.destinations[0].routingDescription, 'Only reusable DSH plugin installation and operation knowledge qualifies.')
+  assert.match(extractionPayload.outputLanguage, /conversation\.user/)
   assert.match(extractionRequest.system, /routingDescription as its applicability rule/)
+  assert.match(extractionRequest.system, /primary natural language and writing system used by conversation\.user/)
+  assert.match(extractionRequest.system, /Never default to English/)
   assert.equal(extractionRequest.provider, 'mock')
   assert.equal(extractionRequest.model, 'extractor')
 

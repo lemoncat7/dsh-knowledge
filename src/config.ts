@@ -6,6 +6,7 @@ export interface Config {
   remoteUrl?: string
   remoteToken?: string
   remoteTimeoutMs: number
+  connectionPath?: string
   exposeApi: boolean
   apiToken?: string
   apiPrefix: string
@@ -28,6 +29,7 @@ export const Config: Schema<Config> = Schema.object({
   remoteUrl: Schema.string(),
   remoteToken: Schema.string().role('secret'),
   remoteTimeoutMs: Schema.number().min(100).max(120_000).default(10_000),
+  connectionPath: Schema.string(),
   exposeApi: Schema.boolean().default(false),
   apiToken: Schema.string().role('secret'),
   apiPrefix: Schema.string().default('/knowledge-api/v1'),
@@ -58,9 +60,11 @@ export interface ResolvedConfig extends Config {
 }
 
 export function resolveConfig(config: Config): ResolvedConfig {
+  const connectionPath = config.connectionPath ?? deriveConnectionPath(config.databasePath)
   const resolved: ResolvedConfig = {
     ...config,
     remoteTimeoutMs: config.remoteTimeoutMs ?? 10_000,
+    ...connectionPath === undefined ? {} : { connectionPath },
     apiPrefix: normalizePrefix(config.apiPrefix ?? '/knowledge-api/v1'),
     exposeWeb: config.exposeWeb ?? false,
     webPath: normalizePrefix(config.webPath ?? '/knowledge'),
@@ -101,6 +105,10 @@ export function resolveConfig(config: Config): ResolvedConfig {
     throw new Error('webPath and apiPrefix must not overlap')
   }
   return resolved
+}
+
+function deriveConnectionPath(databasePath: string | undefined): string | undefined {
+  return databasePath === undefined || databasePath.trim().length === 0 ? undefined : `${databasePath}.connection.json`
 }
 
 function normalizePrefix(value: string): string {

@@ -2,9 +2,10 @@
 
 `dsh-knowledge` 是面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的知识库插件。它不修改 DSH Agent Loop，同一个插件既能使用本地 SQLite，也能连接远程中央知识库。
 
-当前版本 `0.5.0-alpha.1` 已实现可部署的多知识库、按需检索工具与文档型 Web 管理台：
+当前版本 `0.6.0-alpha.6` 已实现可部署的多知识库、按需检索工具与文档型 Web 管理台：
 
 - 回答完成后同步调用 DSH 当前模型判断是否产生知识，并在回答下方显示逐库回写结果。
+- 知识标题、正文、自然语言标签和提取理由默认跟随本轮用户语言；代码、命令和技术标识保持原样。
 - 回写结果只作为 UI 状态展示，在下一次模型请求前会被移除，不占用会话上下文。
 - 可创建多个知识库，分别设定说明、默认标签和提取要求。
 - 每个知识库可选择专用回写模型；未设定时跟随当前会话模型。
@@ -18,6 +19,7 @@
 - 每条新用户消息默认只主动预取 3 条短摘要；模型可按需调用只读的 `knowledge_search` 与 `knowledge_read` 工具继续检索。
 - 搜索和读取由服务端按当前会话挂载、项目范围及包含/排除标签强制限权，读取句柄带签名且仅限当前会话。
 - 本地与远程 Provider 使用同一接口；远程模式不做隐式双向同步。
+- DSH“设置 → 插件”提供“知识库连接”卡片，可选择本地来源或填写中央服务地址和只写客户端令牌，保存后实时验证并切换 Provider。
 - Bearer Token 仅保存 SHA-256 摘要，支持 `read / propose / write / admin` 权限及吊销。
 - 认证 HTTP API，可作为其他 DSH 客户端和未来桌面端的中央知识库。
 - Apple 风格三栏文档界面，按知识库浏览自动整理的 `README.md`、`facts.md`、`decisions.md` 等文档。
@@ -29,7 +31,7 @@
 ## 安装
 
 ```bash
-dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.5.0-alpha.1.tgz
+dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.6.0-alpha.6.tgz
 ```
 
 卸载：
@@ -138,6 +140,12 @@ dsh plugin --profile web remove @lemoncat7/dsh-knowledge
 
 ## 远程客户端
 
+先在中央实例的“知识库 → 客户端令牌”中为每台客户端分别创建令牌。普通 DSH 客户端建议选择 `read + propose`；需要直接写入或管理挂载时再增加 `write`。令牌原文只显示一次。
+
+其他 DSH 客户端安装本插件后，打开“设置 → 插件 → 知识库连接”，选择“远程”，填写中央实例的知识库 API 地址和客户端令牌，再点“验证并连接”。插件会先验证地址和令牌，成功后立即热切换，并把连接持久化到 DSH 数据目录；令牌不会在页面或控制接口中回显，只能覆盖。
+
+如需用配置文件或环境变量部署，也可以直接设置 Provider：
+
 ```yaml
 - id: knowledge
   name: '@lemoncat7/dsh-knowledge'
@@ -150,6 +158,7 @@ dsh plugin --profile web remove @lemoncat7/dsh-knowledge
 ```
 
 远程地址必须是 HTTPS；只有 `localhost` 和回环 IP 的测试地址允许 HTTP。普通客户端建议只分配 `read + propose` 权限。
+远程客户端连接的是中央库，不会复制或同步一份本地数据库；断网时无法召回或回写。每台客户端仍需用自己的项目/会话标识挂载所需知识库。
 
 ## 开发与 Docker 构建
 
