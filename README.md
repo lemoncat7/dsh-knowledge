@@ -1,8 +1,12 @@
 # dsh-knowledge
 
+[![npm](https://img.shields.io/npm/v/%40lemoncat7%2Fdsh-knowledge)](https://www.npmjs.com/package/@lemoncat7/dsh-knowledge)
+[![GitHub Release](https://img.shields.io/github/v/release/lemoncat7/dsh-knowledge)](https://github.com/lemoncat7/dsh-knowledge/releases/latest)
+[![awesome · DSH plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
+
 `dsh-knowledge` 是面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的知识库插件。它不修改 DSH Agent Loop，同一个插件既能使用本地 SQLite，也能连接远程中央知识库。
 
-当前版本 `0.6.0-alpha.9` 已实现可部署的多知识库、按需检索工具与文档型 Web 管理台：
+首个正式版本 `0.6.0` 已实现可部署的多知识库、按需检索工具与文档型 Web 管理台：
 
 - 回答完成后同步调用 DSH 当前模型判断是否产生知识，并在回答下方显示逐库回写结果。
 - 知识标题、正文、自然语言标签和提取理由默认跟随本轮用户语言；代码、命令和技术标识保持原样。
@@ -30,22 +34,22 @@
 
 ## 安装
 
-从 npm 安装当前预览版：
+从 npm 安装正式版：
 
 ```bash
-dsh plugin --profile web add @lemoncat7/dsh-knowledge@next
+dsh plugin --profile web add @lemoncat7/dsh-knowledge
 ```
 
 需要固定版本时：
 
 ```bash
-dsh plugin --profile web add @lemoncat7/dsh-knowledge@0.6.0-alpha.9
+dsh plugin --profile web add @lemoncat7/dsh-knowledge@0.6.0
 ```
 
-本地开发包仍可直接安装：
+也可以从 [GitHub Release](https://github.com/lemoncat7/dsh-knowledge/releases/latest) 下载完整预构建包后安装：
 
 ```bash
-dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.6.0-alpha.9.tgz
+dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.6.0.tgz
 ```
 
 卸载：
@@ -55,6 +59,18 @@ dsh plugin --profile web remove @lemoncat7/dsh-knowledge
 ```
 
 插件是标准 DSH profile bundle：`package.json` 的 `dsh.bundle.patch` 指向 `cordis.patch.yml`。安装后不需要单独运行知识库容器。
+
+安装或更新后请重启对应的 DSH profile。Web 版重启命令：
+
+```bash
+pnpm dsh web
+```
+
+## DSH 插件商店
+
+本仓库符合 DSH 社区目录的安装要求：声明了 `dsh.bundle`、发布了 npm 预构建包，并使用 GitHub `dsh-plugin` Topic。目录收录完成后，可在 DSH 的插件市场搜索 `dsh-knowledge` 或“知识库”，安装源为 `@lemoncat7/dsh-knowledge`。
+
+插件商店的数据来自 [awesome-dsh-plugin.com](https://awesome-dsh-plugin.com)，不是单靠 npm 标签自动生成。若商店尚未刷新，可先使用上面的 npm 命令安装。
 
 ## 本地模式
 
