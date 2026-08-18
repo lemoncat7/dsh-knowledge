@@ -171,11 +171,6 @@ function paneToggleButton(pane, visible, onClick, label) {
 
 function interfaceIcon(name, className = 'interface-icon') {
   const paths = {
-    overview: 'M4 4h6v7H4zM14 4h6v4h-6zM4 15h6v5H4zM14 12h6v8h-6z',
-    bases: 'M5 5.5C5 4.1 8.1 3 12 3s7 1.1 7 2.5S15.9 8 12 8 5 6.9 5 5.5Zm0 0v6C5 12.9 8.1 14 12 14s7-1.1 7-2.5v-6M5 11.5v6C5 18.9 8.1 20 12 20s7-1.1 7-2.5v-6',
-    entries: 'M7 3.5h7l4 4V20.5H7zM14 3.5v4h4M10 12h5M10 16h5',
-    candidates: 'M4.5 12.5 9 17l10.5-11',
-    tokens: 'M14.5 8.5a4 4 0 1 0-3.1 3.9L8 15.8V18H5.8v2.2H3.5V18l4.6-4.6',
     search: 'M10.8 4.5a6.3 6.3 0 1 0 0 12.6 6.3 6.3 0 0 0 0-12.6Zm4.6 11 4.1 4',
   }
   return element('svg', {
@@ -511,21 +506,19 @@ function setSidebarHidden(hidden) {
 function renderSidebar() {
   const pending = state.stats?.candidates.pending
   const navGroups = [
-    ['浏览', [['overview', '概览'], ['entries', '文档']]],
-    ['管理', [['bases', '知识库'], ['candidates', '审核']]],
+    ['工作区', [['overview', '概览'], ['bases', '知识库'], ['entries', '文档'], ['candidates', '审核']]],
     ['服务', [['tokens', '访问管理']].filter(([id]) => id !== 'tokens' || !state.service.remote)],
   ].filter(([, items]) => items.length)
   return element('aside', { class: 'sidebar', 'aria-label': '知识库导航' },
     element('div', { class: 'brand' },
-      element('div', { class: 'brand-mark', 'aria-hidden': 'true' }, 'K'),
-      element('div', { class: 'brand-copy' }, element('strong', {}, 'DSH Knowledge'), element('span', {}, '管理控制台')),
+      element('div', { class: 'brand-copy' }, element('span', {}, 'DSH Knowledge'), element('strong', {}, '知识库')),
     ),
     element('nav', { class: 'nav' }, navGroups.map(([group, items]) => element('div', { class: 'nav-group' },
       element('div', { class: 'nav-group-label' }, group),
       items.map(([id, label]) => element('button', {
         type: 'button', class: 'nav-button', 'aria-current': state.view === id ? 'page' : undefined,
         onClick: () => navigate(id),
-      }, element('span', { class: 'nav-icon' }, interfaceIcon(id)), element('span', { class: 'nav-label' }, label),
+      }, element('span', { class: 'nav-label' }, label),
       id === 'candidates' && pending ? element('span', { class: 'nav-count', 'aria-label': `${pending} 条待审核` }, pending) : null))))),
     element('div', { class: 'sidebar-footer' },
       element('div', { class: 'connection' }, element('span', { class: 'status-dot', 'aria-hidden': 'true' }), state.service.remote ? '中央知识库已连接' : '本地知识库已连接'),
