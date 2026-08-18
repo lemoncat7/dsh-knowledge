@@ -6,7 +6,7 @@
 
 `dsh-knowledge` 是面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的知识库插件。它不修改 DSH Agent Loop，同一个插件既能使用本地 SQLite，也能连接远程中央知识库。
 
-正式版本 `0.7.0` 提供可部署的多知识库、按需检索工具、本地与远程中央服务，以及文档型 Web 管理台。当前开发版本 `0.7.1-alpha.1` 新增全局回写策略与直写协调：
+正式版本 `0.7.1` 提供可部署的多知识库、按需检索工具、本地与远程中央服务、文档型 Web 管理台，以及全局回写策略与安全直写协调：
 
 - 回答完成后同步调用 DSH 当前模型判断是否产生知识，并在回答下方显示逐库回写结果。
 - 知识标题、正文、自然语言标签和提取理由默认跟随本轮用户语言；代码、命令和技术标识保持原样。
@@ -48,13 +48,13 @@ dsh plugin --profile web add @lemoncat7/dsh-knowledge
 需要固定版本时：
 
 ```bash
-dsh plugin --profile web add @lemoncat7/dsh-knowledge@0.7.0
+dsh plugin --profile web add @lemoncat7/dsh-knowledge@0.7.1
 ```
 
 也可以从 [GitHub Release](https://github.com/lemoncat7/dsh-knowledge/releases/latest) 下载完整预构建包后安装：
 
 ```bash
-dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.7.0.tgz
+dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.7.1.tgz
 ```
 
 卸载：
