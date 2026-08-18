@@ -2,7 +2,7 @@
 
 `dsh-knowledge` 是面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的知识库插件。它不修改 DSH Agent Loop，同一个插件既能使用本地 SQLite，也能连接远程中央知识库。
 
-当前版本 `0.6.0-alpha.8` 已实现可部署的多知识库、按需检索工具与文档型 Web 管理台：
+当前版本 `0.6.0-alpha.9` 已实现可部署的多知识库、按需检索工具与文档型 Web 管理台：
 
 - 回答完成后同步调用 DSH 当前模型判断是否产生知识，并在回答下方显示逐库回写结果。
 - 知识标题、正文、自然语言标签和提取理由默认跟随本轮用户语言；代码、命令和技术标识保持原样。
@@ -39,13 +39,13 @@ dsh plugin --profile web add @lemoncat7/dsh-knowledge@next
 需要固定版本时：
 
 ```bash
-dsh plugin --profile web add @lemoncat7/dsh-knowledge@0.6.0-alpha.8
+dsh plugin --profile web add @lemoncat7/dsh-knowledge@0.6.0-alpha.9
 ```
 
 本地开发包仍可直接安装：
 
 ```bash
-dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.6.0-alpha.8.tgz
+dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.6.0-alpha.9.tgz
 ```
 
 卸载：
@@ -179,7 +179,7 @@ dsh plugin --profile web remove @lemoncat7/dsh-knowledge
 ```
 
 远程地址必须是 HTTPS；只有 `localhost` 和回环 IP 的测试地址允许 HTTP。普通客户端建议只分配 `read + propose` 权限。
-远程客户端连接的是中央库，不会复制或同步一份本地数据库；断网时无法召回或回写。每台客户端仍需用自己的项目/会话标识挂载所需知识库。
+远程客户端连接的是中央库，不会复制或同步一份本地数据库；断网时无法召回或回写。侧栏管理台仍在当前 DSH 内打开，插件通过同源代理携带已保存的远程令牌访问中央 API，不使用跨域 iframe，也不会把令牌交给浏览器。远程模式隐藏“访问管理”，API 开关和客户端令牌仍由中央 DSH 管理。每台客户端仍需用自己的项目/会话标识挂载所需知识库。
 
 ## 开发与 Docker 构建
 

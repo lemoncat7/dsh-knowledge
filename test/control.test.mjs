@@ -151,3 +151,19 @@ test('connection control reports management availability without leaking a disab
   assert.equal(enabledView.managementAvailable, true)
   assert.equal(enabledView.managementPath, '/custom-knowledge')
 })
+
+test('connection control keeps the embedded management entry available in remote mode', async (t) => {
+  const active = {
+    backend: 'remote', remoteUrl: 'https://knowledge.example/api',
+    remoteToken: 'remote_client_token_longer_than_24_chars', remoteTimeoutMs: 5000,
+  }
+  const server = await controlServer(controlOptions({
+    current: () => active, canSwitchRemote: true, writable: true,
+    managementAvailable: () => true, managementPath: '/knowledge',
+    async update() { return active },
+  }))
+  t.after(server.close)
+  const view = await (await fetch(server.url)).json()
+  assert.equal(view.managementAvailable, true)
+  assert.equal(view.managementPath, '/knowledge')
+})

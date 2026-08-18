@@ -28,7 +28,7 @@ export interface KnowledgeControlOptions {
   current(): KnowledgeConnectionSettings
   canSwitchRemote: boolean | (() => boolean)
   writable: boolean
-  managementAvailable: boolean
+  managementAvailable: boolean | (() => boolean)
   managementPath?: string
   update(value: KnowledgeConnectionUpdate): Promise<KnowledgeConnectionSettings>
 }
@@ -83,7 +83,7 @@ function connectionView(
   settings: KnowledgeConnectionSettings,
   options: Pick<KnowledgeControlOptions, 'canSwitchRemote' | 'writable' | 'managementAvailable' | 'managementPath'>,
 ): KnowledgeConnectionView {
-  const managementAvailable = options.managementAvailable && settings.backend === 'local'
+  const managementAvailable = resolveBoolean(options.managementAvailable)
   return {
     backend: settings.backend,
     remoteTimeoutMs: settings.remoteTimeoutMs,

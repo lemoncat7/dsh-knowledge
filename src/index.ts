@@ -14,6 +14,7 @@ import { Config as ConfigSchema, resolveConfig, type Config as KnowledgeConfig }
 import { registerKnowledgeControl, type KnowledgeConnectionUpdate } from './control.js'
 import { ExtractionCoordinator } from './extraction.js'
 import { LocalKnowledgeProvider } from './local-provider.js'
+import { registerRemoteManagementProxy } from './management-proxy.js'
 import type { KnowledgeProvider } from './provider.js'
 import { KnowledgeProviderRouter } from './provider-router.js'
 import { registerKnowledgeCatalog, registerRecall } from './recall.js'
@@ -75,6 +76,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   registerRecall(runtime, provider, resolved, handleCodec)
   registerKnowledgeTools(runtime, provider, handleCodec)
 
+  let refreshManagementApi = (): void => {}
   let switching: Promise<unknown> = Promise.resolve()
   const updateConnection = (input: KnowledgeConnectionUpdate): Promise<KnowledgeConnectionSettings> => {
     const pending = switching.then(async () => {
@@ -95,6 +97,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
         persisted = true
         await providerRouter.replace(candidate)
         activeConnection = next
+        refreshManagementApi()
         runtime.logger.info(`dsh-knowledge: verified and switched to ${next.backend} provider`)
         return activeConnection
       } catch (error) {
@@ -148,12 +151,25 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
       managementProvider.ensureBootstrapToken(resolved.apiToken)
     }
 
-    if (managementProvider !== undefined && resolved.exposeWeb) {
-      const disposeLocalApi = registerKnowledgeApi(httpRuntime, managementProvider, LOCAL_MANAGEMENT_API_PREFIX, {
-        authMode: 'same-origin',
-        service: { current: publicApiView, update: updatePublicApi },
-      })
-      httpRuntime.effect(() => disposeLocalApi, 'dsh-knowledge.local-management-api')
+    let disposeManagementApi: (() => void) | undefined
+    const applyManagementApiRoute = (): void => {
+      disposeManagementApi?.()
+      disposeManagementApi = undefined
+      if (!resolved.exposeWeb) return
+      if (activeConnection.backend === 'remote') {
+        disposeManagementApi = registerRemoteManagementProxy(httpRuntime, LOCAL_MANAGEMENT_API_PREFIX, () => activeConnection)
+      } else if (managementProvider !== undefined) {
+        disposeManagementApi = registerKnowledgeApi(httpRuntime, managementProvider, LOCAL_MANAGEMENT_API_PREFIX, {
+          authMode: 'same-origin',
+          service: { current: publicApiView, update: updatePublicApi },
+        })
+      }
+    }
+    refreshManagementApi = applyManagementApiRoute
+    applyManagementApiRoute()
+    httpRuntime.effect(() => () => { disposeManagementApi?.() }, 'dsh-knowledge.management-api')
+
+    if (resolved.exposeWeb) {
       const disposeWeb = registerKnowledgeWeb(httpRuntime, resolved.webPath, LOCAL_MANAGEMENT_API_PREFIX, 'same-origin')
       httpRuntime.effect(() => disposeWeb, 'dsh-knowledge.web')
     }
@@ -165,8 +181,8 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
       current: () => activeConnection,
       canSwitchRemote: () => !publicApiEnabled,
       writable: resolved.connectionPath !== undefined,
-      managementAvailable: managementProvider !== undefined && resolved.exposeWeb,
-      ...managementProvider !== undefined && resolved.exposeWeb ? { managementPath: resolved.webPath } : {},
+      managementAvailable: () => resolved.exposeWeb && (activeConnection.backend === 'remote' || managementProvider !== undefined),
+      ...resolved.exposeWeb ? { managementPath: resolved.webPath } : {},
       update: updateConnection,
     })
     httpRuntime.effect(() => disposeControl, 'dsh-knowledge.connection-control')

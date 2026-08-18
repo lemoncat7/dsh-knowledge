@@ -52,7 +52,7 @@ const state = {
   candidates: [],
   candidateStatus: 'pending',
   tokens: [],
-  service: { publicApiEnabled: false, publicApiPrefix: '/knowledge-api/v1' },
+  service: { publicApiEnabled: false, publicApiPrefix: '/knowledge-api/v1', remote: false },
   loading: false,
   error: '',
 }
@@ -158,6 +158,7 @@ async function api(path, options = {}) {
 async function boot() {
   if (AUTH_MODE === 'same-origin') {
     state.token = ''
+    try { state.service = await api('service') } catch {}
     await navigate('overview')
     return
   }
@@ -238,7 +239,7 @@ async function navigate(view) {
     if (view === 'candidates') await loadCandidates()
     if (view === 'tokens') await loadTokens()
   } catch (error) {
-    if (error.status === 401) return signOut()
+    if (error.status === 401 && AUTH_MODE === 'bearer') return signOut()
     state.error = friendlyError(error)
   } finally {
     state.loading = false
@@ -446,7 +447,7 @@ function renderSidebar() {
   const pending = state.stats?.candidates.pending
   const navItems = [
     ['overview', '概览', '◫'], ['bases', '知识库', '▦'], ['entries', '文档', '◇'], ['candidates', '审核', '✓'], ['tokens', '访问管理', '⌁'],
-  ]
+  ].filter(([id]) => id !== 'tokens' || !state.service.remote)
   return element('aside', { class: 'sidebar', 'aria-label': '知识库导航' },
     element('div', { class: 'brand' },
       element('div', { class: 'brand-mark', 'aria-hidden': 'true' }, 'K'),
@@ -458,7 +459,7 @@ function renderSidebar() {
     }, element('span', { class: 'nav-icon', 'aria-hidden': 'true' }, icon), label,
     id === 'candidates' && pending ? element('span', { class: 'nav-count', 'aria-label': `${pending} 条待审核` }, pending) : null))),
     element('div', { class: 'sidebar-footer' },
-      element('div', { class: 'connection' }, element('span', { class: 'status-dot', 'aria-hidden': 'true' }), '知识库已连接'),
+      element('div', { class: 'connection' }, element('span', { class: 'status-dot', 'aria-hidden': 'true' }), state.service.remote ? '中央知识库已连接' : '本地知识库已连接'),
       AUTH_MODE === 'bearer' ? actionButton('退出当前会话', signOut, 'ghost small') : null,
     ),
   )

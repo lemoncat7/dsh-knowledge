@@ -22,6 +22,7 @@ The DSH core is never patched. `src/index.ts` is the composition root; every oth
 - `provider.ts` is the storage/application port. Local and remote clients implement the same asynchronous contract.
 - `local-provider.ts` owns schema migrations, transactions, FTS and token hashes.
 - `remote-provider.ts` is an authenticated, timeout-bounded HTTPS adapter.
+- `management-proxy.ts` lets the embedded console operate on the selected central service while keeping the saved remote token on the DSH server.
 - `extraction.ts` snapshots completed turns, resolves writable mounts and validates model JSON fail-closed.
 - `retrieval.ts` owns mounted-scope authorization, signed handles, ranking and bounded rendering shared by proactive and tool-driven retrieval.
 - `recall.ts` contributes a lightweight mounted-base catalog and performs bounded proactive retrieval in the asynchronous `agent/pre-step` waterfall.
@@ -84,7 +85,7 @@ Only active entries from recall-enabled resolved mounts are searched. Each searc
 
 Local and remote modes are mutually exclusive for one plugin instance. There is deliberately no transparent cache or two-way synchronization: that would create conflict semantics at a second layer and obscure which database is authoritative.
 
-A local provider always supports its same-origin management console unless `exposeWeb` is explicitly disabled. This internal surface is distinct from the public API: enabling the public route is an explicit, persistent action in “访问管理”, and enabling it prevents the same instance from switching to a remote provider. Remote clients use the same provider contract, so extraction candidates and recall work identically. Network timeouts and DSH turn cancellation bound remote requests.
+A local provider always supports its same-origin management console unless `exposeWeb` is explicitly disabled. This internal surface is distinct from the public API: enabling the public route is an explicit, persistent action in “访问管理”, and enabling it prevents the same instance from switching to a remote provider. In remote mode the same embedded console uses a bounded same-origin server proxy to the configured central API; the browser never receives the saved remote token, and central access-management controls remain hidden. Remote clients use the same provider contract, so extraction candidates and recall work identically. Network timeouts and DSH turn cancellation bound remote requests.
 
 ## Security boundaries
 
