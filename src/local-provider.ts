@@ -307,6 +307,29 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     return updated
   }
 
+  async deleteKnowledgeBase(id: string): Promise<void> {
+    this.assertOpen()
+    if (id === DEFAULT_KNOWLEDGE_BASE_ID) throw conflict('the default knowledge base cannot be deleted')
+    this.transaction(() => {
+      const row = this.db.prepare('SELECT status FROM knowledge_bases WHERE id=?').get(id) as SqlRow | undefined
+      if (row === undefined) throw notFound('knowledge base', id)
+      if (row.status !== 'archived') throw conflict('knowledge base must be archived before deletion')
+      this.db.prepare(`
+        DELETE FROM knowledge_candidates
+        WHERE json_extract(draft_json, '$.knowledgeBaseId')=?
+           OR target_id IN (SELECT id FROM knowledge_entries WHERE knowledge_base_id=?)
+      `).run(id, id)
+      this.db.prepare(`
+        DELETE FROM knowledge_fts
+        WHERE knowledge_id IN (SELECT id FROM knowledge_entries WHERE knowledge_base_id=?)
+      `).run(id)
+      this.db.prepare('DELETE FROM knowledge_entries WHERE knowledge_base_id=?').run(id)
+      this.db.prepare('DELETE FROM knowledge_mounts WHERE knowledge_base_id=?').run(id)
+      this.db.prepare('DELETE FROM knowledge_documents WHERE knowledge_base_id=?').run(id)
+      this.db.prepare('DELETE FROM knowledge_bases WHERE id=?').run(id)
+    })
+  }
+
   async listDocuments(knowledgeBaseId?: string, query?: string): Promise<KnowledgeDocument[]> {
     this.assertOpen()
     const where: string[] = []

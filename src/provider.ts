@@ -33,6 +33,7 @@ export interface KnowledgeProvider {
   patchKnowledgeBase(id: string, patch: KnowledgeBasePatch, signal?: AbortSignal): Promise<KnowledgeBase>
   archiveKnowledgeBase(id: string, signal?: AbortSignal): Promise<KnowledgeBase>
   restoreKnowledgeBase(id: string, signal?: AbortSignal): Promise<KnowledgeBase>
+  deleteKnowledgeBase(id: string, signal?: AbortSignal): Promise<void>
   listDocuments(knowledgeBaseId?: string, query?: string, signal?: AbortSignal): Promise<KnowledgeDocument[]>
   getDocument(id: string, signal?: AbortSignal): Promise<KnowledgeDocument | undefined>
   listMounts(targetKind?: KnowledgeMountTargetKind, targetId?: string, signal?: AbortSignal): Promise<KnowledgeMount[]>

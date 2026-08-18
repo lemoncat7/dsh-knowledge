@@ -105,6 +105,11 @@ async function dispatch(
       requirePermission(actor.permissions, 'admin')
       return sendJson(res, 200, await provider.restoreKnowledgeBase(id))
     }
+    if (id !== undefined && method === 'DELETE' && segments.length === 2) {
+      requirePermission(actor.permissions, 'admin')
+      await provider.deleteKnowledgeBase(id)
+      return sendJson(res, 204, undefined)
+    }
   }
 
   if (segments[0] === 'mounts') {

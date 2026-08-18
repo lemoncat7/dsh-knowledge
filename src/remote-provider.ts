@@ -71,6 +71,10 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     return this.request<KnowledgeBase>(`knowledge-bases/${encodeURIComponent(id)}/restore`, { method: 'POST', signal })
   }
 
+  async deleteKnowledgeBase(id: string, signal?: AbortSignal): Promise<void> {
+    await this.request<void>(`knowledge-bases/${encodeURIComponent(id)}`, { method: 'DELETE', signal })
+  }
+
   async listDocuments(knowledgeBaseId?: string, query?: string, signal?: AbortSignal): Promise<KnowledgeDocument[]> {
     const params = new URLSearchParams()
     if (knowledgeBaseId !== undefined) params.set('knowledgeBaseId', knowledgeBaseId)

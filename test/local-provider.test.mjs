@@ -166,6 +166,37 @@ test('bulk mount changes commit atomically', async (t) => {
   assert.equal((await provider.listMounts('project', '/workspace/batch')).length, 1)
 })
 
+test('only archived non-default knowledge bases can be permanently deleted', async (t) => {
+  const provider = await fixture(t)
+  const base = await provider.createKnowledgeBase({
+    name: 'Disposable base', description: '', defaultTags: [], extractionInstructions: '',
+  })
+  const entry = await provider.create({
+    knowledgeBaseId: base.id, title: 'Disposable knowledge', body: 'Delete this with its knowledge base.',
+    type: 'fact', tags: ['disposable'], scope: { kind: 'global' }, confidence: 0.9,
+  })
+  await provider.upsertMount({
+    targetKind: 'project', targetId: '/workspace/disposable', knowledgeBaseId: base.id,
+    enabled: true, recallEnabled: true, writeMode: 'audit', includeTags: [], excludeTags: [], extractionInstructions: '',
+  })
+  await provider.propose({
+    action: 'update', targetId: entry.id,
+    draft: { ...entry, body: 'Candidate content that must also be deleted.' },
+    reason: 'Deletion test.',
+  }, 'delete-base:1')
+
+  await assert.rejects(() => provider.deleteKnowledgeBase(base.id), /must be archived/)
+  await assert.rejects(() => provider.deleteKnowledgeBase('default'), /cannot be deleted/)
+  await provider.archiveKnowledgeBase(base.id)
+  await provider.deleteKnowledgeBase(base.id)
+
+  assert.equal(await provider.getKnowledgeBase(base.id), undefined)
+  assert.equal(await provider.get(entry.id), undefined)
+  assert.deepEqual(await provider.listMounts(undefined, undefined), [])
+  assert.deepEqual(await provider.listCandidates('pending', 10), [])
+  assert.deepEqual(await provider.listDocuments(base.id), [])
+})
+
 test('schema v1 databases migrate existing entries into the default knowledge base', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-knowledge-v1-'))
   const path = join(root, 'knowledge.sqlite')

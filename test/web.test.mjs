@@ -55,6 +55,8 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(application, /文档边栏显示/)
   assert.match(application, /data-sidebar-hidden/)
   assert.match(application, /data-library-hidden/)
+  assert.match(application, /永久删除/)
+  assert.match(application, /输入知识库名称确认/)
 
   const stylesheet = await fetch(`${base}/knowledge/styles.css`)
   assert.equal(stylesheet.status, 200)

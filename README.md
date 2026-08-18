@@ -119,6 +119,7 @@ dsh plugin --profile web remove @lemoncat7/dsh-knowledge
 | GET/PUT/PATCH | `/knowledge-bases/:id` | read/write | 详情、完整替换和局部修改 |
 | POST | `/knowledge-bases/:id/archive` | admin | 归档并关闭相关挂载 |
 | POST | `/knowledge-bases/:id/restore` | admin | 恢复已归档知识库 |
+| DELETE | `/knowledge-bases/:id` | admin | 永久删除已归档知识库及全部关联数据 |
 | GET/POST/DELETE | `/mounts` | read/write | 挂载查询、更新和删除 |
 | POST | `/mounts/bulk` | write | 事务型批量挂载与取消 |
 | GET | `/mounts/resolve` | read | 解析项目继承与会话覆盖 |

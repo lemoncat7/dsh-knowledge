@@ -566,7 +566,8 @@ function renderKnowledgeBaseCard(base) {
         state.documentView.mode = 'documents'
         void navigate('entries')
       }, 'ghost small'),
-      archived ? actionButton('恢复', () => confirmRestoreKnowledgeBase(base), 'primary small') : actionButton('编辑', () => openKnowledgeBaseEditor(base), 'small'),
+      archived ? actionButton('恢复', () => confirmRestoreKnowledgeBase(base), 'small') : actionButton('编辑', () => openKnowledgeBaseEditor(base), 'small'),
+      archived ? actionButton('永久删除', () => confirmDeleteKnowledgeBase(base), 'danger small') : null,
       !archived && base.id !== 'default' ? actionButton('归档', () => confirmArchiveKnowledgeBase(base), 'danger small') : null,
     ),
   )
@@ -1412,6 +1413,44 @@ function confirmRestoreKnowledgeBase(base) {
       await navigate('bases')
     },
   })
+}
+
+function confirmDeleteKnowledgeBase(base) {
+  const confirmation = formField('输入知识库名称确认', 'input', '', {
+    required: true, autocomplete: 'off', placeholder: base.name,
+    'aria-describedby': 'delete-base-warning',
+  })
+  const form = element('form', {},
+    element('div', { id: 'delete-base-warning', class: 'context-warning' },
+      '此操作无法撤销。知识库中的全部知识、版本历史、候选、挂载和生成文档都会永久删除。'),
+    confirmation.wrapper,
+  )
+  confirmation.wrapper.classList.add('delete-base-confirmation')
+  openModal({
+    title: `永久删除“${base.name}”？`,
+    description: '只有已归档知识库可以永久删除。',
+    body: form,
+    primaryLabel: '永久删除',
+    primaryVariant: 'danger',
+    onPrimary: async () => {
+      if (!form.reportValidity()) return false
+      if (confirmation.input.value.trim() !== base.name) {
+        showToast('输入的知识库名称不匹配。', 'error')
+        confirmation.input.select()
+        return false
+      }
+      await api(`knowledge-bases/${encodeURIComponent(base.id)}`, { method: 'DELETE' })
+      if (state.documentView.knowledgeBaseId === base.id) {
+        state.documentView.knowledgeBaseId = ''
+        state.documentView.documentId = ''
+      }
+      if (state.entryFilters.knowledgeBaseId === base.id) state.entryFilters.knowledgeBaseId = ''
+      showToast('知识库及其全部关联数据已永久删除。')
+      await navigate('bases')
+      return true
+    },
+  })
+  confirmation.input.focus()
 }
 
 function openEntryEditor(entry, candidate) {
