@@ -426,7 +426,6 @@ function renderShell() {
           paneToggleButton('main', !state.documentView.sidebarHidden, () => setSidebarHidden(!state.documentView.sidebarHidden), '主导航栏'),
           element('div', {}, element('h1', {}, title), element('p', {}, subtitle)),
         ),
-        state.view === 'entries' && state.documentView.mode === 'documents' ? renderDocumentColumnControls() : null,
       ),
       element('div', { class: 'page' }, renderCurrentView()),
     ),
@@ -875,7 +874,7 @@ function renderEntries() {
       element('div', { class: 'tabs', role: 'tablist', 'aria-label': '知识视图' },
         documentViewTab('文档', 'documents'), documentViewTab('条目管理', 'entries')),
       element('div', { class: 'document-toolbar-actions' },
-        actionButton('视图设置', openLayoutEditor, 'small', { 'aria-label': '设置导航与文档栏的显示和宽度' }),
+        renderDocumentColumnControls(),
         actionButton('+ 新建知识', () => openEntryEditor(), 'primary'),
       ),
     ),
@@ -962,75 +961,6 @@ function renderColumnResizer(column, label) {
     onPointerDown: event => startColumnResize(event, column),
     onKeyDown: event => resizeColumnWithKeyboard(event, column),
   }, element('span', { 'aria-hidden': 'true' }, '⋮'))
-}
-
-function openLayoutEditor() {
-  const fields = [
-    layoutRangeField('主导航栏', state.documentView.sidebarWidth, 190, 340),
-    layoutRangeField('知识库二级栏', state.documentView.libraryWidth, 170, 360),
-    layoutRangeField('文档列表栏', state.documentView.documentListWidth, 210, 480),
-  ]
-  const visibility = [
-    layoutVisibilityOption('显示主导航栏', !state.documentView.sidebarHidden),
-    layoutVisibilityOption('显示知识库二级栏', !state.documentView.libraryHidden),
-    layoutVisibilityOption('显示文档列表栏', !state.documentView.documentListHidden),
-  ]
-  const reset = actionButton('恢复默认布局', () => {
-    const defaults = [236, 220, 280]
-    fields.forEach((field, index) => field.setValue(defaults[index]))
-    visibility.forEach(option => { option.input.checked = true })
-  }, 'ghost small')
-  const body = element('div', { class: 'layout-editor' },
-    element('div', { class: 'layout-visibility', 'aria-label': '边栏显示设置' }, visibility.map(option => option.wrapper)),
-    fields.map(field => field.wrapper),
-    element('div', { class: 'layout-editor-note' },
-      element('span', {}, '拖动栏与栏之间的分隔线可调整宽度；收起和展开请使用文档标题栏的栏位开关。窗口过窄时会自动切换为紧凑布局。'),
-      reset,
-    ),
-  )
-  openModal({
-    title: '调整边栏宽度',
-    description: '分别设置管理导航、知识库二级栏和文档列表栏。',
-    body,
-    primaryLabel: '应用布局',
-    onPrimary: async () => {
-      state.documentView.sidebarHidden = !visibility[0].input.checked
-      state.documentView.libraryHidden = !visibility[1].input.checked
-      state.documentView.documentListHidden = !visibility[2].input.checked
-      state.documentView.sidebarWidth = fields[0].value()
-      state.documentView.libraryWidth = fields[1].value()
-      state.documentView.documentListWidth = fields[2].value()
-      saveDocumentLayout()
-      renderShell()
-      showToast('边栏宽度已保存。')
-      return true
-    },
-  })
-}
-
-function layoutVisibilityOption(label, checked) {
-  const input = element('input', { type: 'checkbox', checked })
-  return {
-    input,
-    wrapper: element('label', { class: 'check-option' }, input, element('span', {}, element('strong', {}, label))),
-  }
-}
-
-function layoutRangeField(label, value, minimum, maximum) {
-  const output = element('output', { class: 'range-value' }, `${value}px`)
-  const input = element('input', {
-    type: 'range', min: minimum, max: maximum, step: '10', value,
-    'aria-label': label,
-    onInput: event => { output.textContent = `${event.target.value}px` },
-  })
-  return {
-    wrapper: element('div', { class: 'field' },
-      element('div', { class: 'layout-range-label' }, element('label', {}, label), output),
-      element('div', { class: 'range-row' }, input),
-    ),
-    value: () => Number(input.value),
-    setValue: next => { input.value = String(next); output.textContent = `${next}px` },
-  }
 }
 
 function startColumnResize(event, column) {
