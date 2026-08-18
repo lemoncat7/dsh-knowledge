@@ -40,7 +40,7 @@ export const Config: Schema<Config> = Schema.object({
   extractionTimeoutMs: Schema.number().min(1000).max(300_000).default(90_000),
   extractionMaxInputChars: Schema.number().min(1000).max(200_000).default(30_000),
   defaultScope: Schema.union(['project', 'global']).default('project'),
-  autoRecallLimit: Schema.number().min(0).max(20).default(5),
+  autoRecallLimit: Schema.number().min(0).max(20).default(3),
   recallMaxChars: Schema.number().min(500).max(50_000).default(6000),
 })
 
@@ -68,7 +68,7 @@ export function resolveConfig(config: Config): ResolvedConfig {
     extractionTimeoutMs: config.extractionTimeoutMs ?? 90_000,
     extractionMaxInputChars: config.extractionMaxInputChars ?? 30_000,
     defaultScope: config.defaultScope ?? 'project',
-    autoRecallLimit: config.autoRecallLimit ?? 5,
+    autoRecallLimit: config.autoRecallLimit ?? 3,
     recallMaxChars: config.recallMaxChars ?? 6000,
   }
   if (resolved.backend === 'local' && (resolved.databasePath === undefined || resolved.databasePath.trim().length === 0)) {

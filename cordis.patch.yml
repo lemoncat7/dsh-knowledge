@@ -8,4 +8,4 @@
         databasePath: !!js dshHomePath('knowledge/knowledge.sqlite')
         exposeApi: false
         extractionEnabled: true
-        autoRecallLimit: 5
+        autoRecallLimit: 3

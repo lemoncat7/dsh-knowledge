@@ -1,12 +1,15 @@
 import type { Context } from '@deepseek-ai/cordis'
+import { randomBytes } from 'node:crypto'
 import { registerKnowledgeApi } from './api.js'
 import { Config as ConfigSchema, resolveConfig, type Config as KnowledgeConfig } from './config.js'
 import { ExtractionCoordinator } from './extraction.js'
 import { LocalKnowledgeProvider } from './local-provider.js'
 import type { KnowledgeProvider } from './provider.js'
-import { registerRecall } from './recall.js'
+import { registerKnowledgeCatalog, registerRecall } from './recall.js'
+import { KnowledgeHandleCodec } from './retrieval.js'
 import { RemoteKnowledgeProvider } from './remote-provider.js'
 import { createWritebackMessage, type RuntimeContextLike } from './runtime.js'
+import { registerKnowledgeTools } from './tools.js'
 import { registerKnowledgeWeb } from './web.js'
 
 export const Config = ConfigSchema
@@ -19,10 +22,10 @@ export { RemoteKnowledgeProvider, RemoteProviderError } from './remote-provider.
 /** Human-readable Cordis plugin name. */
 export const name = 'dsh-knowledge'
 
-/** Extraction requires DSH's LLM runtime; WebServer remains optional unless exposeApi is enabled. */
-export const inject = ['llm']
+/** Extraction, native retrieval tools, and mounted-base context require the corresponding DSH host services. */
+export const inject = ['llm', 'tools', 'systemPrompt']
 
-/** Mount storage, recall, extraction, and the optional authenticated HTTP API. */
+/** Mount storage, hybrid retrieval, extraction, and the optional authenticated HTTP API. */
 export function apply(ctx: Context, config: KnowledgeConfig): void {
   const runtime = ctx as unknown as RuntimeContextLike
   const resolved = resolveConfig(config)
@@ -35,7 +38,10 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
     })
 
   const coordinator = new ExtractionCoordinator(runtime, provider, resolved)
-  registerRecall(runtime, provider, resolved)
+  const handleCodec = new KnowledgeHandleCodec(randomBytes(32))
+  registerKnowledgeCatalog(runtime, provider, resolved)
+  registerRecall(runtime, provider, resolved, handleCodec)
+  registerKnowledgeTools(runtime, provider, handleCodec)
 
   if (resolved.extractionEnabled) {
     runtime.on('agent/turn-stopping', async ({ agent, turn, signal }) => {

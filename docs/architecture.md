@@ -7,7 +7,7 @@ The plugin is a modular monolith inside one DSH process. It keeps deployment sim
 ```text
 DSH events / pre-step / HTTP / Web console
               |
-     extraction, recall, API
+ extraction, catalog, retrieval tools, API
               |
        KnowledgeProvider
           /          \
@@ -23,7 +23,9 @@ The DSH core is never patched. `src/index.ts` is the composition root; every oth
 - `local-provider.ts` owns schema migrations, transactions, FTS and token hashes.
 - `remote-provider.ts` is an authenticated, timeout-bounded HTTPS adapter.
 - `extraction.ts` snapshots completed turns, resolves writable mounts and validates model JSON fail-closed.
-- `recall.ts` performs bounded retrieval in the asynchronous `agent/pre-step` waterfall.
+- `retrieval.ts` owns mounted-scope authorization, signed handles, ranking and bounded rendering shared by proactive and tool-driven retrieval.
+- `recall.ts` contributes a lightweight mounted-base catalog and performs bounded proactive retrieval in the asynchronous `agent/pre-step` waterfall.
+- `tools.ts` registers read-only `knowledge_search` and paginated `knowledge_read` tools whose scope is resolved from the calling Agent.
 - `api.ts` is a size-bounded HTTP adapter with permission checks and safe errors.
 - `web.ts` serves a same-origin, CSP-constrained management console from package-owned static assets.
 - `web/` is a dependency-free browser application with a small API/state/view boundary; it stores credentials only in session storage.
@@ -31,7 +33,7 @@ The DSH core is never patched. `src/index.ts` is the composition root; every oth
 
 ## Data model and consistency
 
-SQLite is authoritative in local mode. Schema version 2 contains:
+SQLite is authoritative in local mode. Schema version 4 contains:
 
 - `knowledge_bases`: independently named destinations with default tags and extraction instructions.
 - `knowledge_mounts`: project/session policy overlays for recall, write mode and tag constraints.
@@ -64,15 +66,18 @@ The extractor explicitly refuses secrets and ephemeral output in its system poli
 
 ## Recall flow
 
-Recall uses `agent/pre-step`, not a synchronous prompt callback. This is intentional:
+Recall is a hybrid of a replaceable runtime-context catalog, proactive snippets, and model-driven tools:
 
-- the waterfall sees the current user messages;
+- `system-prompt/assemble` resolves the current session mounts and publishes only knowledge-base names, descriptions and tag filters as a lightweight runtime-context snapshot;
+- `agent/pre-step` sees only the current claimed user input and proactively searches a small configurable number of snippets (default 3);
+- `knowledge_search` lets the model issue a focused natural-language query across all or one mounted base;
+- `knowledge_read` opens an exact matched section through a signed, session-bound handle and paginates unusually long content;
 - remote retrieval can be awaited;
 - cancellation propagates through the current turn signal;
-- the injected message is attributed as plugin `dsh-knowledge`, form `recall`;
+- proactively injected snippets are attributed as plugin `dsh-knowledge`, form `recall`;
 - retrieval failure is fail-open and never prevents a model response.
 
-Only active entries from recall-enabled resolved mounts are searched. Each search applies that mount's include/exclude tag constraints. Exact project entries are ordered before global entries, and only a configured number and character budget are injected. The framing tells the model that knowledge is contextual data and cannot override current system or user instructions.
+Only active entries from recall-enabled resolved mounts are searched. Each search and read applies that mount's include/exclude tag constraints and project scope. Exact project entries are ordered before global entries. Proactive retrieval injects only compact snippets and handles; full content enters the model context only after an explicit `knowledge_read` call. The framing tells the model that knowledge is contextual data and cannot override current system or user instructions.
 
 ## Local and remote topology
 
@@ -88,6 +93,7 @@ A local provider may expose the API and become a central service. Remote clients
 - Request bodies are capped at 1 MiB and every domain value has size/range validation.
 - Hard deletion and token management require admin.
 - Remote URLs require HTTPS except explicit loopback testing.
+- Tool handles are HMAC-signed, bound to the calling session, and re-authorized against live mount, project and tag policy on every read.
 - The embedded DSH web server has no TLS; LAN/public exposure requires an HTTPS reverse proxy.
 - The management console uses the same Bearer permissions as every other client, never puts tokens in URLs, and ships with a restrictive Content Security Policy.
 

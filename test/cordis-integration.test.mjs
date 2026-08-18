@@ -26,8 +26,17 @@ test('real Cordis context dynamically mounts API and Web routes', async (t) => {
       return () => routes.splice(routes.indexOf(route), 1)
     }
   }
+  class FakeTools extends Service {
+    constructor(inner) { super(inner, 'tools') }
+    register() { return () => {} }
+  }
+  class FakeSystemPrompt extends Service {
+    constructor(inner) { super(inner, 'systemPrompt') }
+  }
 
   await ctx.plugin(FakeLlm).await()
+  await ctx.plugin(FakeTools).await()
+  await ctx.plugin(FakeSystemPrompt).await()
   await ctx.plugin(FakeWebServer).await()
   await ctx.plugin(KnowledgePlugin, {
     backend: 'local', databasePath: join(root, 'knowledge.sqlite'), remoteTimeoutMs: 5000,

@@ -23,6 +23,7 @@ test('plugin extracts after a completed turn and recalls only approved knowledge
   const listeners = new Map()
   const disposers = []
   const extractionRequests = []
+  const tools = new Map()
   const ctx = {
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     llm: {
@@ -40,6 +41,12 @@ test('plugin extracts after a completed turn and recalls only approved knowledge
           reason: 'Reusable DSH operation.',
         }] }) },
         yield { type: 'finish', reason: { kind: 'stop' } }
+      },
+    },
+    tools: {
+      register(definition) {
+        tools.set(definition.name, definition)
+        return () => tools.delete(definition.name)
       },
     },
     on(name, listener) { listeners.set(name, listener); return () => listeners.delete(name) },
@@ -119,6 +126,33 @@ test('plugin extracts after a completed turn and recalls only approved knowledge
   assert.equal(afterApproval.messages.at(-1).source.form, 'recall')
   assert.equal(afterApproval.messages.some(message => message.source.form === 'notice'), false)
   assert.match(afterApproval.messages.at(-1).content[0].text, /DSH plugin installation command/)
+  assert.match(afterApproval.messages.at(-1).content[0].text, /handle: k1\./)
+
+  const assembly = { sections: [], contexts: [], tools: [], variables: {} }
+  const catalog = await listeners.get('system-prompt/assemble')(
+    assembly,
+    { agent: { session }, signal: new AbortController().signal },
+    async () => assembly,
+  )
+  assert.equal(catalog.contexts.length, 1)
+  assert.match(catalog.contexts[0].text, /Only reusable DSH plugin installation/)
+  assert.match(catalog.contexts[0].text, /knowledge_search/)
+
+  assert.deepEqual([...tools.keys()].sort(), ['knowledge_read', 'knowledge_search'])
+  const toolExec = { agent: { session }, signal: new AbortController().signal }
+  const searchOutput = await tools.get('knowledge_search').execute({ query: 'DSH plugin installation' }, toolExec)
+  assert.match(searchOutput, /DSH plugin installation command/)
+  const handle = /handle: (k1\.[^\s]+)/.exec(searchOutput)?.[1]
+  assert.ok(handle)
+  const readOutput = await tools.get('knowledge_read').execute({ handle }, toolExec)
+  assert.match(readOutput, /Install profile plugins with dsh plugin/)
+  await assert.rejects(
+    tools.get('knowledge_read').execute({ handle }, {
+      agent: { session: { ...session, id: 'another-session' } },
+      signal: new AbortController().signal,
+    }),
+    /does not belong to this session/,
+  )
 })
 
 test('direct write approves all non-conflicts and skips unmounted sessions', async (t) => {
@@ -126,6 +160,7 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
   const databasePath = join(root, 'knowledge.sqlite')
   const listeners = new Map()
   const disposers = []
+  const tools = new Map()
   let targetId = ''
   let streamCalls = 0
   const streamBudgets = []
@@ -161,6 +196,12 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
           },
         ] }) }
         yield { type: 'finish', reason: { kind: 'stop' } }
+      },
+    },
+    tools: {
+      register(definition) {
+        tools.set(definition.name, definition)
+        return () => tools.delete(definition.name)
       },
     },
     on(name, listener) { listeners.set(name, listener); return () => listeners.delete(name) },

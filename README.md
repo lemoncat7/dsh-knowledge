@@ -2,7 +2,7 @@
 
 `dsh-knowledge` 是面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的知识库插件。它不修改 DSH Agent Loop，同一个插件既能使用本地 SQLite，也能连接远程中央知识库。
 
-当前版本 `0.4.0-alpha.3` 已实现可部署的多知识库与文档型 Web 管理台：
+当前版本 `0.5.0-alpha.1` 已实现可部署的多知识库、按需检索工具与文档型 Web 管理台：
 
 - 回答完成后同步调用 DSH 当前模型判断是否产生知识，并在回答下方显示逐库回写结果。
 - 回写结果只作为 UI 状态展示，在下一次模型请求前会被移除，不占用会话上下文。
@@ -14,7 +14,9 @@
 - 未挂载知识库时，不召回、不提取、不回写。
 - 全局与项目范围，以及偏好、事实、决策、流程、经验五类知识。
 - SQLite WAL、FTS5 全文搜索、原子事务、完整版本历史和幂等提取任务。
-- 审核通过的知识在下一轮 `agent/pre-step` 中作为可追踪的 `recall` 上下文注入。
+- 挂载库的名称和描述作为轻量动态目录注入，不直接塞入文档正文。
+- 每条新用户消息默认只主动预取 3 条短摘要；模型可按需调用只读的 `knowledge_search` 与 `knowledge_read` 工具继续检索。
+- 搜索和读取由服务端按当前会话挂载、项目范围及包含/排除标签强制限权，读取句柄带签名且仅限当前会话。
 - 本地与远程 Provider 使用同一接口；远程模式不做隐式双向同步。
 - Bearer Token 仅保存 SHA-256 摘要，支持 `read / propose / write / admin` 权限及吊销。
 - 认证 HTTP API，可作为其他 DSH 客户端和未来桌面端的中央知识库。
@@ -27,7 +29,7 @@
 ## 安装
 
 ```bash
-dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.4.0-alpha.3.tgz
+dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.5.0-alpha.1.tgz
 ```
 
 卸载：
@@ -50,7 +52,7 @@ dsh plugin --profile web remove @lemoncat7/dsh-knowledge
     databasePath: !!js dshHomePath('knowledge/knowledge.sqlite')
     extractionEnabled: true
     defaultScope: project
-    autoRecallLimit: 5
+    autoRecallLimit: 3
     exposeApi: false
 ```
 
@@ -92,7 +94,7 @@ dsh plugin --profile web remove @lemoncat7/dsh-knowledge
 - 查看 AI 提取依据，直接通过、编辑后通过或拒绝候选。
 - 创建、查看和撤销客户端令牌；新令牌原文只显示一次。
 
-知识库的 `description` 是回写路由描述：提取器只有在当前对话中的可复用知识符合该描述时，才能选择这个库。挂载只表示“可选”，不代表每次回答都要写入。`extractionInstructions` 用于在匹配后继续限定具体收录规则。
+知识库的 `description` 同时用于读取和回写路由：它会出现在会话的轻量挂载目录中，帮助模型判断何时调用检索工具；提取器也只有在当前对话中的可复用知识符合该描述时，才能选择这个库。挂载只表示“可选”，不代表每次回答都要检索或写入。`extractionInstructions` 用于在匹配后继续限定具体收录规则。
 
 创建示例：
 
@@ -144,7 +146,7 @@ dsh plugin --profile web remove @lemoncat7/dsh-knowledge
     remoteUrl: 'https://knowledge.example.com/knowledge-api/v1'
     remoteToken: !!js process.env.DSH_KNOWLEDGE_REMOTE_TOKEN
     extractionEnabled: true
-    autoRecallLimit: 5
+    autoRecallLimit: 3
 ```
 
 远程地址必须是 HTTPS；只有 `localhost` 和回环 IP 的测试地址允许 HTTP。普通客户端建议只分配 `read + propose` 权限。

@@ -26,6 +26,39 @@ export interface AgentLike {
   session: SessionLike
 }
 
+export interface ToolRunContextLike {
+  agent?: AgentLike
+  signal: AbortSignal
+}
+
+export interface ToolDefinitionLike {
+  name: string
+  description: string
+  parameters: Record<string, unknown>
+  output: {
+    schema: Record<string, unknown>
+    render(args: unknown, value: unknown): TextBlockLike[]
+  }
+  execute(args: unknown, exec: ToolRunContextLike): Promise<unknown>
+  isConcurrencySafe?(args: unknown): boolean
+}
+
+export interface ToolRuntimeLike {
+  register(definition: ToolDefinitionLike): () => void
+}
+
+export interface PromptAssemblyLike {
+  sections: Array<{ name: string; text: string }>
+  contexts: Array<{ name: string; text: string }>
+  tools: unknown[]
+  variables: Record<string, string | undefined>
+}
+
+export interface AssembleContextLike {
+  agent?: AgentLike
+  signal?: AbortSignal
+}
+
 export type PreStepDecision =
   | { kind: 'reject' }
   | { kind: 'enter'; messages: MessageLike[] }
@@ -70,6 +103,7 @@ export interface WebServerLike {
 
 export interface RuntimeContextLike {
   llm: LlmLike
+  tools: ToolRuntimeLike
   webServer?: WebServerLike
   logger: {
     debug(message: unknown): void
@@ -87,6 +121,11 @@ export interface RuntimeContextLike {
     turn: number
     signal: AbortSignal
   }) => void | Promise<void>): () => void
+  on(name: 'system-prompt/assemble', listener: (
+    assembly: PromptAssemblyLike,
+    context: AssembleContextLike,
+    next: () => Promise<PromptAssemblyLike>,
+  ) => Promise<PromptAssemblyLike>): () => void
   effect(factory: () => (() => void | Promise<void>), label?: string): void
   inject?(services: string[], callback: (ctx: RuntimeContextLike) => void): unknown
   get(name: string): unknown
