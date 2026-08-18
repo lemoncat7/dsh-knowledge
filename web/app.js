@@ -11,6 +11,17 @@ const TYPE_DOCUMENTS = {
   preference: 'preferences.md', fact: 'facts.md', decision: 'decisions.md', procedure: 'procedures.md', lesson: 'lessons.md',
 }
 const DOCUMENT_LAYOUT_KEY = 'dsh-knowledge.document-layout'
+const DOCUMENT_COLUMN_LAYOUTS = Object.freeze({
+  library: {
+    widthKey: 'libraryWidth', hiddenKey: 'libraryHidden', cssVariable: '--library-width',
+    minimum: 170, maximum: 360, collapseThreshold: 88, controls: 'knowledge-library-column',
+  },
+  documentList: {
+    widthKey: 'documentListWidth', hiddenKey: 'documentListHidden', cssVariable: '--document-list-width',
+    minimum: 210, maximum: 480, collapseThreshold: 88, controls: 'document-list-column',
+  },
+})
+const COLUMN_REOPEN_DISTANCE = 36
 const pageParams = new URLSearchParams(location.search)
 const mountContext = {
   sessionId: pageParams.get('sessionId')?.trim() || '',
@@ -881,7 +892,7 @@ function renderEntries() {
       'data-document-list-hidden': String(view.documentListHidden),
       style: `--library-width:${view.libraryWidth}px;--document-list-width:${view.documentListWidth}px`,
     },
-      element('aside', { class: 'knowledge-library-column', 'aria-label': '知识库列表' },
+      element('aside', { id: 'knowledge-library-column', class: 'knowledge-library-column', 'aria-label': '知识库列表' },
         element('header', { class: 'column-header' },
           element('div', {}, element('h2', { id: 'documents-heading' }, '知识库'), element('span', {}, `${activeBases.length} 个可用`)),
         ),
@@ -899,7 +910,7 @@ function renderEntries() {
         element('footer', { class: 'column-footer' }, actionButton('+ 新建知识库', () => openKnowledgeBaseEditor(), 'ghost small')),
       ),
       renderColumnResizer('library', '调整知识库栏宽度'),
-      element('aside', { class: 'document-list-column', 'aria-label': '文档列表' },
+      element('aside', { id: 'document-list-column', class: 'document-list-column', 'aria-label': '文档列表' },
         element('header', { class: 'column-header' },
           element('div', {}, element('h2', {}, selectedBase?.name || '文档'), element('span', {}, query ? `找到 ${visibleDocuments.length} 篇` : `${allBaseDocuments.length} 篇文档`)),
         ),
@@ -926,18 +937,24 @@ function setDocumentColumnHidden(column, hidden) {
 }
 
 function renderColumnResizer(column, label) {
-  const isLibrary = column === 'library'
-  const minimum = isLibrary ? 170 : 210
-  const maximum = isLibrary ? 360 : 480
-  const value = isLibrary ? state.documentView.libraryWidth : state.documentView.documentListWidth
+  const layout = DOCUMENT_COLUMN_LAYOUTS[column]
+  const hidden = state.documentView[layout.hiddenKey]
+  const value = state.documentView[layout.widthKey]
   return element('div', {
-    class: 'column-resizer', 'data-column': column, role: 'separator', tabindex: '0',
-    title: `${label}；可拖动或使用左右方向键`,
-    'aria-label': label, 'aria-orientation': 'vertical',
-    'aria-valuemin': minimum, 'aria-valuemax': maximum, 'aria-valuenow': value,
-    onPointerDown: event => startColumnResize(event, column, minimum, maximum),
-    onKeyDown: event => resizeColumnWithKeyboard(event, column, minimum, maximum),
+    class: 'column-resizer', 'data-column': column, 'data-collapsed': String(hidden), 'data-label': label,
+    role: 'separator', tabindex: '0', title: columnResizeTitle(label, hidden),
+    'aria-label': label, 'aria-controls': layout.controls, 'aria-orientation': 'vertical',
+    'aria-valuemin': 0, 'aria-valuemax': layout.maximum, 'aria-valuenow': hidden ? 0 : value,
+    'aria-valuetext': hidden ? '已隐藏' : `${value} 像素`, 'aria-expanded': String(!hidden),
+    onPointerDown: event => startColumnResize(event, column),
+    onKeyDown: event => resizeColumnWithKeyboard(event, column),
   }, element('span', { 'aria-hidden': 'true' }, '⋮'))
+}
+
+function columnResizeTitle(label, hidden) {
+  return hidden
+    ? `${label.replace('调整', '')}已隐藏；向右拖动或按右方向键展开`
+    : `${label}；向左拖到底可隐藏，也可使用左右方向键`
 }
 
 function openLayoutEditor() {
@@ -1009,20 +1026,37 @@ function layoutRangeField(label, value, minimum, maximum) {
   }
 }
 
-function startColumnResize(event, column, minimum, maximum) {
+function startColumnResize(event, column) {
   if (event.button !== 0) return
   event.preventDefault()
+  const layout = DOCUMENT_COLUMN_LAYOUTS[column]
   const handle = event.currentTarget
   const browser = handle.closest('.document-browser')
   if (!browser) return
   const startX = event.clientX
-  const startWidth = column === 'library' ? state.documentView.libraryWidth : state.documentView.documentListWidth
+  const startWidth = state.documentView[layout.widthKey]
+  const startedHidden = state.documentView[layout.hiddenKey]
   handle.setPointerCapture?.(event.pointerId)
   handle.classList.add('is-dragging')
   document.body.classList.add('is-resizing-columns')
   const move = moveEvent => {
-    const width = clampNumber(startWidth + moveEvent.clientX - startX, minimum, maximum, startWidth)
-    setColumnWidth(column, width, browser, handle)
+    const distance = moveEvent.clientX - startX
+    if (startedHidden) {
+      if (distance < COLUMN_REOPEN_DISTANCE) {
+        updateDocumentColumnLayout(column, { hidden: true }, browser, handle)
+        return
+      }
+      const width = clampNumber(startWidth + distance - COLUMN_REOPEN_DISTANCE, layout.minimum, layout.maximum, startWidth)
+      updateDocumentColumnLayout(column, { hidden: false, width }, browser, handle)
+      return
+    }
+    const rawWidth = startWidth + distance
+    if (rawWidth <= layout.collapseThreshold) {
+      updateDocumentColumnLayout(column, { hidden: true }, browser, handle)
+      return
+    }
+    const width = clampNumber(rawWidth, layout.minimum, layout.maximum, startWidth)
+    updateDocumentColumnLayout(column, { hidden: false, width }, browser, handle)
   }
   const finish = () => {
     handle.classList.remove('is-dragging')
@@ -1037,27 +1071,47 @@ function startColumnResize(event, column, minimum, maximum) {
   handle.addEventListener('pointercancel', finish)
 }
 
-function resizeColumnWithKeyboard(event, column, minimum, maximum) {
+function resizeColumnWithKeyboard(event, column) {
   if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
   event.preventDefault()
-  const current = column === 'library' ? state.documentView.libraryWidth : state.documentView.documentListWidth
-  const width = event.key === 'Home' ? minimum
-    : event.key === 'End' ? maximum
-    : clampNumber(current + (event.key === 'ArrowRight' ? 16 : -16), minimum, maximum, current)
+  const layout = DOCUMENT_COLUMN_LAYOUTS[column]
+  const current = state.documentView[layout.widthKey]
+  const hidden = state.documentView[layout.hiddenKey]
   const browser = event.currentTarget.closest('.document-browser')
-  setColumnWidth(column, width, browser, event.currentTarget)
+  if (hidden) {
+    if (!['ArrowRight', 'End'].includes(event.key)) return
+    const width = event.key === 'End' ? layout.maximum : current
+    updateDocumentColumnLayout(column, { hidden: false, width }, browser, event.currentTarget)
+    saveDocumentLayout()
+    return
+  }
+  if (event.key === 'Home' || (event.key === 'ArrowLeft' && current <= layout.minimum)) {
+    updateDocumentColumnLayout(column, { hidden: true }, browser, event.currentTarget)
+    saveDocumentLayout()
+    return
+  }
+  const width = event.key === 'End' ? layout.maximum
+    : clampNumber(current + (event.key === 'ArrowRight' ? 16 : -16), layout.minimum, layout.maximum, current)
+  updateDocumentColumnLayout(column, { hidden: false, width }, browser, event.currentTarget)
   saveDocumentLayout()
 }
 
-function setColumnWidth(column, width, browser, handle) {
-  if (column === 'library') {
-    state.documentView.libraryWidth = width
-    browser?.style.setProperty('--library-width', `${width}px`)
-  } else {
-    state.documentView.documentListWidth = width
-    browser?.style.setProperty('--document-list-width', `${width}px`)
+function updateDocumentColumnLayout(column, { hidden, width }, browser, handle) {
+  const layout = DOCUMENT_COLUMN_LAYOUTS[column]
+  if (Number.isFinite(width)) {
+    state.documentView[layout.widthKey] = width
+    browser?.style.setProperty(layout.cssVariable, `${width}px`)
   }
-  handle?.setAttribute('aria-valuenow', String(width))
+  state.documentView[layout.hiddenKey] = hidden
+  if (browser) browser.dataset[layout.hiddenKey] = String(hidden)
+  if (!handle) return
+  const currentWidth = state.documentView[layout.widthKey]
+  const label = handle.dataset.label || handle.getAttribute('aria-label') || '调整栏宽度'
+  handle.dataset.collapsed = String(hidden)
+  handle.title = columnResizeTitle(label, hidden)
+  handle.setAttribute('aria-valuenow', String(hidden ? 0 : currentWidth))
+  handle.setAttribute('aria-valuetext', hidden ? '已隐藏' : `${currentWidth} 像素`)
+  handle.setAttribute('aria-expanded', String(!hidden))
 }
 
 function documentViewTab(label, mode) {
