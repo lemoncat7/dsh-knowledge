@@ -27,6 +27,8 @@ const state = {
   stats: null,
   overview: null,
   knowledgeBases: [],
+  knowledgeBaseView: 'libraries',
+  knowledgeBaseQuery: '',
   mounts: [],
   resolvedMounts: [],
   mountContext,
@@ -154,6 +156,21 @@ function paneToggleButton(pane, visible, onClick, label) {
     type: 'button', class: 'pane-toggle-button', 'data-pane': pane,
     'aria-label': action, 'aria-pressed': String(visible), title: action, onClick,
   }, element('span', { class: `pane-icon pane-icon-${pane}`, 'aria-hidden': 'true' }))
+}
+
+function interfaceIcon(name, className = 'interface-icon') {
+  const paths = {
+    overview: 'M4 4h6v7H4zM14 4h6v4h-6zM4 15h6v5H4zM14 12h6v8h-6z',
+    bases: 'M5 5.5C5 4.1 8.1 3 12 3s7 1.1 7 2.5S15.9 8 12 8 5 6.9 5 5.5Zm0 0v6C5 12.9 8.1 14 12 14s7-1.1 7-2.5v-6M5 11.5v6C5 18.9 8.1 20 12 20s7-1.1 7-2.5v-6',
+    entries: 'M7 3.5h7l4 4V20.5H7zM14 3.5v4h4M10 12h5M10 16h5',
+    candidates: 'M4.5 12.5 9 17l10.5-11',
+    tokens: 'M14.5 8.5a4 4 0 1 0-3.1 3.9L8 15.8V18H5.8v2.2H3.5V18l4.6-4.6',
+    search: 'M10.8 4.5a6.3 6.3 0 1 0 0 12.6 6.3 6.3 0 0 0 0-12.6Zm4.6 11 4.1 4',
+  }
+  return element('svg', {
+    class: className, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+    'stroke-width': '1.8', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true',
+  }, element('path', { d: paths[name] }))
 }
 
 function badge(label, variant = '') {
@@ -482,19 +499,23 @@ function setSidebarHidden(hidden) {
 
 function renderSidebar() {
   const pending = state.stats?.candidates.pending
-  const navItems = [
-    ['overview', '概览', '◫'], ['bases', '知识库', '▦'], ['entries', '文档', '◇'], ['candidates', '审核', '✓'], ['tokens', '访问管理', '⌁'],
-  ].filter(([id]) => id !== 'tokens' || !state.service.remote)
+  const navGroups = [
+    ['浏览', [['overview', '概览'], ['entries', '文档']]],
+    ['管理', [['bases', '知识库'], ['candidates', '审核']]],
+    ['服务', [['tokens', '访问管理']].filter(([id]) => id !== 'tokens' || !state.service.remote)],
+  ].filter(([, items]) => items.length)
   return element('aside', { class: 'sidebar', 'aria-label': '知识库导航' },
     element('div', { class: 'brand' },
       element('div', { class: 'brand-mark', 'aria-hidden': 'true' }, 'K'),
       element('div', { class: 'brand-copy' }, element('strong', {}, 'DSH Knowledge'), element('span', {}, '管理控制台')),
     ),
-    element('nav', { class: 'nav' }, navItems.map(([id, label, icon]) => element('button', {
-      type: 'button', class: 'nav-button', 'aria-current': state.view === id ? 'page' : undefined,
-      onClick: () => navigate(id),
-    }, element('span', { class: 'nav-icon', 'aria-hidden': 'true' }, icon), label,
-    id === 'candidates' && pending ? element('span', { class: 'nav-count', 'aria-label': `${pending} 条待审核` }, pending) : null))),
+    element('nav', { class: 'nav' }, navGroups.map(([group, items]) => element('div', { class: 'nav-group' },
+      element('div', { class: 'nav-group-label' }, group),
+      items.map(([id, label]) => element('button', {
+        type: 'button', class: 'nav-button', 'aria-current': state.view === id ? 'page' : undefined,
+        onClick: () => navigate(id),
+      }, element('span', { class: 'nav-icon' }, interfaceIcon(id)), element('span', { class: 'nav-label' }, label),
+      id === 'candidates' && pending ? element('span', { class: 'nav-count', 'aria-label': `${pending} 条待审核` }, pending) : null))))),
     element('div', { class: 'sidebar-footer' },
       element('div', { class: 'connection' }, element('span', { class: 'status-dot', 'aria-hidden': 'true' }), state.service.remote ? '中央知识库已连接' : '本地知识库已连接'),
       AUTH_MODE === 'bearer' ? actionButton('退出当前会话', signOut, 'ghost small') : null,
@@ -513,7 +534,16 @@ function renderCurrentView() {
 }
 
 function loadingView() {
-  return element('div', { class: 'loading', role: 'status' }, element('div', {}, element('div', { class: 'spinner', 'aria-hidden': 'true' }), element('span', { class: 'visually-hidden' }, '正在加载')))
+  return element('div', { class: 'loading-skeleton', role: 'status', 'aria-label': '正在加载' },
+    element('span', { class: 'visually-hidden' }, '正在加载'),
+    element('div', { class: 'skeleton-line skeleton-title', 'aria-hidden': 'true' }),
+    element('div', { class: 'skeleton-line skeleton-copy', 'aria-hidden': 'true' }),
+    element('div', { class: 'skeleton-grid', 'aria-hidden': 'true' },
+      element('div', { class: 'skeleton-block' }),
+      element('div', { class: 'skeleton-block' }),
+      element('div', { class: 'skeleton-block' }),
+    ),
+  )
 }
 
 function errorView(message, retry) {
@@ -553,24 +583,57 @@ function renderKnowledgeBases() {
   const activeBases = state.knowledgeBases.filter(base => base.status === 'active')
   const archivedBases = state.knowledgeBases.filter(base => base.status === 'archived')
   const contextAvailable = Boolean(state.mountContext.projectId || state.mountContext.sessionId)
+  const query = state.knowledgeBaseQuery.trim().toLocaleLowerCase()
+  const matchesQuery = base => !query || [base.name, base.description, base.defaultTags.join(' '), base.writebackProvider, base.writebackModel]
+    .some(value => String(value || '').toLocaleLowerCase().includes(query))
+  const visibleActiveBases = activeBases.filter(matchesQuery)
+  const visibleArchivedBases = archivedBases.filter(matchesQuery)
+  const switcher = element('div', { class: 'workspace-switcher' },
+    element('div', { class: 'tabs workspace-tabs', role: 'tablist', 'aria-label': '知识库管理范围' }, [
+      ['libraries', '知识库', activeBases.length],
+      ['mounts', '项目与会话挂载', state.mounts.filter(mount => mount.enabled).length],
+    ].map(([id, label, count]) => element('button', {
+      type: 'button', role: 'tab', class: 'tab', 'aria-selected': String(state.knowledgeBaseView === id),
+      onClick: () => { state.knowledgeBaseView = id; renderShell() },
+    }, element('span', {}, label), element('span', { class: 'tab-count' }, count)))),
+    element('p', {}, state.knowledgeBaseView === 'libraries'
+      ? '管理知识库本身、标签和回写规则'
+      : '决定当前项目或会话可以召回、审核或直接写入哪些知识库'),
+  )
   return element('div', { class: 'bases-page' },
-    element('section', { 'aria-labelledby': 'bases-heading' },
+    switcher,
+    state.knowledgeBaseView === 'libraries' ? element('section', { class: 'library-management', 'aria-labelledby': 'bases-heading' },
       element('div', { class: 'section-heading' },
-        element('div', {}, element('h2', { id: 'bases-heading' }, `知识库 · ${activeBases.length}`), element('p', {}, '每个知识库拥有独立的默认标签和提取规则。')),
+        element('div', {}, element('h2', { id: 'bases-heading' }, '我的知识库'), element('p', {}, '名称和描述帮助 AI 判断知识应该写到哪里。')),
         actionButton('+ 创建知识库', () => openKnowledgeBaseEditor(), 'primary'),
       ),
-      activeBases.length
-        ? element('div', { class: 'base-grid' }, activeBases.map(renderKnowledgeBaseCard))
-        : emptyState('还没有可用知识库', '先创建一个知识库，再挂载到项目或会话。', '创建知识库', () => openKnowledgeBaseEditor()),
-      archivedBases.length ? element('details', { class: 'archived-bases' },
-        element('summary', {}, `已归档知识库 · ${archivedBases.length}`),
-        element('div', { class: 'base-grid' }, archivedBases.map(renderKnowledgeBaseCard)),
+      element('div', { class: 'knowledge-base-toolbar' },
+        element('div', { class: 'search-box base-search' }, interfaceIcon('search', 'search-symbol'), element('input', {
+          class: 'input', type: 'search', value: state.knowledgeBaseQuery,
+          placeholder: '搜索名称、描述、标签或模型', 'aria-label': '搜索知识库',
+          onInput: event => {
+            state.knowledgeBaseQuery = event.target.value
+            renderShell()
+            document.querySelector('.base-search input')?.focus()
+          },
+        })),
+        element('div', { class: 'base-result-summary', 'aria-live': 'polite' }, query
+          ? `找到 ${visibleActiveBases.length + visibleArchivedBases.length} 个知识库`
+          : `${activeBases.length} 个可用 · ${archivedBases.length} 个已归档`),
+      ),
+      visibleActiveBases.length
+        ? element('div', { class: 'base-grid' }, visibleActiveBases.map(renderKnowledgeBaseCard))
+        : query && visibleArchivedBases.length === 0
+          ? emptyState('没有匹配的知识库', '尝试搜索名称、描述、标签或回写模型。')
+          : !query ? emptyState('还没有可用知识库', '使用右上角按钮创建第一个知识库。') : null,
+      visibleArchivedBases.length ? element('details', { class: 'archived-bases', open: Boolean(query) },
+        element('summary', {}, element('span', {}, '已归档知识库'), element('span', { class: 'summary-count' }, visibleArchivedBases.length)),
+        element('div', { class: 'base-grid' }, visibleArchivedBases.map(renderKnowledgeBaseCard)),
       ) : null,
-    ),
-    element('section', { class: 'mount-section', 'aria-labelledby': 'mounts-heading' },
+    ) : element('section', { class: 'mount-section', 'aria-labelledby': 'mounts-heading' },
       element('div', { class: 'section-heading' }, element('div', {},
-        element('h2', { id: 'mounts-heading' }, '当前项目与会话挂载'),
-        element('p', {}, '会话默认继承项目设置；创建会话覆盖后，可独立调整或关闭。'),
+        element('h2', { id: 'mounts-heading' }, '挂载范围'),
+        element('p', {}, '会话默认继承项目；只有需要差异时才创建会话覆盖。'),
       )),
       contextAvailable
         ? element('div', { class: 'mount-context' },
@@ -591,21 +654,24 @@ function contextPill(label, value) {
 
 function renderKnowledgeBaseCard(base) {
   const archived = base.status === 'archived'
+  const visibleTags = base.defaultTags.slice(0, 4)
+  const hiddenTagCount = Math.max(0, base.defaultTags.length - visibleTags.length)
   return element('article', { class: `base-card${archived ? ' is-archived' : ''}` },
     element('div', { class: 'base-card-header' },
-      element('div', {}, element('h3', {}, base.name), element('small', {}, base.id === 'default' ? '系统默认库' : `ID · ${base.id}`)),
+      element('div', { class: 'base-card-identity' },
+        element('span', { class: 'base-symbol', 'aria-hidden': 'true' }, base.name.trim().slice(0, 1).toLocaleUpperCase() || 'K'),
+        element('div', {}, element('h3', {}, base.name), element('small', { title: base.id }, base.id === 'default' ? '系统默认库' : `ID · ${base.id}`)),
+      ),
       badge(archived ? '已归档' : '可用', archived ? '' : 'success'),
     ),
-    element('div', { class: 'base-description' }, element('strong', {}, '回写匹配描述'), element('p', {}, base.description || '未设置：按通用知识库处理')),
-    base.defaultTags.length
-      ? element('div', { class: 'tag-row' }, base.defaultTags.map(tag => element('span', { class: 'tag' }, `#${tag}`)))
-      : element('span', { class: 'field-hint' }, '无默认标签'),
-    base.extractionInstructions
-      ? element('div', { class: 'base-instructions' }, element('strong', {}, '提取要求'), element('span', {}, base.extractionInstructions))
-      : null,
-    element('div', { class: 'base-model' },
-      element('strong', {}, '回写模型'),
-      badge(base.writebackProvider && base.writebackModel ? `${base.writebackProvider} / ${base.writebackModel}` : '跟随当前会话'),
+    element('p', { class: 'base-description' }, base.description || '通用知识库，尚未设置匹配描述。'),
+    element('div', { class: 'base-card-tags' }, visibleTags.length
+      ? visibleTags.map(tag => element('span', { class: 'tag' }, `#${tag}`))
+      : element('span', { class: 'tag is-empty' }, '无默认标签'),
+    hiddenTagCount ? element('span', { class: 'tag' }, `+${hiddenTagCount}`) : null),
+    element('div', { class: 'base-card-meta' },
+      element('span', {}, element('strong', {}, '回写模型'), base.writebackProvider && base.writebackModel ? `${base.writebackProvider} / ${base.writebackModel}` : '跟随当前会话'),
+      base.extractionInstructions ? element('span', {}, element('strong', {}, '提取规则'), '已设置') : null,
     ),
     element('div', { class: 'base-card-actions' },
       actionButton('查看知识', () => {
@@ -694,7 +760,7 @@ function renderMountManager(activeBases) {
           renderShell()
         },
       }, label))),
-      element('div', { class: 'search-box mount-search' }, element('span', { class: 'search-symbol', 'aria-hidden': 'true' }, '⌕'), searchInput),
+      element('div', { class: 'search-box mount-search' }, interfaceIcon('search', 'search-symbol'), searchInput),
       filter,
     ),
     element('div', { class: 'mount-target-line' },
@@ -797,19 +863,17 @@ function renderEntries() {
 
   return element('section', { class: 'document-page', 'aria-labelledby': 'documents-heading' },
     element('div', { class: 'document-page-toolbar' },
-      element('div', { class: 'search-box document-global-search' }, element('span', { class: 'search-symbol', 'aria-hidden': 'true' }, '⌕'), search),
+      element('div', { class: 'search-box document-global-search' }, interfaceIcon('search', 'search-symbol'), search),
       element('select', {
         class: 'select compact-library-picker', 'aria-label': '选择知识库', value: view.knowledgeBaseId,
         onChange: (event) => { view.knowledgeBaseId = event.target.value; view.documentId = ''; selectDefaultDocument(); renderShell() },
       }, activeBases.map(base => element('option', { value: base.id, selected: base.id === view.knowledgeBaseId }, base.name))),
       element('div', { class: 'tabs', role: 'tablist', 'aria-label': '知识视图' },
         documentViewTab('文档', 'documents'), documentViewTab('条目管理', 'entries')),
-      element('div', { class: 'pane-toggle-group document-pane-toggles', role: 'group', 'aria-label': '文档边栏显示' },
-        paneToggleButton('library', !view.libraryHidden, () => setDocumentColumnHidden('library', !view.libraryHidden), '知识库二级栏'),
-        paneToggleButton('document', !view.documentListHidden, () => setDocumentColumnHidden('documentList', !view.documentListHidden), '文档列表栏'),
+      element('div', { class: 'document-toolbar-actions' },
+        actionButton('视图设置', openLayoutEditor, 'small', { 'aria-label': '设置导航与文档栏的显示和宽度' }),
+        actionButton('+ 新建知识', () => openEntryEditor(), 'primary'),
       ),
-      actionButton('调整栏宽', openLayoutEditor, 'ghost small', { 'aria-label': '调整主导航、知识库和文档栏宽度' }),
-      actionButton('+ 新建知识', () => openEntryEditor(), 'primary'),
     ),
     element('div', {
       class: 'document-browser',
