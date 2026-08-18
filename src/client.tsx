@@ -34,6 +34,8 @@ interface KnowledgeConnectionView {
   tokenConfigured: boolean
   canSwitchRemote: boolean
   writable: boolean
+  managementAvailable: boolean
+  managementPath?: string
 }
 
 const CONNECTION_CONTROL_PATH = '/knowledge-control/v1/connection'
@@ -243,15 +245,48 @@ function isConnectionView(value: unknown): value is KnowledgeConnectionView {
     && typeof item.tokenConfigured === 'boolean'
     && typeof item.canSwitchRemote === 'boolean'
     && typeof item.writable === 'boolean'
+    && typeof item.managementAvailable === 'boolean'
+    && (!item.managementAvailable || isManagementPath(item.managementPath))
+}
+
+function isManagementPath(value: unknown): value is string {
+  return typeof value === 'string' && value.startsWith('/') && !value.startsWith('//')
 }
 
 function KnowledgeLauncher({ wide, useSessions }: SidebarActionProps) {
   const [open, setOpen] = useState(false)
   const [maximized, setMaximized] = useState(false)
+  const [panelState, setPanelState] = useState<'loading' | 'ready' | 'unavailable' | 'error'>('loading')
+  const [managementPath, setManagementPath] = useState<string>()
+  const [panelError, setPanelError] = useState('')
   const close = useCallback(() => { setOpen(false) }, [])
   const sessionId = useSessions(state => state.current)
   const projectId = useSessions(state => sessionId === undefined ? undefined : state.byId[sessionId]?.cwd)
-  const knowledgeUrl = knowledgePanelUrl(sessionId, projectId)
+  const knowledgeUrl = managementPath === undefined ? undefined : knowledgePanelUrl(managementPath, sessionId, projectId)
+
+  const loadManagement = useCallback(async (): Promise<void> => {
+    setPanelState('loading')
+    setPanelError('')
+    try {
+      const connection = await requestConnection('GET')
+      if (!connection.managementAvailable || connection.managementPath === undefined) {
+        setManagementPath(undefined)
+        setPanelState('unavailable')
+        return
+      }
+      setManagementPath(connection.managementPath)
+      setPanelState('ready')
+    } catch (error) {
+      setManagementPath(undefined)
+      setPanelError(connectionErrorMessage(error))
+      setPanelState('error')
+    }
+  }, [])
+
+  const show = (): void => {
+    setOpen(true)
+    void loadManagement()
+  }
 
   return (
     <>
@@ -262,13 +297,16 @@ function KnowledgeLauncher({ wide, useSessions }: SidebarActionProps) {
         aria-haspopup="dialog"
         aria-expanded={open}
         title={wide ? undefined : '知识库'}
-        onClick={() => { setOpen(true) }}
+        onClick={show}
       >
         <IconDataOutline16 size={wide ? 16 : 18} />
         {wide && <span>知识库</span>}
       </button>
       {open && <KnowledgePanel
         src={knowledgeUrl}
+        state={panelState}
+        error={panelError}
+        onRetry={() => { void loadManagement() }}
         maximized={maximized}
         onToggleMaximized={() => { setMaximized(value => !value) }}
         onClose={close}
@@ -279,11 +317,17 @@ function KnowledgeLauncher({ wide, useSessions }: SidebarActionProps) {
 
 function KnowledgePanel({
   src,
+  state,
+  error,
+  onRetry,
   maximized,
   onToggleMaximized,
   onClose,
 }: {
-  src: string
+  src?: string
+  state: 'loading' | 'ready' | 'unavailable' | 'error'
+  error: string
+  onRetry: () => void
   maximized: boolean
   onToggleMaximized: () => void
   onClose: () => void
@@ -357,7 +401,20 @@ function KnowledgePanel({
             </button>
           </div>
         </header>
-        <iframe className="dsh-knowledge-frame" src={src} title="知识库管理台" />
+        {state === 'ready' && src !== undefined
+          ? <iframe className="dsh-knowledge-frame" src={src} title="知识库管理台" />
+          : <div className="dsh-knowledge-panel-state" role={state === 'error' ? 'alert' : 'status'} aria-live="polite">
+            <span className="dsh-knowledge-panel-state-icon" aria-hidden="true">{state === 'loading' ? '···' : state === 'error' ? '!' : '—'}</span>
+            <div>
+              <h3>{state === 'loading' ? '正在打开知识库…' : state === 'error' ? '暂时无法打开知识库' : '这台 DSH 未启用知识库管理台'}</h3>
+              <p>{state === 'loading'
+                ? '正在确认当前实例是否提供管理页面。'
+                : state === 'error'
+                  ? error
+                  : '本地召回和回写仍可使用。若要在这里管理知识，请在插件配置中同时启用 exposeApi 和 exposeWeb；使用远程知识库时，请前往中央 DSH 的知识库管理台。'}</p>
+              {state === 'error' && <button type="button" onClick={onRetry}>重试</button>}
+            </div>
+          </div>}
         {!maximized && <span className="dsh-knowledge-resize-grip" aria-hidden="true" />}
       </section>
     </div>
@@ -385,12 +442,12 @@ function desktopPanelMinimumWidth(): number {
   return Math.min(1040, Math.max(320, window.innerWidth - 32))
 }
 
-function knowledgePanelUrl(sessionId?: string, projectId?: string): string {
+function knowledgePanelUrl(managementPath: string, sessionId?: string, projectId?: string): string {
   const params = new URLSearchParams()
   if (sessionId !== undefined) params.set('sessionId', sessionId)
   if (projectId !== undefined) params.set('projectId', projectId)
   const query = params.toString()
-  return query.length === 0 ? '/knowledge' : `/knowledge?${query}`
+  return query.length === 0 ? managementPath : `${managementPath}?${query}`
 }
 
 function installStyles(): () => void {

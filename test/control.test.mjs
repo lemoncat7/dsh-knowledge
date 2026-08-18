@@ -22,15 +22,19 @@ async function controlServer(options) {
   }
 }
 
+function controlOptions(options = {}) {
+  return { managementAvailable: false, ...options }
+}
+
 test('connection control never returns the stored token', async (t) => {
   const active = {
     backend: 'remote', remoteUrl: 'https://knowledge.example/api',
     remoteToken: 'secret_remote_token_longer_than_24_chars', remoteTimeoutMs: 5000,
   }
-  const server = await controlServer({
+  const server = await controlServer(controlOptions({
     current: () => active, canSwitchRemote: true, writable: true,
     async update() { return active },
-  })
+  }))
   t.after(server.close)
 
   const response = await fetch(server.url)
@@ -45,10 +49,10 @@ test('connection control never returns the stored token', async (t) => {
 test('connection control rejects non-JSON and cross-site writes', async (t) => {
   let updates = 0
   const active = { backend: 'local', remoteTimeoutMs: 5000 }
-  const server = await controlServer({
+  const server = await controlServer(controlOptions({
     current: () => active, canSwitchRemote: true, writable: true,
     async update() { updates += 1; return active },
-  })
+  }))
   t.after(server.close)
 
   const nonJson = await fetch(server.url, { method: 'PUT', body: 'backend=local' })
@@ -65,7 +69,7 @@ test('connection control rejects non-JSON and cross-site writes', async (t) => {
 test('connection control returns only a verified update and surfaces validation errors', async (t) => {
   let active = { backend: 'local', remoteTimeoutMs: 5000 }
   let attempts = 0
-  const server = await controlServer({
+  const server = await controlServer(controlOptions({
     current: () => active, canSwitchRemote: true, writable: true,
     async update(value) {
       attempts += 1
@@ -75,7 +79,7 @@ test('connection control returns only a verified update and surfaces validation 
       active = { ...value, remoteToken: value.remoteToken }
       return active
     },
-  })
+  }))
   t.after(server.close)
 
   const invalid = await fetch(server.url, {
@@ -106,10 +110,10 @@ test('connection control returns only a verified update and surfaces validation 
 test('central knowledge servers expose the entry but reject remote mode', async (t) => {
   let updates = 0
   const active = { backend: 'local', remoteTimeoutMs: 5000 }
-  const server = await controlServer({
+  const server = await controlServer(controlOptions({
     current: () => active, canSwitchRemote: false, writable: true,
     async update() { updates += 1; return active },
-  })
+  }))
   t.after(server.close)
 
   const view = await (await fetch(server.url)).json()
@@ -123,4 +127,27 @@ test('central knowledge servers expose the entry but reject remote mode', async 
   })
   assert.equal(response.status, 409)
   assert.equal(updates, 0)
+})
+
+test('connection control reports management availability without leaking a disabled path', async (t) => {
+  const active = { backend: 'local', remoteTimeoutMs: 5000 }
+  const disabled = await controlServer(controlOptions({
+    current: () => active, canSwitchRemote: true, writable: true,
+    managementPath: '/knowledge',
+    async update() { return active },
+  }))
+  t.after(disabled.close)
+  const disabledView = await (await fetch(disabled.url)).json()
+  assert.equal(disabledView.managementAvailable, false)
+  assert.equal(disabledView.managementPath, undefined)
+
+  const enabled = await controlServer(controlOptions({
+    current: () => active, canSwitchRemote: false, writable: true,
+    managementAvailable: true, managementPath: '/custom-knowledge',
+    async update() { return active },
+  }))
+  t.after(enabled.close)
+  const enabledView = await (await fetch(enabled.url)).json()
+  assert.equal(enabledView.managementAvailable, true)
+  assert.equal(enabledView.managementPath, '/custom-knowledge')
 })

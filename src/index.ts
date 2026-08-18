@@ -108,6 +108,8 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
         current: () => activeConnection,
         canSwitchRemote: !resolved.exposeApi,
         writable: resolved.connectionPath !== undefined,
+        managementAvailable: resolved.exposeApi && resolved.exposeWeb,
+        ...resolved.exposeApi && resolved.exposeWeb ? { managementPath: resolved.webPath } : {},
         update: updateConnection,
       })
       httpRuntime.effect(() => disposeControl, 'dsh-knowledge.connection-control')
@@ -117,6 +119,8 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
       current: () => activeConnection,
       canSwitchRemote: !resolved.exposeApi,
       writable: resolved.connectionPath !== undefined,
+      managementAvailable: resolved.exposeApi && resolved.exposeWeb,
+      ...resolved.exposeApi && resolved.exposeWeb ? { managementPath: resolved.webPath } : {},
       update: updateConnection,
     })
     runtime.effect(() => disposeControl, 'dsh-knowledge.connection-control')

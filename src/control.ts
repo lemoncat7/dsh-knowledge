@@ -13,6 +13,8 @@ export interface KnowledgeConnectionView {
   tokenConfigured: boolean
   canSwitchRemote: boolean
   writable: boolean
+  managementAvailable: boolean
+  managementPath?: string
 }
 
 export interface KnowledgeConnectionUpdate {
@@ -26,6 +28,8 @@ export interface KnowledgeControlOptions {
   current(): KnowledgeConnectionSettings
   canSwitchRemote: boolean
   writable: boolean
+  managementAvailable: boolean
+  managementPath?: string
   update(value: KnowledgeConnectionUpdate): Promise<KnowledgeConnectionSettings>
 }
 
@@ -77,7 +81,7 @@ async function dispatch(
 
 function connectionView(
   settings: KnowledgeConnectionSettings,
-  options: Pick<KnowledgeControlOptions, 'canSwitchRemote' | 'writable'>,
+  options: Pick<KnowledgeControlOptions, 'canSwitchRemote' | 'writable' | 'managementAvailable' | 'managementPath'>,
 ): KnowledgeConnectionView {
   return {
     backend: settings.backend,
@@ -85,7 +89,11 @@ function connectionView(
     tokenConfigured: typeof settings.remoteToken === 'string' && settings.remoteToken.trim().length >= 24,
     canSwitchRemote: options.canSwitchRemote,
     writable: options.writable,
+    managementAvailable: options.managementAvailable,
     ...settings.remoteUrl === undefined ? {} : { remoteUrl: settings.remoteUrl },
+    ...options.managementAvailable && options.managementPath !== undefined
+      ? { managementPath: options.managementPath }
+      : {},
   }
 }
 
