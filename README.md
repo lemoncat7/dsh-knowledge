@@ -30,6 +30,20 @@
 
 ## 安装
 
+从 npm 安装当前预览版：
+
+```bash
+dsh plugin --profile web add @lemoncat7/dsh-knowledge@next
+```
+
+需要固定版本时：
+
+```bash
+dsh plugin --profile web add @lemoncat7/dsh-knowledge@0.6.0-alpha.6
+```
+
+本地开发包仍可直接安装：
+
 ```bash
 dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.6.0-alpha.6.tgz
 ```
