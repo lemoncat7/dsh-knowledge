@@ -628,6 +628,15 @@ button:disabled { cursor: not-allowed; opacity: .56; }
 .token-row strong { display: block; }
 .token-row small { color: var(--text-tertiary); }
 .permissions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.api-access-card { display: grid; gap: 14px; margin-bottom: 20px; border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; background: var(--surface); }
+.api-access-heading, .api-access-actions { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.api-access-heading strong { font-size: 15px; }
+.api-access-heading p { margin: 4px 0 0; color: var(--text-tertiary); }
+.api-address-label { color: var(--text-secondary); font-size: 12px; font-weight: 600; }
+.api-address-row { display: flex; align-items: center; gap: 8px; }
+.api-address-row .input { min-width: 0; flex: 1; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.api-access-actions { align-items: center; border-top: 1px solid var(--border); padding-top: 13px; }
+.api-access-actions small { color: var(--text-tertiary); }
 
 .dialog-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 20px; background: rgb(8 10 15 / 52%); backdrop-filter: blur(4px); }
 .dialog {
@@ -755,6 +764,7 @@ button:disabled { cursor: not-allowed; opacity: .56; }
 }
 
 @media (max-width: 520px) {
+  .api-access-heading, .api-access-actions, .api-address-row { align-items: stretch; flex-direction: column; }
   body { font-size: 13px; }
   .login-page { padding: 16px; }
   .login-card { padding: 24px; }

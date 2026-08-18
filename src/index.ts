@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { randomBytes } from 'node:crypto'
-import { registerKnowledgeApi } from './api.js'
+import { LOCAL_MANAGEMENT_API_PREFIX, registerKnowledgeApi } from './api.js'
 import {
   connectionSettingsBase,
   createConnectionProvider,
@@ -20,6 +20,7 @@ import { registerKnowledgeCatalog, registerRecall } from './recall.js'
 import { KnowledgeHandleCodec } from './retrieval.js'
 import { RemoteKnowledgeProvider, RemoteProviderError } from './remote-provider.js'
 import { createWritebackMessage, type RuntimeContextLike } from './runtime.js'
+import { loadServiceSettings, serviceSettingsPath, storeServiceSettings } from './service-settings.js'
 import { registerKnowledgeTools } from './tools.js'
 import { registerKnowledgeWeb } from './web.js'
 
@@ -40,18 +41,30 @@ export const inject = ['llm', 'tools', 'systemPrompt']
 export function apply(ctx: Context, config: KnowledgeConfig): void {
   const runtime = ctx as unknown as RuntimeContextLike
   const resolved = resolveConfig(config)
+  const persistedServicePath = serviceSettingsPath(resolved.connectionPath)
+  let publicApiEnabled = resolved.exposeApi
+  try {
+    const storedService = loadServiceSettings(persistedServicePath)
+    if (storedService !== undefined) publicApiEnabled = storedService.publicApiEnabled
+  } catch (error) {
+    runtime.logger.warn(`dsh-knowledge: ignored invalid service settings: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  if (resolved.backend === 'remote') publicApiEnabled = false
   const baseConnection = connectionSettingsBase(resolved)
   let initialConnection = baseConnection
   try {
     const stored = loadStoredConnection(resolved.connectionPath)
     if (stored !== undefined) {
-      validateConnectionSettings(stored, resolved.exposeApi, resolved.databasePath !== undefined && resolved.databasePath.trim().length > 0)
+      validateConnectionSettings(stored, publicApiEnabled, resolved.databasePath !== undefined && resolved.databasePath.trim().length > 0)
       initialConnection = stored
     }
   } catch (error) {
     runtime.logger.warn(`dsh-knowledge: ignored invalid stored connection: ${error instanceof Error ? error.message : String(error)}`)
   }
-  const initialProvider = createConnectionProvider(resolved, initialConnection)
+  const initialProvider = createConnectionProvider(resolved, initialConnection, publicApiEnabled)
+  const managementProvider = resolved.databasePath === undefined || resolved.databasePath.trim().length === 0
+    ? undefined
+    : new LocalKnowledgeProvider(resolved.databasePath)
   const providerRouter = new KnowledgeProviderRouter(initialProvider)
   const provider: KnowledgeProvider = providerRouter.provider
   let activeConnection = initialConnection
@@ -71,10 +84,10 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
         ...input.remoteUrl !== undefined ? { remoteUrl: input.remoteUrl } : activeConnection.remoteUrl !== undefined ? { remoteUrl: activeConnection.remoteUrl } : {},
         ...input.remoteToken !== undefined ? { remoteToken: input.remoteToken } : activeConnection.remoteToken !== undefined ? { remoteToken: activeConnection.remoteToken } : {},
       }
-      validateConnectionSettings(next, resolved.exposeApi, resolved.databasePath !== undefined && resolved.databasePath.trim().length > 0)
+      validateConnectionSettings(next, publicApiEnabled, resolved.databasePath !== undefined && resolved.databasePath.trim().length > 0)
       if (sameConnection(next, activeConnection)) return activeConnection
       if (resolved.connectionPath === undefined) throw connectionError(409, '当前插件没有配置持久化路径，无法保存连接。')
-      const candidate = createConnectionProvider(resolved, next)
+      const candidate = createConnectionProvider(resolved, next, publicApiEnabled)
       let persisted = false
       try {
         if (next.backend === 'remote') await candidate.stats()
@@ -102,30 +115,69 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
     return operation
   }
 
-  if (runtime.inject !== undefined) {
-    runtime.inject(['webServer'], httpRuntime => {
-      const disposeControl = registerKnowledgeControl(httpRuntime, {
-        current: () => activeConnection,
-        canSwitchRemote: !resolved.exposeApi,
-        writable: resolved.connectionPath !== undefined,
-        managementAvailable: resolved.exposeApi && resolved.exposeWeb,
-        ...resolved.exposeApi && resolved.exposeWeb ? { managementPath: resolved.webPath } : {},
-        update: updateConnection,
+  const registerHttpSurfaces = (httpRuntime: RuntimeContextLike): void => {
+    let disposePublicApi: (() => void) | undefined
+    const publicApiView = () => ({ publicApiEnabled, publicApiPrefix: resolved.apiPrefix })
+    const applyPublicApiRoute = (enabled: boolean): void => {
+      disposePublicApi?.()
+      disposePublicApi = undefined
+      if (enabled) {
+        if (managementProvider === undefined) throw connectionError(409, '当前 DSH 没有可供远程访问的本地知识库。')
+        disposePublicApi = registerKnowledgeApi(httpRuntime, managementProvider, resolved.apiPrefix)
+      }
+    }
+    const updatePublicApi = async (enabled: boolean): Promise<ReturnType<typeof publicApiView>> => {
+      if (enabled === publicApiEnabled) return publicApiView()
+      if (enabled && activeConnection.backend !== 'local') throw connectionError(409, '请先把知识库来源切换为本地，再开启远程 API。')
+      if (persistedServicePath === undefined) throw connectionError(409, '当前插件没有配置持久化路径，无法保存远程 API 状态。')
+      const previous = publicApiEnabled
+      applyPublicApiRoute(enabled)
+      publicApiEnabled = enabled
+      try {
+        await storeServiceSettings(persistedServicePath, { publicApiEnabled })
+      } catch (error) {
+        publicApiEnabled = previous
+        applyPublicApiRoute(previous)
+        throw error
+      }
+      runtime.logger.info(`dsh-knowledge: public API ${enabled ? 'enabled' : 'disabled'} at ${resolved.apiPrefix}`)
+      return publicApiView()
+    }
+
+    if (resolved.exposeApi && managementProvider !== undefined && resolved.apiToken !== undefined) {
+      managementProvider.ensureBootstrapToken(resolved.apiToken)
+    }
+
+    if (managementProvider !== undefined && resolved.exposeWeb) {
+      const disposeLocalApi = registerKnowledgeApi(httpRuntime, managementProvider, LOCAL_MANAGEMENT_API_PREFIX, {
+        authMode: 'same-origin',
+        service: { current: publicApiView, update: updatePublicApi },
       })
-      httpRuntime.effect(() => disposeControl, 'dsh-knowledge.connection-control')
-    })
-  } else if (runtime.webServer !== undefined) {
-    const disposeControl = registerKnowledgeControl(runtime, {
+      httpRuntime.effect(() => disposeLocalApi, 'dsh-knowledge.local-management-api')
+      const disposeWeb = registerKnowledgeWeb(httpRuntime, resolved.webPath, LOCAL_MANAGEMENT_API_PREFIX, 'same-origin')
+      httpRuntime.effect(() => disposeWeb, 'dsh-knowledge.web')
+    }
+
+    applyPublicApiRoute(publicApiEnabled)
+    httpRuntime.effect(() => () => { disposePublicApi?.() }, 'dsh-knowledge.public-api')
+
+    const disposeControl = registerKnowledgeControl(httpRuntime, {
       current: () => activeConnection,
-      canSwitchRemote: !resolved.exposeApi,
+      canSwitchRemote: () => !publicApiEnabled,
       writable: resolved.connectionPath !== undefined,
-      managementAvailable: resolved.exposeApi && resolved.exposeWeb,
-      ...resolved.exposeApi && resolved.exposeWeb ? { managementPath: resolved.webPath } : {},
+      managementAvailable: managementProvider !== undefined && resolved.exposeWeb,
+      ...managementProvider !== undefined && resolved.exposeWeb ? { managementPath: resolved.webPath } : {},
       update: updateConnection,
     })
-    runtime.effect(() => disposeControl, 'dsh-knowledge.connection-control')
+    httpRuntime.effect(() => disposeControl, 'dsh-knowledge.connection-control')
+  }
+
+  if (runtime.inject !== undefined) {
+    runtime.inject(['webServer'], registerHttpSurfaces)
+  } else if (runtime.webServer !== undefined) {
+    registerHttpSurfaces(runtime)
   } else {
-    runtime.logger.warn('dsh-knowledge: webServer is unavailable; the connection settings entry is disabled')
+    runtime.logger.warn('dsh-knowledge: webServer is unavailable; management and connection settings are disabled')
   }
 
   if (resolved.extractionEnabled) {
@@ -154,23 +206,10 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
     })
   }
 
-  if (resolved.exposeApi) {
-    if (!(initialProvider instanceof LocalKnowledgeProvider)) throw new Error('exposeApi is supported only by the local backend')
-    initialProvider.ensureBootstrapToken(resolved.apiToken as string)
-    if (runtime.inject === undefined) throw new Error('exposeApi requires Cordis dynamic service injection')
-    runtime.inject(['webServer'], (httpRuntime) => {
-      const disposeApi = registerKnowledgeApi(httpRuntime, initialProvider, resolved.apiPrefix)
-      httpRuntime.effect(() => disposeApi, 'dsh-knowledge.api')
-      if (resolved.exposeWeb) {
-        const disposeWeb = registerKnowledgeWeb(httpRuntime, resolved.webPath, resolved.apiPrefix)
-        httpRuntime.effect(() => disposeWeb, 'dsh-knowledge.web')
-      }
-    })
-  }
-
   runtime.effect(() => async () => {
     await coordinator.close()
     await providerRouter.close()
+    await managementProvider?.close()
   }, 'dsh-knowledge.close')
 
   runtime.logger.info(`dsh-knowledge: ${provider.mode} provider ready`)

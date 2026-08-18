@@ -50,8 +50,9 @@ export function validateConnectionSettings(
 export function createConnectionProvider(
   config: ResolvedConfig,
   settings: KnowledgeConnectionSettings,
+  publicApiEnabled = config.exposeApi,
 ): KnowledgeProvider {
-  validateConnectionSettings(settings, config.exposeApi, config.databasePath !== undefined && config.databasePath.trim().length > 0)
+  validateConnectionSettings(settings, publicApiEnabled, config.databasePath !== undefined && config.databasePath.trim().length > 0)
   return settings.backend === 'local'
     ? new LocalKnowledgeProvider(config.databasePath as string)
     : new RemoteKnowledgeProvider({

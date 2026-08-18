@@ -2,17 +2,27 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
   DEFAULT_KNOWLEDGE_BASE_ID, isKnowledgeType, normalizeDraft, normalizeKnowledgeBaseDraft,
   normalizeKnowledgeMountDraft, type CandidateProposal, type KnowledgeBaseDraft, type KnowledgeDraft,
-  type KnowledgeBasePatch, type KnowledgeMountDraft, type ReviewDecision, type TokenPermission,
+  type ApiTokenRecord, type KnowledgeBasePatch, type KnowledgeMountDraft, type ReviewDecision, type TokenPermission,
 } from './domain.js'
 import { LocalKnowledgeProvider } from './local-provider.js'
 import type { RuntimeContextLike } from './runtime.js'
 
 const MAX_BODY_BYTES = 1_048_576
+export const LOCAL_MANAGEMENT_API_PREFIX = '/knowledge-local/v1'
+
+export interface KnowledgeApiOptions {
+  authMode?: 'bearer' | 'same-origin'
+  service?: {
+    current(): { publicApiEnabled: boolean; publicApiPrefix: string }
+    update(publicApiEnabled: boolean): Promise<{ publicApiEnabled: boolean; publicApiPrefix: string }>
+  }
+}
 
 export function registerKnowledgeApi(
   ctx: RuntimeContextLike,
   provider: LocalKnowledgeProvider,
   prefix: string,
+  options: KnowledgeApiOptions = {},
 ): () => void {
   const webServer = ctx.webServer ?? ctx.get('webServer') as RuntimeContextLike['webServer']
   if (webServer === undefined) throw new Error('exposeApi requires the DSH webServer service')
@@ -21,7 +31,7 @@ export function registerKnowledgeApi(
     path: prefix,
     handler: async (req, res) => {
       try {
-        await dispatch(provider, prefix, req, res)
+        await dispatch(provider, prefix, options, req, res)
       } catch (error) {
         sendError(res, error)
       }
@@ -32,6 +42,7 @@ export function registerKnowledgeApi(
 async function dispatch(
   provider: LocalKnowledgeProvider,
   prefix: string,
+  options: KnowledgeApiOptions,
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
@@ -44,7 +55,17 @@ async function dispatch(
     return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 4 })
   }
 
-  const actor = authenticate(provider, req)
+  const actor = options.authMode === 'same-origin' ? authenticateSameOrigin(req) : authenticateBearer(provider, req)
+
+  if (segments[0] === 'service' && segments.length === 1 && options.service !== undefined) {
+    requirePermission(actor.permissions, 'admin')
+    if (method === 'GET') return sendJson(res, 200, options.service.current())
+    if (method === 'PUT') {
+      const body = await readObject(req)
+      if (typeof body.publicApiEnabled !== 'boolean') throw httpError(400, 'publicApiEnabled must be a boolean')
+      return sendJson(res, 200, await options.service.update(body.publicApiEnabled))
+    }
+  }
 
   if (method === 'GET' && segments[0] === 'search' && segments.length === 1) {
     requirePermission(actor.permissions, 'read')
@@ -271,7 +292,10 @@ async function dispatch(
     }
     if (method === 'DELETE' && segments[1] !== undefined && segments.length === 2) {
       if (segments[1] === actor.id) throw httpError(409, 'the current token cannot revoke itself')
-      provider.revokeApiToken(segments[1])
+      const token = provider.listApiTokens().find(item => item.id === segments[1])
+      if (token === undefined) throw httpError(404, 'API token was not found')
+      if (token.revokedAt === undefined) provider.revokeApiToken(segments[1])
+      else provider.deleteApiToken(segments[1])
       return sendJson(res, 204, undefined)
     }
   }
@@ -354,12 +378,42 @@ function parseMountDraft(value: unknown): KnowledgeMountDraft {
   }
 }
 
-function authenticate(provider: LocalKnowledgeProvider, req: IncomingMessage) {
+function authenticateBearer(provider: LocalKnowledgeProvider, req: IncomingMessage): ApiTokenRecord {
   const authorization = req.headers.authorization
   if (authorization === undefined || !authorization.startsWith('Bearer ')) throw httpError(401, 'bearer token is required')
   const actor = provider.authenticate(authorization.slice(7).trim())
   if (actor === undefined) throw httpError(401, 'bearer token is invalid or revoked')
   return actor
+}
+
+function authenticateSameOrigin(req: IncomingMessage): ApiTokenRecord {
+  if (req.headers['x-dsh-knowledge-client'] !== 'management-web') {
+    throw httpError(401, 'knowledge management client header is required')
+  }
+  const fetchSite = req.headers['sec-fetch-site']
+  if (fetchSite !== undefined && fetchSite !== 'same-origin' && fetchSite !== 'none') {
+    throw httpError(403, 'cross-site knowledge management request was rejected')
+  }
+  const origin = req.headers.origin
+  if (origin !== undefined) {
+    let originHost: string
+    try { originHost = new URL(origin).host } catch { throw httpError(403, 'knowledge management request origin is invalid') }
+    const expectedHost = firstHeader(req.headers['x-forwarded-host']) ?? req.headers.host
+    if (expectedHost === undefined || originHost.toLowerCase() !== expectedHost.toLowerCase()) {
+      throw httpError(403, 'cross-origin knowledge management request was rejected')
+    }
+  }
+  return {
+    id: 'same-origin-management',
+    name: 'DSH management console',
+    permissions: ['admin'],
+    createdAt: new Date(0).toISOString(),
+  }
+}
+
+function firstHeader(value: string | string[] | undefined): string | undefined {
+  const raw = Array.isArray(value) ? value[0] : value
+  return raw?.split(',')[0]?.trim()
 }
 
 function requirePermission(permissions: TokenPermission[], required: TokenPermission): void {

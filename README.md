@@ -2,7 +2,7 @@
 
 `dsh-knowledge` 是面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的知识库插件。它不修改 DSH Agent Loop，同一个插件既能使用本地 SQLite，也能连接远程中央知识库。
 
-当前版本 `0.6.0-alpha.6` 已实现可部署的多知识库、按需检索工具与文档型 Web 管理台：
+当前版本 `0.6.0-alpha.8` 已实现可部署的多知识库、按需检索工具与文档型 Web 管理台：
 
 - 回答完成后同步调用 DSH 当前模型判断是否产生知识，并在回答下方显示逐库回写结果。
 - 知识标题、正文、自然语言标签和提取理由默认跟随本轮用户语言；代码、命令和技术标识保持原样。
@@ -39,13 +39,13 @@ dsh plugin --profile web add @lemoncat7/dsh-knowledge@next
 需要固定版本时：
 
 ```bash
-dsh plugin --profile web add @lemoncat7/dsh-knowledge@0.6.0-alpha.6
+dsh plugin --profile web add @lemoncat7/dsh-knowledge@0.6.0-alpha.8
 ```
 
 本地开发包仍可直接安装：
 
 ```bash
-dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.6.0-alpha.6.tgz
+dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.6.0-alpha.8.tgz
 ```
 
 卸载：
@@ -70,7 +70,10 @@ dsh plugin --profile web remove @lemoncat7/dsh-knowledge
     defaultScope: project
     autoRecallLimit: 3
     exposeApi: false
+    exposeWeb: true
 ```
+
+本地管理台默认开启。它使用独立的同源管理接口，不要求开放远程 API，也不要求输入访问令牌；侧栏“知识库”安装后即可使用。任何能访问 DSH Web 的用户都具有本地管理权限，因此把 DSH 暴露到公网时，应继续使用反向代理登录保护整个 DSH 站点。
 
 提取模型默认沿用刚完成回答的 provider/model。可在单个知识库中设置专用回写模型；以下全局配置仅作为兼容性后备：
 
@@ -85,7 +88,9 @@ dsh plugin --profile web remove @lemoncat7/dsh-knowledge
 
 ## 中央服务端
 
-本地实例可以同时开放认证 API：
+需要作为中央知识库时，进入“知识库 → 访问管理”，点击“开启远程 API”。开关会持久化，页面会显示其他客户端应填写的完整 API 地址；然后为每台客户端创建独立令牌。已撤销令牌可以永久删除。
+
+部署自动化仍可通过配置直接启用认证 API：
 
 ```yaml
     backend: local
@@ -99,7 +104,7 @@ dsh plugin --profile web remove @lemoncat7/dsh-knowledge
 
 `DSH_KNOWLEDGE_API_TOKEN` 至少 24 个字符。该值只用于创建或恢复 bootstrap admin 身份；数据库只保存摘要。服务端没有 TLS，非回环部署必须放在 HTTPS 反向代理之后。
 
-启用后访问 `http://<DSH 地址>:<端口>/knowledge`。管理台要求输入 API 令牌，令牌只保存在当前浏览器标签页的 `sessionStorage` 中，关闭标签页后自动清除。`exposeWeb` 必须与 `exposeApi` 一起启用，管理台和 API 均由 DSH 自身 WebServer 提供，不需要额外容器。
+启用后访问 `http://<DSH 地址>:<端口>/knowledge`。本地管理台使用同源管理权限；开放给其他客户端的 `apiPrefix` 仍强制要求 Bearer Token。管理台和 API 均由 DSH 自身 WebServer 提供，不需要额外容器。
 
 管理台功能：
 
@@ -158,7 +163,7 @@ dsh plugin --profile web remove @lemoncat7/dsh-knowledge
 
 其他 DSH 客户端安装本插件后，打开“设置 → 插件 → 知识库连接”，选择“远程”，填写中央实例的知识库 API 地址和客户端令牌，再点“验证并连接”。插件会先验证地址和令牌，成功后立即热切换，并把连接持久化到 DSH 数据目录；令牌不会在页面或控制接口中回显，只能覆盖。
 
-侧栏“知识库”入口会先通过控制接口确认当前实例是否启用了管理台，确认后才加载管理页面。普通本地客户端未同时启用 `exposeApi` 与 `exposeWeb` 时，会在窗口内显示配置说明，不会把 `/knowledge` 误交给 DSH Web 主页面，也不会触发 `dsh-plugin-desktop` 参数错误。
+侧栏“知识库”入口会先通过控制接口确认当前实例是否启用了管理台，确认后才加载管理页面。管理台默认随本地模式启用；只有 profile 显式设置 `exposeWeb: false` 时才关闭。入口不会把未注册的 `/knowledge` 误交给 DSH Web 主页面，因此不会触发 `dsh-plugin-desktop` 参数错误。
 
 如需用配置文件或环境变量部署，也可以直接设置 Provider：
 

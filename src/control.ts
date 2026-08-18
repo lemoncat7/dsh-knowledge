@@ -26,7 +26,7 @@ export interface KnowledgeConnectionUpdate {
 
 export interface KnowledgeControlOptions {
   current(): KnowledgeConnectionSettings
-  canSwitchRemote: boolean
+  canSwitchRemote: boolean | (() => boolean)
   writable: boolean
   managementAvailable: boolean
   managementPath?: string
@@ -72,7 +72,7 @@ async function dispatch(
   }
   if (!options.writable) throw controlError(409, '当前插件没有配置持久化路径，无法保存连接。')
   const update = parseUpdate(await readObject(req))
-  if (update.backend === 'remote' && !options.canSwitchRemote) {
+  if (update.backend === 'remote' && !resolveBoolean(options.canSwitchRemote)) {
     throw controlError(409, '中央知识库服务不能再连接另一台远程知识库。')
   }
   const active = await options.update(update)
@@ -83,18 +83,23 @@ function connectionView(
   settings: KnowledgeConnectionSettings,
   options: Pick<KnowledgeControlOptions, 'canSwitchRemote' | 'writable' | 'managementAvailable' | 'managementPath'>,
 ): KnowledgeConnectionView {
+  const managementAvailable = options.managementAvailable && settings.backend === 'local'
   return {
     backend: settings.backend,
     remoteTimeoutMs: settings.remoteTimeoutMs,
     tokenConfigured: typeof settings.remoteToken === 'string' && settings.remoteToken.trim().length >= 24,
-    canSwitchRemote: options.canSwitchRemote,
+    canSwitchRemote: resolveBoolean(options.canSwitchRemote),
     writable: options.writable,
-    managementAvailable: options.managementAvailable,
+    managementAvailable,
     ...settings.remoteUrl === undefined ? {} : { remoteUrl: settings.remoteUrl },
-    ...options.managementAvailable && options.managementPath !== undefined
+    ...managementAvailable && options.managementPath !== undefined
       ? { managementPath: options.managementPath }
       : {},
   }
+}
+
+function resolveBoolean(value: boolean | (() => boolean)): boolean {
+  return typeof value === 'function' ? value() : value
 }
 
 function parseUpdate(body: Record<string, unknown>): KnowledgeConnectionUpdate {

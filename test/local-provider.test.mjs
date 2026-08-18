@@ -280,4 +280,8 @@ test('API tokens are hashed, permissioned, and revocable', async (t) => {
   assert.deepEqual(provider.authenticate(created.token)?.permissions, ['read', 'propose'])
   provider.revokeApiToken(created.record.id)
   assert.equal(provider.authenticate(created.token), undefined)
+  assert.ok(provider.listApiTokens().some(token => token.id === created.record.id && token.revokedAt))
+  provider.deleteApiToken(created.record.id)
+  assert.equal(provider.listApiTokens().some(token => token.id === created.record.id), false)
+  assert.throws(() => provider.deleteApiToken(actor.id), /only revoked/)
 })

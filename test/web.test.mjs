@@ -14,7 +14,7 @@ test('management console serves a secured same-origin application', async (t) =>
     },
     get() { return undefined },
   }
-  const dispose = registerKnowledgeWeb(ctx, '/knowledge', '/knowledge-api/v1')
+  const dispose = registerKnowledgeWeb(ctx, '/knowledge', '/knowledge-local/v1', 'same-origin')
   assert.equal(route.kind, 'prefix')
   assert.equal(route.path, '/knowledge')
   const server = createServer((req, res) => void route.handler(req, res))
@@ -31,7 +31,8 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.equal(index.headers.get('x-frame-options'), 'SAMEORIGIN')
   assert.match(index.headers.get('content-security-policy'), /frame-ancestors 'self'/)
   const html = await index.text()
-  assert.match(html, /name="dsh-knowledge-api" content="\/knowledge-api\/v1"/)
+  assert.match(html, /name="dsh-knowledge-api" content="\/knowledge-local\/v1"/)
+  assert.match(html, /name="dsh-knowledge-auth-mode" content="same-origin"/)
   assert.match(html, /src="\/knowledge\/app\.js\?v=[a-f0-9]{12}"/)
   assert.match(html, /href="\/knowledge\/styles\.css\?v=[a-f0-9]{12}"/)
   assert.equal(index.headers.get('cache-control'), 'no-store')
@@ -57,6 +58,11 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(application, /data-library-hidden/)
   assert.match(application, /永久删除/)
   assert.match(application, /输入知识库名称确认/)
+  assert.match(application, /x-dsh-knowledge-client/)
+  assert.match(application, /远程知识库 API/)
+  assert.match(application, /复制地址/)
+  assert.match(application, /开启远程 API/)
+  assert.match(application, /已撤销令牌已永久删除/)
 
   const stylesheet = await fetch(`${base}/knowledge/styles.css`)
   assert.equal(stylesheet.status, 200)

@@ -22,11 +22,13 @@ export function registerKnowledgeWeb(
   ctx: RuntimeContextLike,
   webPath: string,
   apiPrefix: string,
+  authMode: 'bearer' | 'same-origin' = 'bearer',
 ): () => void {
   const webServer = ctx.webServer ?? ctx.get('webServer') as RuntimeContextLike['webServer']
   if (webServer === undefined) throw new Error('exposeWeb requires the DSH webServer service')
   const index = Buffer.from(INDEX_TEMPLATE
     .replaceAll('__DSH_KNOWLEDGE_API_PREFIX__', escapeHtmlAttribute(apiPrefix))
+    .replaceAll('__DSH_KNOWLEDGE_AUTH_MODE__', escapeHtmlAttribute(authMode))
     .replaceAll('__DSH_KNOWLEDGE_WEB_PATH__', escapeHtmlAttribute(webPath))
     .replaceAll('__DSH_KNOWLEDGE_ASSET_VERSION__', ASSET_VERSION))
   return webServer.register({

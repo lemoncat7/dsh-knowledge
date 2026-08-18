@@ -1,4 +1,5 @@
 const API_BASE = document.querySelector('meta[name="dsh-knowledge-api"]')?.content || '/knowledge-api/v1'
+const AUTH_MODE = document.querySelector('meta[name="dsh-knowledge-auth-mode"]')?.content || 'bearer'
 const TOKEN_KEY = 'dsh-knowledge.session-token'
 const TYPES = ['preference', 'fact', 'decision', 'procedure', 'lesson']
 const TYPE_LABELS = { preference: '偏好', fact: '事实', decision: '决策', procedure: '流程', lesson: '经验' }
@@ -51,6 +52,7 @@ const state = {
   candidates: [],
   candidateStatus: 'pending',
   tokens: [],
+  service: { publicApiEnabled: false, publicApiPrefix: '/knowledge-api/v1' },
   loading: false,
   error: '',
 }
@@ -132,6 +134,7 @@ function showToast(message, kind = '') {
 
 async function api(path, options = {}) {
   const headers = { accept: 'application/json', ...(options.body === undefined ? {} : { 'content-type': 'application/json' }) }
+  if (AUTH_MODE === 'same-origin') headers['x-dsh-knowledge-client'] = 'management-web'
   if (state.token) headers.authorization = `Bearer ${state.token}`
   const response = await fetch(`${API_BASE}/${path.replace(/^\/+/, '')}`, {
     method: options.method || 'GET',
@@ -153,6 +156,11 @@ async function api(path, options = {}) {
 }
 
 async function boot() {
+  if (AUTH_MODE === 'same-origin') {
+    state.token = ''
+    await navigate('overview')
+    return
+  }
   if (!state.token) {
     renderLogin()
     return
@@ -213,7 +221,8 @@ function renderLogin(message = '') {
 function signOut() {
   sessionStorage.removeItem(TOKEN_KEY)
   Object.assign(state, { token: '', stats: null, overview: null, knowledgeBases: [], mounts: [], resolvedMounts: [], entries: [], documents: [], candidates: [], tokens: [] })
-  renderLogin()
+  if (AUTH_MODE === 'same-origin') void boot()
+  else renderLogin()
 }
 
 async function navigate(view) {
@@ -329,7 +338,9 @@ async function loadCandidates() {
 }
 
 async function loadTokens() {
-  state.tokens = await api('tokens')
+  const [tokens, service] = await Promise.all([api('tokens'), api('service')])
+  state.tokens = tokens
+  state.service = service
   if (!state.stats) await refreshStats()
 }
 
@@ -448,7 +459,7 @@ function renderSidebar() {
     id === 'candidates' && pending ? element('span', { class: 'nav-count', 'aria-label': `${pending} 条待审核` }, pending) : null))),
     element('div', { class: 'sidebar-footer' },
       element('div', { class: 'connection' }, element('span', { class: 'status-dot', 'aria-hidden': 'true' }), '知识库已连接'),
-      actionButton('退出当前会话', signOut, 'ghost small'),
+      AUTH_MODE === 'bearer' ? actionButton('退出当前会话', signOut, 'ghost small') : null,
     ),
   )
 }
@@ -1145,7 +1156,25 @@ function renderCandidateCard(candidate) {
 }
 
 function renderTokens() {
+  const apiAddress = new URL(state.service.publicApiPrefix, location.origin).href.replace(/\/$/, '')
   return element('section', { 'aria-labelledby': 'tokens-heading' },
+    element('div', { class: 'api-access-card' },
+      element('div', { class: 'api-access-heading' },
+        element('div', {}, element('strong', {}, '远程知识库 API'), element('p', {}, state.service.publicApiEnabled
+          ? '其他 DSH 客户端可以使用下面的地址和客户端令牌连接。'
+          : '当前仅能在本机管理；开启后其他 DSH 客户端才能连接。')),
+        badge(state.service.publicApiEnabled ? '已开放' : '未开放', state.service.publicApiEnabled ? 'success' : 'warning'),
+      ),
+      element('label', { class: 'api-address-label', for: 'knowledge-public-api-address' }, '客户端填写的服务器地址'),
+      element('div', { class: 'api-address-row' },
+        Object.assign(element('input', { id: 'knowledge-public-api-address', class: 'input', readonly: true, value: apiAddress }), { value: apiAddress }),
+        actionButton('复制地址', () => copyText(apiAddress, 'API 地址已复制。'), 'small'),
+      ),
+      element('div', { class: 'api-access-actions' },
+        element('small', {}, state.service.publicApiEnabled ? '关闭后已有客户端会立即无法连接，本地管理不受影响。' : '开启远程 API 后，请为每台客户端创建独立令牌。'),
+        actionButton(state.service.publicApiEnabled ? '关闭远程 API' : '开启远程 API', togglePublicApi, state.service.publicApiEnabled ? 'danger small' : 'primary small'),
+      ),
+    ),
     element('div', { class: 'section-heading' },
       element('div', {}, element('h2', { id: 'tokens-heading' }, '客户端访问令牌'), element('p', {}, '给其他 DSH 客户端分配最小必要权限；原始令牌只显示一次。')),
       actionButton('+ 创建令牌', openTokenCreator, 'primary'),
@@ -1164,8 +1193,30 @@ function renderTokenRow(token) {
       element('div', { class: 'permissions' }, token.permissions.map(permission => badge(permission))),
       element('small', {}, `创建于 ${formatDate(token.createdAt)}${token.lastUsedAt ? ` · 最近使用 ${formatDate(token.lastUsedAt)}` : ' · 尚未使用'}`),
     ),
-    revoked ? null : actionButton('撤销', () => confirmRevokeToken(token), 'danger small'),
+    revoked
+      ? actionButton('永久删除', () => confirmDeleteToken(token), 'danger small')
+      : actionButton('撤销', () => confirmRevokeToken(token), 'danger small'),
   )
+}
+
+async function copyText(value, successMessage) {
+  try { await navigator.clipboard.writeText(value); showToast(successMessage) } catch { showToast('复制失败，请手动选择内容。', 'error') }
+}
+
+function togglePublicApi() {
+  const enabling = !state.service.publicApiEnabled
+  openConfirm({
+    title: enabling ? '开启远程知识库 API？' : '关闭远程知识库 API？',
+    message: enabling
+      ? '开启后，持有有效令牌的其他 DSH 客户端可以连接这台中央知识库。'
+      : '关闭后，所有远程客户端会立即断开；本地知识库和管理台不受影响。',
+    confirmLabel: enabling ? '确认开启' : '确认关闭', danger: !enabling,
+    onConfirm: async () => {
+      state.service = await api('service', { method: 'PUT', body: { publicApiEnabled: enabling } })
+      showToast(enabling ? '远程 API 已开启。' : '远程 API 已关闭。')
+      renderShell()
+    },
+  })
 }
 
 function emptyState(title, description, actionLabel, action) {
@@ -1600,6 +1651,15 @@ function confirmRevokeToken(token) {
   openConfirm({ title: `撤销“${token.name}”？`, message: '使用此令牌的客户端会立即失去访问权限，此操作不可撤销。', confirmLabel: '确认撤销', danger: true, onConfirm: async () => {
     await api(`tokens/${encodeURIComponent(token.id)}`, { method: 'DELETE' })
     showToast('令牌已撤销。')
+    await loadTokens()
+    renderShell()
+  } })
+}
+
+function confirmDeleteToken(token) {
+  openConfirm({ title: `永久删除“${token.name}”？`, message: '这条已撤销令牌记录会被永久删除，此操作无法撤销。', confirmLabel: '永久删除', danger: true, onConfirm: async () => {
+    await api(`tokens/${encodeURIComponent(token.id)}`, { method: 'DELETE' })
+    showToast('已撤销令牌已永久删除。')
     await loadTokens()
     renderShell()
   } })

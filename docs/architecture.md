@@ -26,9 +26,10 @@ The DSH core is never patched. `src/index.ts` is the composition root; every oth
 - `retrieval.ts` owns mounted-scope authorization, signed handles, ranking and bounded rendering shared by proactive and tool-driven retrieval.
 - `recall.ts` contributes a lightweight mounted-base catalog and performs bounded proactive retrieval in the asynchronous `agent/pre-step` waterfall.
 - `tools.ts` registers read-only `knowledge_search` and paginated `knowledge_read` tools whose scope is resolved from the calling Agent.
-- `api.ts` is a size-bounded HTTP adapter with permission checks and safe errors.
+- `api.ts` is a size-bounded HTTP adapter with two explicit authentication modes: same-origin administration for the embedded console and Bearer capabilities for remote clients.
 - `web.ts` serves a same-origin, CSP-constrained management console from package-owned static assets.
-- `web/` is a dependency-free browser application with a small API/state/view boundary; it stores credentials only in session storage.
+- `web/` is a dependency-free browser application with a small API/state/view boundary.
+- `service-settings.ts` atomically persists the user-controlled public API state separately from provider connection settings.
 - `index.ts` validates configuration and wires lifecycle disposal.
 
 ## Data model and consistency
@@ -83,11 +84,11 @@ Only active entries from recall-enabled resolved mounts are searched. Each searc
 
 Local and remote modes are mutually exclusive for one plugin instance. There is deliberately no transparent cache or two-way synchronization: that would create conflict semantics at a second layer and obscure which database is authoritative.
 
-A local provider may expose the API and become a central service. Remote clients use the same provider contract, so extraction candidates and recall work identically. Network timeouts and DSH turn cancellation bound remote requests.
+A local provider always supports its same-origin management console unless `exposeWeb` is explicitly disabled. This internal surface is distinct from the public API: enabling the public route is an explicit, persistent action in “访问管理”, and enabling it prevents the same instance from switching to a remote provider. Remote clients use the same provider contract, so extraction candidates and recall work identically. Network timeouts and DSH turn cancellation bound remote requests.
 
 ## Security boundaries
 
-- Secrets are configuration-only and are never returned by plugin APIs or written to logs.
+- Stored connection secrets are never returned by plugin control APIs or written to logs.
 - Server tokens are stored as SHA-256 digests; generated client tokens are shown once.
 - Permissions are capability-oriented: `read`, `propose`, `write`, `admin`.
 - Request bodies are capped at 1 MiB and every domain value has size/range validation.
@@ -95,7 +96,8 @@ A local provider may expose the API and become a central service. Remote clients
 - Remote URLs require HTTPS except explicit loopback testing.
 - Tool handles are HMAC-signed, bound to the calling session, and re-authorized against live mount, project and tag policy on every read.
 - The embedded DSH web server has no TLS; LAN/public exposure requires an HTTPS reverse proxy.
-- The management console uses the same Bearer permissions as every other client, never puts tokens in URLs, and ships with a restrictive Content Security Policy.
+- The management console uses a dedicated same-origin API guarded by Fetch Metadata, origin checks and a non-simple client header; it never makes the public Bearer API implicitly available.
+- Public API routes always require Bearer capabilities. Any user who can access the DSH Web origin can administer the local knowledge base, so public DSH deployments must protect the whole origin with authentication at the reverse proxy.
 
 ## Deferred modules
 

@@ -411,7 +411,7 @@ function KnowledgePanel({
                 ? '正在确认当前实例是否提供管理页面。'
                 : state === 'error'
                   ? error
-                  : '本地召回和回写仍可使用。若要在这里管理知识，请在插件配置中同时启用 exposeApi 和 exposeWeb；使用远程知识库时，请前往中央 DSH 的知识库管理台。'}</p>
+                  : '本地召回和回写仍可使用。当前 profile 已显式关闭 exposeWeb；重新启用后即可在这里管理。使用远程知识库时，请前往中央 DSH 的知识库管理台。'}</p>
               {state === 'error' && <button type="button" onClick={onRetry}>重试</button>}
             </div>
           </div>}

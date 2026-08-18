@@ -846,6 +846,14 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     if (result.changes === 0) throw notFound('API token', id)
   }
 
+  deleteApiToken(id: string): void {
+    this.assertOpen()
+    const row = this.db.prepare('SELECT revoked_at FROM api_tokens WHERE id = ?').get(id) as SqlRow | undefined
+    if (row === undefined) throw notFound('API token', id)
+    if (row.revoked_at === null) throw conflict('only revoked API tokens can be deleted')
+    this.db.prepare('DELETE FROM api_tokens WHERE id = ?').run(id)
+  }
+
   async close(): Promise<void> {
     if (this.closed) return
     this.closed = true

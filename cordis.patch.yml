@@ -8,5 +8,6 @@
         databasePath: !!js dshHomePath('knowledge/knowledge.sqlite')
         connectionPath: !!js dshHomePath('knowledge/connection.json')
         exposeApi: false
+        exposeWeb: true
         extractionEnabled: true
         autoRecallLimit: 3

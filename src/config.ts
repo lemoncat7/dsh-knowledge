@@ -33,7 +33,7 @@ export const Config: Schema<Config> = Schema.object({
   exposeApi: Schema.boolean().default(false),
   apiToken: Schema.string().role('secret'),
   apiPrefix: Schema.string().default('/knowledge-api/v1'),
-  exposeWeb: Schema.boolean().default(false),
+  exposeWeb: Schema.boolean().default(true),
   webPath: Schema.string().default('/knowledge'),
   extractionEnabled: Schema.boolean().default(true),
   extractionProvider: Schema.string(),
@@ -66,7 +66,7 @@ export function resolveConfig(config: Config): ResolvedConfig {
     remoteTimeoutMs: config.remoteTimeoutMs ?? 10_000,
     ...connectionPath === undefined ? {} : { connectionPath },
     apiPrefix: normalizePrefix(config.apiPrefix ?? '/knowledge-api/v1'),
-    exposeWeb: config.exposeWeb ?? false,
+    exposeWeb: config.exposeWeb ?? true,
     webPath: normalizePrefix(config.webPath ?? '/knowledge'),
     extractionMaxTokens: config.extractionMaxTokens ?? 4096,
     extractionTimeoutMs: config.extractionTimeoutMs ?? 90_000,
@@ -97,9 +97,6 @@ export function resolveConfig(config: Config): ResolvedConfig {
   }
   if (resolved.exposeApi && (resolved.apiToken === undefined || resolved.apiToken.trim().length < 24)) {
     throw new Error('exposeApi requires apiToken with at least 24 characters')
-  }
-  if (resolved.exposeWeb && !resolved.exposeApi) {
-    throw new Error('exposeWeb requires exposeApi so the management console has an authenticated API')
   }
   if (resolved.webPath === resolved.apiPrefix || resolved.webPath.startsWith(`${resolved.apiPrefix}/`) || resolved.apiPrefix.startsWith(`${resolved.webPath}/`)) {
     throw new Error('webPath and apiPrefix must not overlap')
