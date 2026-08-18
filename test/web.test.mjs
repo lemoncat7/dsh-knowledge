@@ -50,6 +50,7 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(application, /column-resizer/)
   assert.match(application, /aria-valuetext/)
   assert.match(application, /document-column-controls/)
+  assert.match(application, /renderDocumentModeTabs/)
   assert.match(application, /显示文档栏位/)
   assert.match(application, /收起.*展开/)
   assert.doesNotMatch(application, /COLUMN_REOPEN_DISTANCE|collapseThreshold|data-collapsed/)
@@ -86,6 +87,8 @@ test('management console serves a secured same-origin application', async (t) =>
   const sidebarSource = application.slice(application.indexOf('function renderSidebar()'), application.indexOf('function renderCurrentView()'))
   assert.match(sidebarSource, /工作区/)
   assert.doesNotMatch(sidebarSource, /interfaceIcon|nav-icon/)
+  const legacyEntriesSource = application.slice(application.indexOf('function renderLegacyEntries()'), application.indexOf('function renderEntryCard('))
+  assert.match(legacyEntriesSource, /renderDocumentModeTabs/)
 
   const missing = await fetch(`${base}/knowledge/not-found.js`)
   assert.equal(missing.status, 404)

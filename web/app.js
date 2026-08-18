@@ -871,8 +871,7 @@ function renderEntries() {
         class: 'select compact-library-picker', 'aria-label': '选择知识库', value: view.knowledgeBaseId,
         onChange: (event) => { view.knowledgeBaseId = event.target.value; view.documentId = ''; selectDefaultDocument(); renderShell() },
       }, activeBases.map(base => element('option', { value: base.id, selected: base.id === view.knowledgeBaseId }, base.name))),
-      element('div', { class: 'tabs', role: 'tablist', 'aria-label': '知识视图' },
-        documentViewTab('文档', 'documents'), documentViewTab('条目管理', 'entries')),
+      renderDocumentModeTabs(),
       element('div', { class: 'document-toolbar-actions' },
         renderDocumentColumnControls(),
         actionButton('+ 新建知识', () => openEntryEditor(), 'primary'),
@@ -1013,6 +1012,13 @@ function setDocumentColumnWidth(column, width, browser, handle) {
   handle?.setAttribute('aria-valuetext', `${width} 像素`)
 }
 
+function renderDocumentModeTabs() {
+  return element('div', { class: 'tabs', role: 'tablist', 'aria-label': '知识视图' },
+    documentViewTab('文档', 'documents'),
+    documentViewTab('条目管理', 'entries'),
+  )
+}
+
 function documentViewTab(label, mode) {
   return element('button', {
     type: 'button', role: 'tab', class: 'tab', 'aria-selected': String(state.documentView.mode === mode),
@@ -1131,7 +1137,11 @@ function renderLegacyEntries() {
     projectInput,
     actionButton('搜索', () => {}, 'primary', { type: 'submit' }),
   )
-  return element('section', { 'aria-labelledby': 'entries-heading' },
+  return element('section', { class: 'document-page legacy-entries-page', 'aria-labelledby': 'entries-heading' },
+    element('div', { class: 'document-page-toolbar legacy-entries-toolbar' },
+      renderDocumentModeTabs(),
+      element('div', { class: 'document-toolbar-actions' }, actionButton('+ 新建知识', () => openEntryEditor(), 'primary')),
+    ),
     element('div', { class: 'section-heading' }, element('div', {}, element('h2', { id: 'entries-heading' }, `${STATUS_LABELS[state.entryFilters.status]} · ${state.entries.length}`), element('p', {}, '搜索范围会包含全局知识和指定项目知识'))),
     toolbar,
     state.entries.length
