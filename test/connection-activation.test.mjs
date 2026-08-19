@@ -23,12 +23,19 @@ function createRuntime() {
   let controlHandler
   const disposers = []
   const tools = new Map()
+  const settingsNamespaces = new Set()
   const runtime = {
     llm: { async *stream() {} },
     tools: {
       register(definition) {
         tools.set(definition.name, definition)
         return () => tools.delete(definition.name)
+      },
+    },
+    settings: {
+      register(namespace) {
+        settingsNamespaces.add(namespace)
+        return { get() { return {} }, watch() { return () => {} } }
       },
     },
     webServer: {
@@ -46,6 +53,7 @@ function createRuntime() {
   return {
     runtime,
     tools,
+    settingsNamespaces,
     handler: () => controlHandler,
     async dispose() {
       for (const disposer of disposers.reverse()) await disposer?.()
@@ -111,6 +119,7 @@ test('plugin verifies, persists, hot-switches, and restores remote connections',
   }
   const first = createRuntime()
   KnowledgePlugin.apply(first.runtime, config)
+  assert.deepEqual([...first.settingsNamespaces], ['dsh-knowledge-connection'])
   const control = createServer((req, res) => void first.handler()(req, res))
   const controlPort = await listen(control)
   const controlUrl = `http://127.0.0.1:${controlPort}/knowledge-control/v1/connection`

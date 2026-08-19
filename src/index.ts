@@ -1,4 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
+import Schema from '@deepseek-ai/schemastery'
 import { randomBytes } from 'node:crypto'
 import { LOCAL_MANAGEMENT_API_PREFIX, registerKnowledgeApi } from './api.js'
 import {
@@ -11,6 +12,7 @@ import {
   type KnowledgeConnectionSettings,
 } from './connection.js'
 import { Config as ConfigSchema, resolveConfig, type Config as KnowledgeConfig } from './config.js'
+import { KNOWLEDGE_SETTINGS_NAMESPACE } from './constants.js'
 import { registerKnowledgeControl, type KnowledgeConnectionUpdate } from './control.js'
 import { ExtractionCoordinator } from './extraction.js'
 import { LocalKnowledgeProvider } from './local-provider.js'
@@ -42,6 +44,13 @@ export const inject = ['llm', 'tools', 'systemPrompt']
 export function apply(ctx: Context, config: KnowledgeConfig): void {
   const runtime = ctx as unknown as RuntimeContextLike
   const resolved = resolveConfig(config)
+  runtime.inject?.(['settings'], settingsRuntime => {
+    settingsRuntime.settings?.register(
+      KNOWLEDGE_SETTINGS_NAMESPACE,
+      Schema.object({}),
+      { base: {} },
+    )
+  })
   const persistedServicePath = serviceSettingsPath(resolved.connectionPath)
   let publicApiEnabled = resolved.exposeApi
   try {

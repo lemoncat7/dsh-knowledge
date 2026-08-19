@@ -105,6 +105,9 @@ export interface RuntimeContextLike {
   llm: LlmLike
   tools: ToolRuntimeLike
   webServer?: WebServerLike
+  settings?: {
+    register(namespace: string, schema: unknown, options?: { base?: object }): unknown
+  }
   logger: {
     debug(message: unknown): void
     info(message: unknown): void

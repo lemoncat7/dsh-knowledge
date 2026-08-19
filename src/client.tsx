@@ -4,6 +4,7 @@ import {
   IconDataOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import cssText from './client.css'
+import { KNOWLEDGE_SETTINGS_NAMESPACE } from './constants.js'
 
 const PLUGIN_ID = '@lemoncat7/dsh-knowledge'
 const STYLE_ID = `${PLUGIN_ID}/client`
@@ -54,8 +55,8 @@ export function apply(ctx: ClientContext): void {
 
   ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
     name: 'settings.plugin.item',
-    key: 'dsh-knowledge-connection',
-    id: 'dsh-knowledge-connection',
+    key: KNOWLEDGE_SETTINGS_NAMESPACE,
+    id: KNOWLEDGE_SETTINGS_NAMESPACE,
     order: 25,
   }, KnowledgeConnectionCard))
 }
