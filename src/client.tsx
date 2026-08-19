@@ -54,6 +54,7 @@ export function apply(ctx: ClientContext): void {
 
   ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
     name: 'settings.plugin.item',
+    key: 'dsh-knowledge-connection',
     id: 'dsh-knowledge-connection',
     order: 25,
   }, KnowledgeConnectionCard))

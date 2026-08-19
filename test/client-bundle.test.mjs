@@ -17,6 +17,7 @@ test('browser bundle registers the sidebar knowledge panel', async () => {
   assert.match(source, /dsh-knowledge-resize-grip/)
   assert.match(source, /ResizeObserver/)
   assert.match(source, /settings\.plugin\.item/)
+  assert.match(source, /key:\s*"dsh-knowledge-connection"/)
   assert.match(source, /dsh-knowledge-settings-card/)
   assert.match(source, /remoteToken/)
   assert.match(source, /\/knowledge-control\/v1\/connection/)
