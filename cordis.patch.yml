@@ -10,4 +10,3 @@
         exposeApi: false
         exposeWeb: true
         extractionEnabled: true
-        autoRecallLimit: 3

@@ -1,11 +1,23 @@
 import type { KnowledgeProvider } from './provider.js'
-import { normalizeTags, type KnowledgeBase, type KnowledgeBaseDraft, type KnowledgeBasePatch } from './domain.js'
+import {
+  isKnowledgeType,
+  normalizeTags,
+  type CandidateProposal,
+  type KnowledgeBase,
+  type KnowledgeBaseDraft,
+  type KnowledgeBasePatch,
+  type KnowledgeDraft,
+  type ResolvedKnowledgeMount,
+} from './domain.js'
 import {
   formatKnowledgeEntry,
+  formatKnowledgeBaseMatches,
   formatSearchResults,
   KnowledgeHandleCodec,
   readMountedKnowledge,
+  resolveKnowledgeMounts,
   resolveRecallMounts,
+  searchMountedKnowledgeBases,
   searchMountedKnowledge,
   selectMounts,
 } from './retrieval.js'
@@ -22,10 +34,130 @@ export function registerKnowledgeTools(
   provider: KnowledgeProvider,
   codec: KnowledgeHandleCodec,
 ): void {
+  ctx.tools.register(searchKnowledgeBaseTool(provider))
   ctx.tools.register(searchTool(provider, codec))
   ctx.tools.register(readTool(provider, codec))
+  ctx.tools.register(writeTool(provider, codec))
   ctx.tools.register(createKnowledgeBaseTool(provider))
   ctx.tools.register(updateKnowledgeBaseTool(provider))
+}
+
+function writeTool(provider: KnowledgeProvider, codec: KnowledgeHandleCodec): ToolDefinitionLike {
+  return {
+    name: 'knowledge_write',
+    description: 'Persist durable knowledge as a topic document in a writable knowledge base mounted in THIS session. Related findings belong in sections of the same document, never one document per fact. Search first and pass the matching document handle; send only new Markdown material, never a rewritten full document. Create only when no related document exists, using a stable subject title and an exact mounted base id or name. The tool enforces scope, routes to the active local or remote provider, and applies audit, deduplication, merge, version, and conflict policy.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        handle: { type: 'string', description: 'For an update: exact signed handle returned by knowledge_search.' },
+        base: { type: 'string', description: 'For a new document: exact writable mounted knowledge-base id or name. Optional only when exactly one writable base is mounted.' },
+        title: { type: 'string', description: 'Stable subject document title, not an individual fact title. For a GitHub repository prefer owner/repository. Required only for a genuinely new document.' },
+        content: { type: 'string', description: 'Only the NEW Markdown sections or paragraphs for the topic document. Group related findings, and do not repeat existing content or include session narration.' },
+        type: { type: 'string', enum: ['preference', 'fact', 'decision', 'procedure', 'lesson'], description: 'Knowledge type. Required for new knowledge; existing type is preserved on update.' },
+        tags: { type: 'array', items: { type: 'string' }, maxItems: 32 },
+        scope: { type: 'string', enum: ['global', 'project'], description: 'Scope for new knowledge. Project uses the current workspace; default is global.' },
+      },
+      required: ['content'],
+    },
+    output: textOutput,
+    isConcurrencySafe: () => false,
+    async execute(raw: unknown, exec: ToolRunContextLike): Promise<string> {
+      const agent = requireAgent(exec)
+      const args = asRecord(raw)
+      const content = requireNonEmptyString(args.content, 'content', 50_000)
+      const handle = optionalString(args.handle, 'handle', 4096)
+      const allMounts = await resolveKnowledgeMounts(provider, agent, exec.signal)
+      const writableMounts = allMounts.filter(mount => mount.writeMode !== 'none')
+      if (writableMounts.length === 0) throw new Error('no writable knowledge base is mounted in this session')
+
+      let mount: ResolvedKnowledgeMount
+      let targetId: string | undefined
+      let current: Awaited<ReturnType<KnowledgeProvider['get']>> = undefined
+      if (handle !== undefined) {
+        const resolved = await readMountedKnowledge(provider, agent, handle, codec, exec.signal)
+        mount = resolved.mount
+        current = resolved.entry
+        targetId = resolved.entry.id
+        if (mount.writeMode === 'none') throw new Error('the knowledge base addressed by this handle is mounted read-only')
+      } else {
+        mount = selectWritableMount(writableMounts, optionalString(args.base, 'base', 200))
+      }
+
+      const scope = current?.scope ?? parseWriteScope(args.scope, agent.session.header.cwd)
+      const type = current?.type ?? parseWriteType(args.type)
+      const title = current?.title ?? requireNonEmptyString(args.title, 'title', 200)
+      const turn = currentTurn(agent)
+      const draft: KnowledgeDraft = {
+        knowledgeBaseId: mount.knowledgeBaseId,
+        title,
+        body: content,
+        type,
+        tags: normalizeTags([
+          ...mount.base.defaultTags,
+          ...mount.includeTags,
+          ...optionalStringArray(args.tags, 'tags', 32, 100),
+        ]).filter(tag => !mount.excludeTags.includes(tag)),
+        scope,
+        confidence: .95,
+        source: {
+          sessionId: agent.session.id,
+          ...turn === undefined ? {} : { turn },
+        },
+      }
+      const proposal: CandidateProposal = {
+        action: targetId === undefined ? 'create' : 'update',
+        ...targetId === undefined ? {} : { targetId },
+        draft,
+        reason: 'Persisted through the scoped knowledge_write tool.',
+      }
+      const sourceKey = `knowledge-write:${agent.session.id}`
+      if (mount.writeMode === 'audit') {
+        const candidate = await provider.propose(proposal, sourceKey, exec.signal)
+        return JSON.stringify({
+          storage: provider.mode,
+          outcome: 'pending-review',
+          knowledgeBase: { id: mount.knowledgeBaseId, name: mount.base.name },
+          candidateId: candidate.id,
+        }, null, 2)
+      }
+      const result = await provider.writeDirect(proposal, sourceKey, exec.signal)
+      return JSON.stringify({
+        storage: provider.mode,
+        outcome: result.outcome,
+        knowledgeBase: { id: mount.knowledgeBaseId, name: mount.base.name },
+        ...result.entry === undefined ? {} : { document: { id: result.entry.id, title: result.entry.title } },
+        ...result.candidate?.status === 'pending' ? { candidateId: result.candidate.id } : {},
+      }, null, 2)
+    },
+  }
+}
+
+function searchKnowledgeBaseTool(provider: KnowledgeProvider): ToolDefinitionLike {
+  return {
+    name: 'knowledge_base_search',
+    description: 'First-stage knowledge discovery. Search only knowledge bases mounted for recall in THIS session by their name, routing description, and tags. Call this before knowledge_search when the current request may depend on durable project or user knowledge. It returns metadata only, never knowledge document content. If nothing matches, continue without knowledge retrieval.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        query: { type: 'string', description: 'A concise description of the current topic or information need.' },
+        limit: { type: 'integer', description: 'Maximum matching knowledge bases, default 5 and maximum 10.' },
+      },
+      required: ['query'],
+    },
+    output: textOutput,
+    isConcurrencySafe: () => true,
+    async execute(raw: unknown, exec: ToolRunContextLike): Promise<string> {
+      const agent = requireAgent(exec)
+      const args = asRecord(raw)
+      const query = requireNonEmptyString(args.query, 'query', 2000)
+      const limit = optionalInteger(args.limit, 'limit', 1, 10) ?? 5
+      const mounts = await resolveRecallMounts(provider, agent, exec.signal)
+      if (mounts.length === 0) return 'No knowledge bases are mounted for recall in this session.'
+      return formatKnowledgeBaseMatches(query, searchMountedKnowledgeBases(mounts, query, limit))
+    },
+  }
 }
 
 function createKnowledgeBaseTool(provider: KnowledgeProvider): ToolDefinitionLike {
@@ -118,16 +250,16 @@ function updateKnowledgeBaseTool(provider: KnowledgeProvider): ToolDefinitionLik
 function searchTool(provider: KnowledgeProvider, codec: KnowledgeHandleCodec): ToolDefinitionLike {
   return {
     name: 'knowledge_search',
-    description: 'Search only the knowledge bases mounted for recall in THIS session. Use this before answering from memory when the mounted-base catalog may cover the user\'s topic. Returns ranked snippets and signed opaque handles; call knowledge_read with an exact handle to open a result. Natural-language queries are supported. Never invent a handle.',
+    description: 'Second-stage knowledge retrieval. Search one exact knowledge base returned by knowledge_base_search. The base must still be mounted for recall in THIS session. Returns ranked snippets and signed opaque handles; call knowledge_read with an exact handle to open a result. Never invent a base id or handle.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         query: { type: 'string', description: 'What to find. Prefer focused words from the current user request.' },
-        base: { type: 'string', description: 'Optional exact mounted knowledge-base name or id. Omit to search all mounted bases.' },
+        base: { type: 'string', description: 'Exact mounted knowledge-base id or name returned by knowledge_base_search.' },
         limit: { type: 'integer', description: 'Maximum ranked results, default 8 and maximum 20.' },
       },
-      required: ['query'],
+      required: ['query', 'base'],
     },
     output: textOutput,
     isConcurrencySafe: () => true,
@@ -135,7 +267,7 @@ function searchTool(provider: KnowledgeProvider, codec: KnowledgeHandleCodec): T
       const agent = requireAgent(exec)
       const args = asRecord(raw)
       const query = requireNonEmptyString(args.query, 'query', 6000)
-      const base = optionalString(args.base, 'base', 200)
+      const base = requireNonEmptyString(args.base, 'base', 200)
       const limit = optionalInteger(args.limit, 'limit', 1, 20) ?? 8
       const mounts = selectMounts(await resolveRecallMounts(provider, agent, exec.signal), base)
       if (mounts.length === 0) return 'No knowledge bases are mounted for recall in this session.'
@@ -148,7 +280,7 @@ function searchTool(provider: KnowledgeProvider, codec: KnowledgeHandleCodec): T
 function readTool(provider: KnowledgeProvider, codec: KnowledgeHandleCodec): ToolDefinitionLike {
   return {
     name: 'knowledge_read',
-    description: 'Read one approved knowledge section using the exact signed handle returned by knowledge_search or proactive retrieval. Handles are session-bound. Long sections are paginated; when a result says it was truncated, call again with the reported offset.',
+    description: 'Read one approved knowledge document using the exact signed handle returned by knowledge_search. Handles are session-bound. Long documents are paginated; when a result says it was truncated, call again with the reported offset.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -171,6 +303,44 @@ function readTool(provider: KnowledgeProvider, codec: KnowledgeHandleCodec): Too
       return formatKnowledgeEntry(entry, mount, offset, maxChars)
     },
   }
+}
+
+function selectWritableMount(
+  mounts: ResolvedKnowledgeMount[],
+  requested?: string,
+): ResolvedKnowledgeMount {
+  if (requested === undefined) {
+    if (mounts.length === 1) return mounts[0] as ResolvedKnowledgeMount
+    throw new Error(`multiple writable knowledge bases are mounted (${mounts.map(mount => mount.base.name).join(', ')}); specify one with base`)
+  }
+  const folded = requested.toLocaleLowerCase('zh-CN')
+  const matches = mounts.filter(mount => mount.knowledgeBaseId === requested
+    || mount.base.name.toLocaleLowerCase('zh-CN') === folded)
+  if (matches.length === 0) throw new Error(`knowledge base ${JSON.stringify(requested)} is not mounted for write-back`)
+  if (matches.length > 1) throw new Error(`knowledge base ${JSON.stringify(requested)} is ambiguous; use its exact id`)
+  return matches[0] as ResolvedKnowledgeMount
+}
+
+function parseWriteScope(value: unknown, projectId?: string): KnowledgeDraft['scope'] {
+  if (value === undefined || value === 'global') return { kind: 'global' }
+  if (value !== 'project') throw new Error('scope must be global or project')
+  if (projectId === undefined || projectId.trim().length === 0) {
+    throw new Error('project scope requires a current workspace')
+  }
+  return { kind: 'project', id: projectId }
+}
+
+function parseWriteType(value: unknown): KnowledgeDraft['type'] {
+  if (!isKnowledgeType(value)) throw new Error('type is required for new knowledge and must be preference, fact, decision, procedure, or lesson')
+  return value
+}
+
+function currentTurn(agent: AgentLike): number | undefined {
+  for (let index = agent.session.events.length - 1; index >= 0; index -= 1) {
+    const event = agent.session.events[index]
+    if (event?.type === 'turn/start' && typeof event.data.turn === 'number') return event.data.turn
+  }
+  return undefined
 }
 
 async function resolveKnowledgeBase(

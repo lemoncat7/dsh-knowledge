@@ -42,7 +42,6 @@ test('real Cordis context dynamically mounts API and Web routes', async (t) => {
     exposeApi: true, apiToken: 'cordis_test_admin_token_longer_than_24_chars', apiPrefix: '/knowledge-api/v1',
     exposeWeb: true, webPath: '/knowledge', extractionEnabled: false, extractionMaxTokens: 1000,
     extractionTimeoutMs: 5000, extractionMaxInputChars: 10000, defaultScope: 'project',
-    autoRecallLimit: 5, recallMaxChars: 6000,
   }).await()
 
   assert.deepEqual(routes.map(route => [route.kind, route.path]), [

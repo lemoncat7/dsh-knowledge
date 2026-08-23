@@ -6,23 +6,23 @@
 
 `dsh-knowledge` 是面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的知识库插件。它不修改 DSH Agent Loop，同一个插件既能使用本地 SQLite，也能连接远程中央知识库。
 
-正式版本 `0.7.1` 提供可部署的多知识库、按需检索工具、本地与远程中央服务、文档型 Web 管理台，以及全局回写策略与安全直写协调：
+当前版本提供可部署的多知识库、按需检索工具、本地与远程中央服务、文档型 Web 管理台，以及全局回写策略与安全直写协调：
 
 - 回答完成后同步调用 DSH 当前模型判断是否产生知识，并在回答下方显示逐库回写结果。
 - 知识标题、正文、自然语言标签和提取理由默认跟随本轮用户语言；代码、命令和技术标识保持原样。
 - 回写结果只作为 UI 状态展示，在下一次模型请求前会被移除，不占用会话上下文。
-- 全局“严谨 / 主动”回写策略保存在权威知识库服务中；远程客户端自动跟随中央设置。严谨模式不限制候选数量，而是只接受明确陈述或已经验证的长期知识。
+- 全局“严谨 / 主动”回写策略保存在权威知识库服务中；远程客户端自动跟随中央设置。严谨模式不限制候选数量，而是以长期价值和较高置信度为门槛，接受用户明确陈述以及带具体来源的可靠调研结论。
 - 可创建多个知识库，分别设定说明、默认标签和提取要求。
 - 每个知识库可选择专用回写模型；未设定时跟随当前会话模型。
 - 项目和会话挂载；会话默认继承项目，也可独立覆盖或关闭。
 - 每个挂载支持仅召回、审核写入、直接写入，以及包含/排除标签和额外提取要求。
-- `create / update / conflict / skip` 提取决策；直写模式自动写入普通结果，冲突仍进入人工审核。
+- `create / update / conflict / skip` 文档变更决策；同一主题的多项发现先合并为一篇 Markdown 文档，直写模式自动写入普通结果，冲突仍进入人工审核。
 - 直接写入由服务端原子协调：兼容的同主题内容合并并保留版本，完全重复直接跳过，疑似矛盾保护原条目并转入审核。
 - 未挂载知识库时，不召回、不提取、不回写。
 - 全局与项目范围，以及偏好、事实、决策、流程、经验五类知识。
 - SQLite WAL、FTS5 全文搜索、原子事务、完整版本历史和幂等提取任务。
-- 挂载库的名称和描述作为轻量动态目录注入，不直接塞入文档正文。
-- 每条新用户消息默认只主动预取 3 条短摘要；模型可按需调用只读的 `knowledge_search` 与 `knowledge_read` 工具继续检索。
+- 回答前通过 DSH 官方提示组装接口提供有界的挂载库地图，并自动召回最多 3 条达到相关性门槛的摘要；不自动注入完整文档。模型可继续按“`knowledge_base_search` 找库 → `knowledge_search` 搜索指定库 → `knowledge_read` 读取文档”的顺序核对完整内容。
+- 可写挂载同时向模型声明 `knowledge_write`：更新已有知识必须使用搜索得到的签名 handle，新建知识必须指定当前可写挂载；工具内部完成本地/远程路由，并沿用审核、直写、去重、合并和冲突保护。
 - 用户明确要求时，模型可调用 `knowledge_base_create` 和 `knowledge_base_update` 创建或修改知识库；工具内部跟随当前 Provider 自动写入本地 SQLite 或远程中央服务，模型不传也不猜存储位置。
 - 创建或修改工具不会自动挂载知识库，也不会回退、双写或同步到另一端；结果会明确返回实际写入的 `local` 或 `remote`。
 - 搜索和读取由服务端按当前会话挂载、项目范围及包含/排除标签强制限权，读取句柄带签名且仅限当前会话。
@@ -30,10 +30,10 @@
 - DSH“设置 → 插件”提供“知识库连接”卡片，可选择本地来源或填写中央服务地址和只写客户端令牌，保存后实时验证并切换 Provider。
 - Bearer Token 仅保存 SHA-256 摘要，支持 `read / propose / write / admin` 权限及吊销。
 - 认证 HTTP API，可作为其他 DSH 客户端和未来桌面端的中央知识库。
-- Apple 风格三栏文档界面，按知识库浏览自动整理的 `README.md`、`facts.md`、`decisions.md` 等文档。
+- 笔记软件式双栏文档界面：左侧以“知识库 → 文档”树形目录浏览和新建，右侧直接编辑标题、Markdown 正文、类型和标签。
+- 每个生效主题对应一篇真实 Markdown 文档；相似知识作为章节或增量内容写入同一文档。创建、改名、保存、归档和删除会同步 SQLite、全文索引、版本历史与物理文件。
 - 知识库管理拆分为“知识库”和“项目与会话挂载”两个工作区；支持按名称、描述、标签和模型即时搜索，避免知识库较多时逐张翻找。
-- 知识库栏和文档栏可拖拽或用方向键调宽；文档标题栏提供稳定的显示开关，可直接收起和展开两个栏位；DSH 内的管理窗口可缩放、最大化和还原。
-- 随插件安装的响应式 Web 管理台，覆盖概览、文档浏览、条目维护、AI 候选审核和客户端令牌管理。
+- 随插件安装的响应式 Web 管理台，覆盖概览、文档树与编辑器、AI 候选审核和客户端令牌管理。
 - DSH 浏览器端插件：在左侧工作区下方显示“知识库”，并在当前页面内打开管理面板。
 - 明暗主题、键盘操作、窄屏布局以及不依赖颜色的状态标签。
 
@@ -45,16 +45,22 @@
 dsh plugin --profile web add @lemoncat7/dsh-knowledge
 ```
 
-需要固定版本时：
+安装包含文档型知识库、主题聚合和新管理界面的 `0.8` 预览版：
 
 ```bash
-dsh plugin --profile web add @lemoncat7/dsh-knowledge@0.7.1
+dsh plugin --profile web add @lemoncat7/dsh-knowledge@next
 ```
 
-也可以从 [GitHub Release](https://github.com/lemoncat7/dsh-knowledge/releases/latest) 下载完整预构建包后安装：
+需要固定本次预览版本时：
 
 ```bash
-dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.7.1.tgz
+dsh plugin --profile web add @lemoncat7/dsh-knowledge@0.8.0-alpha.8
+```
+
+也可以从 [GitHub Releases](https://github.com/lemoncat7/dsh-knowledge/releases) 下载对应版本的完整预构建包后安装：
+
+```bash
+dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.8.0-alpha.8.tgz
 ```
 
 卸载：
@@ -90,6 +96,8 @@ pnpm dsh web
     extractionEnabled: true
     defaultScope: project
     autoRecallLimit: 3
+    autoRecallMinScore: 0.2
+    recallMaxChars: 5000
     exposeApi: false
     exposeWeb: true
 ```
@@ -133,11 +141,11 @@ pnpm dsh web
 - 创建和编辑多个知识库，管理默认标签与提取要求。
 - 在知识库页切换全局“严谨 / 主动”回写策略。
 - 管理当前项目挂载和会话覆盖，设定召回、写入模式与标签范围。
-- 在三栏界面中搜索和阅读 Markdown 文档，并保留条目管理作为兼容入口。
+- 在左侧知识目录中搜索、新建和切换文档，并在右侧编辑器中直接保存 Markdown 内容。
 - 查看 AI 提取依据，直接通过、编辑后通过或拒绝候选。
 - 创建、查看和撤销客户端令牌；新令牌原文只显示一次。
 
-知识库的 `description` 同时用于读取和回写路由：它会出现在会话的轻量挂载目录中，帮助模型判断何时调用检索工具；提取器也只有在当前对话中的可复用知识符合该描述时，才能选择这个库。挂载只表示“可选”，不代表每次回答都要检索或写入。`extractionInstructions` 用于在匹配后继续限定具体收录规则。
+知识库的 `description` 同时用于读取和回写路由：它以轻量目录形式告诉模型每个挂载库覆盖什么主题，`knowledge_base_search` 也用它匹配当前信息需求；文档正文不会随目录注入。主模型可以在掌握本轮工具结果时调用 `knowledge_write`，回答结束后的单次严格提取则作为自动兜底，同时判断长期价值、目标知识库、重复/更新/冲突。挂载只表示“可选”，不代表每次回答都要写入。`extractionInstructions` 用于匹配后继续限定具体收录规则。
 
 创建示例：
 
@@ -199,7 +207,6 @@ pnpm dsh web
     remoteUrl: 'https://knowledge.example.com/knowledge-api/v1'
     remoteToken: !!js process.env.DSH_KNOWLEDGE_REMOTE_TOKEN
     extractionEnabled: true
-    autoRecallLimit: 3
 ```
 
 远程地址必须是 HTTPS；只有 `localhost` 和回环 IP 的测试地址允许 HTTP。普通客户端建议只分配 `read + propose` 权限。

@@ -1,32 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
+import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
+import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
+import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import {
   IconCloseOutline16,
   IconDataOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import cssText from './client.css'
 import { KNOWLEDGE_SETTINGS_NAMESPACE } from './constants.js'
+import {
+  createKnowledgeHostTheme,
+  KNOWLEDGE_THEME_PROTOCOL_VERSION,
+  KNOWLEDGE_THEME_READY_MESSAGE,
+  type ThemeSnapshotLike,
+} from './theme-bridge.js'
 
 const PLUGIN_ID = '@lemoncat7/dsh-knowledge'
 const STYLE_ID = `${PLUGIN_ID}/client`
-const PANEL_SIZE_KEY = `${PLUGIN_ID}/panel-size`
 
-interface SidebarActionProps {
-  wide: boolean
-  useSessions<T>(selector: (state: {
-    current?: string
-    byId: Record<string, { cwd?: string }>
-  }) => T): T
-}
-
-interface SlotService {
-  inject(name: string, register: () => unknown): unknown
-  register(options: Record<string, unknown>, component: (props: SidebarActionProps) => JSX.Element): unknown
-}
-
-interface ClientContext {
-  slots: SlotService
-  effect(setup: () => void | (() => void), label?: string): unknown
-}
+type SidebarActionProps = PropsRuntime<'sidebar.footer.action'>
+type ConversationSlotProps = PropsRuntime<'conversation'>
 
 interface KnowledgeConnectionView {
   backend: 'local' | 'remote'
@@ -39,26 +35,62 @@ interface KnowledgeConnectionView {
   managementPath?: string
 }
 
+interface KnowledgeWorkspaceController {
+  isOpen(): boolean
+  toggle(): void
+  close(): void
+  subscribe(listener: () => void): () => void
+}
+
 const CONNECTION_CONTROL_PATH = '/knowledge-control/v1/connection'
 
 /** Cordis services needed by the browser half. */
-export const inject = ['slots']
+export const inject = ['slots', 'theme']
 
 /** Register the knowledge launcher in the sidebar's official extension slot. */
 export function apply(ctx: ClientContext): void {
   ctx.effect(installStyles, 'dsh-knowledge: client styles')
+  const workspace = createKnowledgeWorkspaceController(ctx)
+  ctx.effect(() => () => { workspace.close() }, 'dsh-knowledge: workspace lifecycle')
   ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
     name: 'sidebar.footer.action',
     id: 'knowledge',
     order: -10,
-  }, KnowledgeLauncher))
+  }, props => <KnowledgeLauncher {...props} workspace={workspace} />))
 
   ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
     name: 'settings.plugin.item',
     key: KNOWLEDGE_SETTINGS_NAMESPACE,
-    id: KNOWLEDGE_SETTINGS_NAMESPACE,
-    order: 25,
   }, KnowledgeConnectionCard))
+}
+
+function createKnowledgeWorkspaceController(client: ClientContext): KnowledgeWorkspaceController {
+  const listeners = new Set<() => void>()
+  let disposeWorkspace: (() => void) | undefined
+  const notify = (): void => { for (const listener of listeners) listener() }
+  const close = (): void => {
+    if (disposeWorkspace === undefined) return
+    const dispose = disposeWorkspace
+    disposeWorkspace = undefined
+    dispose()
+    notify()
+  }
+  return {
+    isOpen: () => disposeWorkspace !== undefined,
+    toggle: () => {
+      if (disposeWorkspace !== undefined) return close()
+      const dispose = client.slots.register({ name: 'conversation', priority: -1 }, props => (
+        <KnowledgeWorkspace {...props} client={client} onClose={close} />
+      ))
+      disposeWorkspace = dispose
+      notify()
+    },
+    close,
+    subscribe: listener => {
+      listeners.add(listener)
+      return () => { listeners.delete(listener) }
+    },
+  }
 }
 
 function KnowledgeConnectionCard() {
@@ -255,16 +287,39 @@ function isManagementPath(value: unknown): value is string {
   return typeof value === 'string' && value.startsWith('/') && !value.startsWith('//')
 }
 
-function KnowledgeLauncher({ wide, useSessions }: SidebarActionProps) {
-  const [open, setOpen] = useState(false)
-  const [maximized, setMaximized] = useState(false)
+function KnowledgeLauncher({ wide, workspace }: SidebarActionProps & { workspace: KnowledgeWorkspaceController }) {
+  const [open, setOpen] = useState(workspace.isOpen())
+
+  useEffect(() => workspace.subscribe(() => { setOpen(workspace.isOpen()) }), [workspace])
+
+  return (
+    <button
+      type="button"
+      className={`dsh-knowledge-trigger${wide ? '' : ' dsh-knowledge-trigger--rail'}${open ? ' is-active' : ''}`}
+      aria-label={open ? '返回对话' : '知识库'}
+      aria-pressed={open}
+      title={wide ? undefined : open ? '返回对话' : '知识库'}
+      onClick={() => { workspace.toggle() }}
+    >
+      <IconDataOutline16 size={wide ? 16 : 18} />
+      {wide && <span>{open ? '返回对话' : '知识库'}</span>}
+    </button>
+  )
+}
+
+function KnowledgeWorkspace({
+  sessionId,
+  useSessions,
+  client,
+  onClose,
+}: ConversationSlotProps & { client: ClientContext; onClose: () => void }) {
   const [panelState, setPanelState] = useState<'loading' | 'ready' | 'unavailable' | 'error'>('loading')
   const [managementPath, setManagementPath] = useState<string>()
   const [panelError, setPanelError] = useState('')
-  const close = useCallback(() => { setOpen(false) }, [])
-  const sessionId = useSessions(state => state.current)
   const projectId = useSessions(state => sessionId === undefined ? undefined : state.byId[sessionId]?.cwd)
   const knowledgeUrl = managementPath === undefined ? undefined : knowledgePanelUrl(managementPath, sessionId, projectId)
+  const frame = useRef<HTMLIFrameElement | null>(null)
+  const themeFrame = useRef(0)
 
   const loadManagement = useCallback(async (): Promise<void> => {
     setPanelState('loading')
@@ -285,163 +340,69 @@ function KnowledgeLauncher({ wide, useSessions }: SidebarActionProps) {
     }
   }, [])
 
-  const show = (): void => {
-    setOpen(true)
+  useEffect(() => {
     void loadManagement()
-  }
+  }, [loadManagement])
 
-  return (
-    <>
-      <button
-        type="button"
-        className={`dsh-knowledge-trigger${wide ? '' : ' dsh-knowledge-trigger--rail'}`}
-        aria-label="知识库"
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        title={wide ? undefined : '知识库'}
-        onClick={show}
-      >
-        <IconDataOutline16 size={wide ? 16 : 18} />
-        {wide && <span>知识库</span>}
-      </button>
-      {open && <KnowledgePanel
-        src={knowledgeUrl}
-        state={panelState}
-        error={panelError}
-        onRetry={() => { void loadManagement() }}
-        maximized={maximized}
-        onToggleMaximized={() => { setMaximized(value => !value) }}
-        onClose={close}
-      />}
-    </>
-  )
-}
+  const sendTheme = useCallback((): void => {
+    const target = frame.current?.contentWindow
+    if (target === undefined || target === null) return
+    const computed = getComputedStyle(document.body)
+    target.postMessage(createKnowledgeHostTheme(computed, client.theme.getTheme()), window.location.origin)
+  }, [client])
 
-function KnowledgePanel({
-  src,
-  state,
-  error,
-  onRetry,
-  maximized,
-  onToggleMaximized,
-  onClose,
-}: {
-  src?: string
-  state: 'loading' | 'ready' | 'unavailable' | 'error'
-  error: string
-  onRetry: () => void
-  maximized: boolean
-  onToggleMaximized: () => void
-  onClose: () => void
-}) {
-  const closeButton = useRef<HTMLButtonElement | null>(null)
-  const panel = useRef<HTMLElement | null>(null)
-  const panelSize = useRef(readPanelSize())
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') onClose()
-    }
-    document.addEventListener('keydown', onKeyDown)
-    closeButton.current?.focus()
-    return () => { document.removeEventListener('keydown', onKeyDown) }
-  }, [onClose])
-
-  useEffect(() => {
-    const target = panel.current
-    if (target === null || typeof ResizeObserver === 'undefined') return
-    const minimumWidth = desktopPanelMinimumWidth()
-    const observer = new ResizeObserver(entries => {
-      if (target.classList.contains('dsh-knowledge-panel--maximized') || window.innerWidth <= 760) return
-      const rect = entries[0]?.contentRect
-      if (rect === undefined || rect.width < minimumWidth || rect.height < 460) return
-      panelSize.current = { width: Math.round(rect.width), height: Math.round(rect.height) }
-      try { localStorage.setItem(PANEL_SIZE_KEY, JSON.stringify(panelSize.current)) } catch {}
+  const scheduleTheme = useCallback((): void => {
+    if (themeFrame.current !== 0) window.cancelAnimationFrame(themeFrame.current)
+    themeFrame.current = window.requestAnimationFrame(() => {
+      themeFrame.current = 0
+      sendTheme()
     })
-    observer.observe(target)
-    return () => { observer.disconnect() }
-  }, [])
+  }, [sendTheme])
 
-  const restoredSize = !maximized && window.innerWidth > 760 ? panelSize.current : undefined
+  useEffect(() => {
+    const off = client.on('theme/change', scheduleTheme)
+    const onMessage = (event: MessageEvent): void => {
+      if (event.origin !== window.location.origin || event.source !== frame.current?.contentWindow) return
+      const data = event.data as { type?: unknown; version?: unknown } | null
+      if (data?.type === KNOWLEDGE_THEME_READY_MESSAGE && data.version === KNOWLEDGE_THEME_PROTOCOL_VERSION) sendTheme()
+    }
+    window.addEventListener('message', onMessage)
+    scheduleTheme()
+    return () => {
+      off()
+      window.removeEventListener('message', onMessage)
+      if (themeFrame.current !== 0) window.cancelAnimationFrame(themeFrame.current)
+    }
+  }, [client, scheduleTheme, sendTheme])
 
   return (
-    <div className="dsh-knowledge-overlay" role="presentation">
-      <div className="dsh-knowledge-mask" aria-hidden="true" onClick={onClose} />
-      <section
-        ref={panel}
-        className={`dsh-knowledge-panel${maximized ? ' dsh-knowledge-panel--maximized' : ''}`}
-        style={restoredSize}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="dsh-knowledge-panel-title"
-      >
-        <header className="dsh-knowledge-header" onDoubleClick={(event) => {
-          if (!(event.target as HTMLElement).closest('button')) onToggleMaximized()
-        }}>
+    <section className="dsh-knowledge-workspace" aria-labelledby="dsh-knowledge-workspace-title">
+      <header className="dsh-knowledge-workspace-header">
+        <div>
+          <h2 id="dsh-knowledge-workspace-title">知识库</h2>
+          <p>文档、审核、挂载与访问管理</p>
+        </div>
+        <button type="button" className="dsh-knowledge-workspace-close" onClick={onClose}>
+          <IconCloseOutline16 size={16} />
+          <span>返回对话</span>
+        </button>
+      </header>
+      {panelState === 'ready' && knowledgeUrl !== undefined
+        ? <iframe ref={frame} className="dsh-knowledge-frame" src={knowledgeUrl} title="知识库管理台" onLoad={sendTheme} />
+        : <div className="dsh-knowledge-panel-state" role={panelState === 'error' ? 'alert' : 'status'} aria-live="polite">
+          <span className="dsh-knowledge-panel-state-icon" aria-hidden="true">{panelState === 'loading' ? '···' : panelState === 'error' ? '!' : '—'}</span>
           <div>
-            <h2 id="dsh-knowledge-panel-title">知识库</h2>
-            <p>管理知识、AI 候选和客户端访问令牌</p>
+            <h3>{panelState === 'loading' ? '正在打开知识库…' : panelState === 'error' ? '暂时无法打开知识库' : '这台 DSH 未启用知识库管理台'}</h3>
+            <p>{panelState === 'loading'
+              ? '正在确认当前实例是否提供管理页面。'
+              : panelState === 'error'
+                ? panelError
+                : '本地召回和回写仍可使用。当前 profile 已显式关闭 exposeWeb；重新启用后即可在这里管理。使用远程知识库时，请前往中央 DSH 的知识库管理台。'}</p>
+            {panelState === 'error' && <button type="button" onClick={() => { void loadManagement() }}>重试</button>}
           </div>
-          <div className="dsh-knowledge-window-actions">
-            <button
-              type="button"
-              className="dsh-knowledge-window-button"
-              aria-label={maximized ? '还原知识库窗口' : '最大化知识库窗口'}
-              title={maximized ? '还原' : '最大化'}
-              onClick={(event) => { event.stopPropagation(); onToggleMaximized() }}
-            >
-              <span aria-hidden="true">{maximized ? '↙' : '↗'}</span>
-            </button>
-            <button
-              ref={closeButton}
-              type="button"
-              className="dsh-knowledge-window-button"
-              aria-label="关闭知识库"
-              onClick={onClose}
-            >
-              <IconCloseOutline16 size={16} />
-            </button>
-          </div>
-        </header>
-        {state === 'ready' && src !== undefined
-          ? <iframe className="dsh-knowledge-frame" src={src} title="知识库管理台" />
-          : <div className="dsh-knowledge-panel-state" role={state === 'error' ? 'alert' : 'status'} aria-live="polite">
-            <span className="dsh-knowledge-panel-state-icon" aria-hidden="true">{state === 'loading' ? '···' : state === 'error' ? '!' : '—'}</span>
-            <div>
-              <h3>{state === 'loading' ? '正在打开知识库…' : state === 'error' ? '暂时无法打开知识库' : '这台 DSH 未启用知识库管理台'}</h3>
-              <p>{state === 'loading'
-                ? '正在确认当前实例是否提供管理页面。'
-                : state === 'error'
-                  ? error
-                  : '本地召回和回写仍可使用。当前 profile 已显式关闭 exposeWeb；重新启用后即可在这里管理。使用远程知识库时，请前往中央 DSH 的知识库管理台。'}</p>
-              {state === 'error' && <button type="button" onClick={onRetry}>重试</button>}
-            </div>
-          </div>}
-        {!maximized && <span className="dsh-knowledge-resize-grip" aria-hidden="true" />}
-      </section>
-    </div>
+        </div>}
+    </section>
   )
-}
-
-function readPanelSize(): { width: number; height: number } {
-  const minimumWidth = desktopPanelMinimumWidth()
-  const fallback = {
-    width: Math.min(1180, Math.max(minimumWidth, window.innerWidth - 48)),
-    height: Math.min(860, Math.max(460, window.innerHeight - 48)),
-  }
-  try {
-    const value = JSON.parse(localStorage.getItem(PANEL_SIZE_KEY) || '{}') as { width?: unknown; height?: unknown }
-    const width = Number(value.width)
-    const height = Number(value.height)
-    return {
-      width: Number.isFinite(width) ? Math.min(window.innerWidth - 32, Math.max(minimumWidth, width)) : fallback.width,
-      height: Number.isFinite(height) ? Math.min(window.innerHeight - 32, Math.max(460, height)) : fallback.height,
-    }
-  } catch { return fallback }
-}
-
-function desktopPanelMinimumWidth(): number {
-  return Math.min(1040, Math.max(320, window.innerWidth - 32))
 }
 
 function knowledgePanelUrl(managementPath: string, sessionId?: string, projectId?: string): string {

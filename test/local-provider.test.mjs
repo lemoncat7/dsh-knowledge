@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { access, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -9,6 +9,7 @@ import { LocalKnowledgeProvider } from '../lib/local-provider.js'
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-knowledge-'))
   const provider = new LocalKnowledgeProvider(join(root, 'knowledge.sqlite'))
+  provider.fixtureRoot = root
   t.after(async () => {
     await provider.close()
     await rm(root, { recursive: true, force: true })
@@ -139,32 +140,149 @@ test('direct writes merge compatible knowledge, skip duplicates, and hold confli
   assert.equal((await provider.list({ status: 'active', limit: 10 })).items.length, 2)
 })
 
-test('approved entries are projected into browsable Markdown documents', async (t) => {
+test('direct writes merge the same GitHub repository despite different document titles', async (t) => {
   const provider = await fixture(t)
-  const readme = (await provider.listDocuments('default')).find(document => document.relPath === 'README.md')
-  assert.ok(readme)
-  assert.match(readme.content, /# 默认知识库/)
-  assert.equal(readme.entryCount, 0)
+  const existing = await provider.create({
+    knowledgeBaseId: 'default', title: 'example/repository 项目资料',
+    body: '## 仓库\n\nhttps://github.com/example/repository',
+    type: 'fact', tags: ['github'], scope: { kind: 'global' }, confidence: .92,
+  })
+  const result = await provider.writeDirect({
+    action: 'create',
+    draft: {
+      knowledgeBaseId: 'default', title: 'example/repository 维护状态',
+      body: '## 维护状态\n\nhttps://github.com/example/repository/ 最近仍有提交和稳定发布。',
+      type: 'fact', tags: ['维护状态'], scope: { kind: 'global' }, confidence: .95,
+    },
+    reason: '补充同一仓库的维护状态。',
+  }, 'github-reference-merge:1')
+
+  assert.equal(result.outcome, 'merged')
+  assert.equal(result.entry?.id, existing.id)
+  assert.equal((await provider.list({ knowledgeBaseId: 'default', status: 'active', limit: 10 })).items.length, 1)
+  assert.match(result.entry?.body || '', /## 仓库/)
+  assert.match(result.entry?.body || '', /## 维护状态/)
+})
+
+test('audit approval merges a same-topic candidate into its document', async (t) => {
+  const provider = await fixture(t)
+  const existing = await provider.create({
+    knowledgeBaseId: 'default', title: 'example/repository',
+    body: '## 仓库\n\nhttps://github.com/example/repository',
+    type: 'fact', tags: ['github'], scope: { kind: 'global' }, confidence: 0.91,
+  })
+  const candidate = await provider.propose({
+    action: 'create',
+    draft: {
+      knowledgeBaseId: 'default', title: 'example/repository',
+      body: '## 维护状态\n\n最近仍有稳定发布。',
+      type: 'fact', tags: ['维护状态'], scope: { kind: 'global' }, confidence: 0.94,
+    },
+    reason: '补充同一仓库的维护状态。',
+  }, 'audit-document-merge:1')
+
+  await provider.review(candidate.id, { decision: 'approve' })
+
+  const entries = (await provider.list({ knowledgeBaseId: 'default', status: 'active', limit: 10 })).items
+  assert.equal(entries.length, 1)
+  assert.equal(entries[0].id, existing.id)
+  assert.equal(entries[0].version, 2)
+  assert.match(entries[0].body, /## 仓库/)
+  assert.match(entries[0].body, /## 维护状态/)
+  assert.equal((await provider.listDocuments('default')).length, 1)
+
+  const conflictCandidate = await provider.propose({
+    action: 'conflict', targetId: existing.id,
+    draft: {
+      knowledgeBaseId: 'default', title: 'example/repository',
+      body: '## 兼容性风险\n\n新版需要重新验证旧版配置。',
+      type: 'fact', tags: ['风险'], scope: { kind: 'global' }, confidence: 0.97,
+    },
+    reason: '新增内容可能改变原有兼容性结论。',
+  }, 'audit-document-conflict:1')
+  await provider.review(conflictCandidate.id, { decision: 'approve' })
+  const resolved = await provider.get(existing.id)
+  assert.equal(resolved?.version, 3)
+  assert.match(resolved?.body || '', /## 仓库/)
+  assert.match(resolved?.body || '', /## 维护状态/)
+  assert.match(resolved?.body || '', /## 兼容性风险/)
+  assert.equal((await provider.listDocuments('default')).length, 1)
+
+  const database = new DatabaseSync(join(provider.fixtureRoot, 'knowledge.sqlite'), { readOnly: true })
+  try {
+    assert.equal(database.prepare('PRAGMA integrity_check').get().integrity_check, 'ok')
+    assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), [])
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM knowledge_entries WHERE id=?').get(existing.id).count, 1)
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM knowledge_versions WHERE knowledge_id=?').get(existing.id).count, 3)
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM knowledge_fts WHERE knowledge_id=?').get(existing.id).count, 1)
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM knowledge_documents WHERE id=?').get(existing.id).count, 1)
+    assert.match(database.prepare('SELECT body FROM knowledge_entries WHERE id=?').get(existing.id).body, /兼容性风险/)
+  } finally {
+    database.close()
+  }
+
+  await provider.close()
+  const reopened = new LocalKnowledgeProvider(join(provider.fixtureRoot, 'knowledge.sqlite'))
+  t.after(() => reopened.close())
+  const afterRestart = await reopened.get(existing.id)
+  assert.equal(afterRestart?.version, 3)
+  assert.match(afterRestart?.body || '', /## 兼容性风险/)
+  assert.equal((await reopened.search({ text: '旧版配置兼容性风险', limit: 10 }))[0]?.entry.id, existing.id)
+  assert.equal((await reopened.listDocuments('default')).length, 1)
+})
+
+test('search scores exact topic matches above incidental term matches', async (t) => {
+  const provider = await fixture(t)
+  const exact = await provider.create({
+    knowledgeBaseId: 'default', title: 'DSH 插件安装',
+    body: '使用 dsh plugin add 安装插件，并在完成后重启对应 profile。',
+    type: 'procedure', tags: ['dsh', '插件'], scope: { kind: 'global' }, confidence: .95,
+  })
+  await provider.create({
+    knowledgeBaseId: 'default', title: '常规开发检查',
+    body: '提交之前运行测试，插件项目也遵循相同要求。',
+    type: 'procedure', tags: ['测试'], scope: { kind: 'global' }, confidence: .9,
+  })
+
+  const hits = await provider.search({ text: '什么是 DSH 插件安装流程', limit: 10 })
+  assert.equal(hits[0]?.entry.id, exact.id)
+  assert.ok((hits[0]?.score ?? 0) > .5)
+  assert.ok(hits.every(hit => hit.score >= 0 && hit.score <= 1))
+  const incidental = hits.find(hit => hit.entry.id !== exact.id)
+  if (incidental !== undefined) assert.ok(incidental.score < (hits[0]?.score ?? 0))
+
+  const oldSectionHits = await provider.search({ text: 'dsh plugin add', limit: 10 })
+  const newSectionHits = await provider.search({ text: '重启 profile', limit: 10 })
+  assert.equal(oldSectionHits[0]?.entry.id, exact.id)
+  assert.equal(newSectionHits[0]?.entry.id, exact.id)
+})
+
+test('each active entry is persisted as one editable Markdown document', async (t) => {
+  const provider = await fixture(t)
+  assert.deepEqual(await provider.listDocuments('default'), [])
 
   const entry = await provider.create(globalDraft)
   let documents = await provider.listDocuments('default')
-  const procedures = documents.find(document => document.relPath === 'procedures.md')
-  assert.ok(procedures)
-  assert.equal(procedures.entryCount, 1)
-  assert.match(procedures.content, /Production deployment policy/)
-  assert.match(procedures.content, /#docker/)
-  assert.equal((await provider.getDocument(procedures.id))?.contentHash, procedures.contentHash)
-  assert.deepEqual((await provider.listDocuments('default', 'persistent volume')).map(document => document.id), [procedures.id])
+  assert.equal(documents.length, 1)
+  const document = documents[0]
+  assert.equal(document.id, entry.id)
+  assert.match(document.relPath, /^Production-deployment-policy--[a-zA-Z0-9]+\.md$/)
+  assert.equal(document.entryCount, 1)
+  assert.match(document.content, /Production deployment policy/)
+  assert.match(document.content, /persistent volume/)
+  assert.equal((await provider.getDocument(document.id))?.contentHash, document.contentHash)
+  assert.deepEqual((await provider.listDocuments('default', 'persistent volume')).map(item => item.id), [document.id])
+  await access(join(provider.fixtureRoot, 'documents', 'base-default', document.relPath))
 
-  await provider.update(entry.id, { ...globalDraft, type: 'decision', body: 'Use Docker Compose for production deployments.' })
+  await provider.update(entry.id, { ...globalDraft, title: 'Production Docker decision', type: 'decision', body: 'Use Docker Compose for production deployments.' })
   documents = await provider.listDocuments('default')
-  assert.equal(documents.some(document => document.relPath === 'procedures.md'), false)
-  assert.match(documents.find(document => document.relPath === 'decisions.md')?.content || '', /Docker Compose/)
+  assert.equal(documents.length, 1)
+  assert.equal(documents[0]?.id, entry.id)
+  assert.match(documents[0]?.relPath || '', /^Production-Docker-decision--[a-zA-Z0-9]+\.md$/)
+  assert.match(documents[0]?.content || '', /Docker Compose/)
 
   await provider.archive(entry.id)
-  documents = await provider.listDocuments('default')
-  assert.deepEqual(documents.map(document => document.relPath), ['README.md'])
-  assert.equal(documents[0]?.entryCount, 0)
+  assert.deepEqual(await provider.listDocuments('default'), [])
 })
 
 test('knowledge bases mount by project and session with session overrides', async (t) => {
@@ -295,8 +413,10 @@ test('schema v1 databases migrate existing entries into the default knowledge ba
   assert.equal(entries.items[0]?.knowledgeBaseId, 'default')
   assert.equal((await provider.listKnowledgeBases())[0]?.id, 'default')
   const documents = await provider.listDocuments('default')
-  assert.ok(documents.some(document => document.relPath === 'README.md'))
-  assert.match(documents.find(document => document.relPath === 'decisions.md')?.content || '', /Legacy decision/)
+  assert.equal(documents.length, 1)
+  assert.equal(documents[0]?.id, 'legacy-1')
+  assert.match(documents[0]?.relPath || '', /^Legacy-decision--legacy1\.md$/)
+  assert.match(documents[0]?.content || '', /Keep this after migration/)
 })
 
 test('candidate approval is transactional and extraction claims are idempotent', async (t) => {

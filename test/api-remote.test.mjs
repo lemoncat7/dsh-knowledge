@@ -34,6 +34,9 @@ test('remote provider interoperates with the authenticated local API', async (t)
     await rm(root, { recursive: true, force: true })
   })
 
+  const health = await fetch(`http://127.0.0.1:${address.port}/knowledge-api/v1/health`).then(response => response.json())
+  assert.deepEqual(health, { ok: true, service: 'dsh-knowledge', schemaVersion: 6 })
+
   assert.equal((await remote.getSettings()).writebackPolicy, 'conservative')
   assert.equal((await remote.updateSettings({ writebackPolicy: 'proactive' })).writebackPolicy, 'proactive')
 
@@ -50,7 +53,8 @@ test('remote provider interoperates with the authenticated local API', async (t)
   assert.equal((await remote.search({ text: 'central knowledge', limit: 5 })).length, 1)
   assert.equal((await remote.stats()).entries.active, 1)
   const documents = await remote.listDocuments('default', 'central knowledge')
-  assert.equal(documents[0]?.relPath, 'decisions.md')
+  assert.match(documents[0]?.relPath || '', /^Central-knowledge-service--[a-zA-Z0-9]+\.md$/)
+  assert.equal(documents[0]?.id, entry.id)
   assert.match((await remote.getDocument(documents[0].id))?.content || '', /Central knowledge service/)
 
   const base = await remote.createKnowledgeBase({
@@ -72,13 +76,21 @@ test('remote provider interoperates with the authenticated local API', async (t)
   assert.equal((await remote.restoreKnowledgeBase(base.id)).status, 'active')
 
   const candidate = await remote.propose({
-    action: 'update',
-    targetId: entry.id,
-    draft: { ...entry, body: 'Other clients connect to the central knowledge API over authenticated HTTPS.' },
+    action: 'create',
+    draft: {
+      ...entry,
+      body: 'Other clients connect to the central knowledge API over authenticated HTTPS.',
+      source: { sessionId: 'remote-session', turn: 1, evidence: 'verified' },
+    },
     reason: 'Clarifies authentication.',
   }, 'remote-session:1')
+  assert.equal(candidate.draft.source?.evidence, 'verified')
   await remote.review(candidate.id, { decision: 'approve' })
   assert.equal((await remote.get(entry.id))?.version, 2)
+  assert.equal((await remote.get(entry.id))?.source?.evidence, 'verified')
+  assert.match((await remote.get(entry.id))?.body || '', /over HTTPS/)
+  assert.match((await remote.get(entry.id))?.body || '', /authenticated HTTPS/)
+  assert.equal((await remote.list({ knowledgeBaseId: 'default', status: 'active', limit: 10 })).items.length, 1)
   const direct = await remote.writeDirect({
     action: 'create',
     draft: {
@@ -90,6 +102,8 @@ test('remote provider interoperates with the authenticated local API', async (t)
   }, 'remote-direct:1')
   assert.equal(direct.outcome, 'merged')
   assert.match((await remote.get(entry.id))?.body || '', /tokens private/)
+  assert.equal((await remote.search({ text: 'authenticated HTTPS tokens private', limit: 5 }))[0]?.entry.id, entry.id)
+  assert.equal((await remote.listDocuments('default')).length, 1)
   await assert.rejects(() => remote.deleteKnowledgeBase(base.id), /must be archived/)
   await remote.archiveKnowledgeBase(base.id)
   await remote.deleteKnowledgeBase(base.id)

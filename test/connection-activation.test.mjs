@@ -115,7 +115,6 @@ test('plugin verifies, persists, hot-switches, and restores remote connections',
     remoteTimeoutMs: 5000, exposeApi: false, apiPrefix: '/knowledge-api/v1', exposeWeb: false,
     webPath: '/knowledge', extractionEnabled: false, extractionMaxTokens: 1000,
     extractionTimeoutMs: 5000, extractionMaxInputChars: 10000, defaultScope: 'project',
-    autoRecallLimit: 5, recallMaxChars: 6000,
   }
   const first = createRuntime()
   KnowledgePlugin.apply(first.runtime, config)

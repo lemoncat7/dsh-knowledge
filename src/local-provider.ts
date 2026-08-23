@@ -1,4 +1,4 @@
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
 import { createHash, randomBytes } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
@@ -41,6 +41,9 @@ import {
   type TokenPermission,
 } from './domain.js'
 import type { KnowledgeProvider } from './provider.js'
+import { renderKnowledgeMarkdown } from './documents/markdown.js'
+import { knowledgeDocumentPath } from './documents/path.js'
+import { KnowledgeDocumentStore } from './documents/store.js'
 
 type SqlRow = Record<string, unknown>
 
@@ -59,18 +62,22 @@ const JOINED_ENTRY_COLUMNS = `
 export class LocalKnowledgeProvider implements KnowledgeProvider {
   readonly mode = 'local' as const
   private readonly db: DatabaseSync
+  private readonly documentStore: KnowledgeDocumentStore
+  private readonly documentsReady: Promise<void>
   private closed = false
 
   constructor(path: string) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })
+    this.documentStore = new KnowledgeDocumentStore(join(dirname(path), 'documents'))
     this.db = new DatabaseSync(path)
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
     this.migrate()
+    this.documentsReady = this.syncAllDocuments()
   }
 
   private migrate(): void {
     let version = Number((this.db.prepare('PRAGMA user_version').get() as SqlRow).user_version ?? 0)
-    if (version > 5) throw new Error(`knowledge database schema ${version} is newer than this plugin supports`)
+    if (version > 6) throw new Error(`knowledge database schema ${version} is newer than this plugin supports`)
     if (version === 0) this.db.exec(`
       BEGIN IMMEDIATE;
       CREATE TABLE knowledge_entries (
@@ -228,11 +235,12 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       PRAGMA user_version = 5;
       COMMIT;
     `)
+    if (version <= 4) version = 5
+    if (version === 5) this.db.exec('PRAGMA user_version = 6;')
     // Alpha v2 used a migration note as the default base's routing description.
     // Clear only that exact placeholder so existing user-authored descriptions stay untouched.
     this.db.prepare("UPDATE knowledge_bases SET description='' WHERE id=? AND description=?")
       .run(DEFAULT_KNOWLEDGE_BASE_ID, '由 0.2 版本迁移的知识。')
-    this.syncAllDocuments()
   }
 
   private assertOpen(): void {
@@ -271,6 +279,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   async createKnowledgeBase(input: KnowledgeBaseDraft): Promise<KnowledgeBase> {
     this.assertOpen()
+    await this.documentsReady
     const draft = normalizeKnowledgeBaseDraft(input)
     const timestamp = nowIso()
     const base: KnowledgeBase = { ...draft, id: newId(), status: 'active', createdAt: timestamp, updatedAt: timestamp }
@@ -282,12 +291,13 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       base.id, base.name, base.description, JSON.stringify(base.defaultTags), base.extractionInstructions,
       base.writebackProvider ?? null, base.writebackModel ?? null, timestamp, timestamp,
     )
-    this.syncKnowledgeDocuments(base.id)
+    await this.syncKnowledgeDocuments(base.id)
     return base
   }
 
   async updateKnowledgeBase(id: string, input: KnowledgeBaseDraft): Promise<KnowledgeBase> {
     this.assertOpen()
+    await this.documentsReady
     const current = await this.getKnowledgeBase(id)
     if (current === undefined) throw notFound('knowledge base', id)
     const draft = normalizeKnowledgeBaseDraft(input)
@@ -300,7 +310,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       updated.name, updated.description, JSON.stringify(updated.defaultTags), updated.extractionInstructions,
       updated.writebackProvider ?? null, updated.writebackModel ?? null, updated.updatedAt, id,
     )
-    this.syncKnowledgeDocuments(id)
+    await this.syncKnowledgeDocuments(id)
     return updated
   }
 
@@ -344,6 +354,8 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   async deleteKnowledgeBase(id: string): Promise<void> {
     this.assertOpen()
+    await this.documentsReady
+    const base = await this.getKnowledgeBase(id)
     if (id === DEFAULT_KNOWLEDGE_BASE_ID) throw conflict('the default knowledge base cannot be deleted')
     this.transaction(() => {
       const row = this.db.prepare('SELECT status FROM knowledge_bases WHERE id=?').get(id) as SqlRow | undefined
@@ -363,10 +375,12 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       this.db.prepare('DELETE FROM knowledge_documents WHERE knowledge_base_id=?').run(id)
       this.db.prepare('DELETE FROM knowledge_bases WHERE id=?').run(id)
     })
+    if (base !== undefined) await this.documentStore.deleteBase(this.documentStore.baseDirectory(base))
   }
 
   async listDocuments(knowledgeBaseId?: string, query?: string): Promise<KnowledgeDocument[]> {
     this.assertOpen()
+    await this.documentsReady
     const where: string[] = []
     const args: string[] = []
     if (knowledgeBaseId !== undefined) { where.push('knowledge_base_id=?'); args.push(knowledgeBaseId) }
@@ -382,6 +396,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   async getDocument(id: string): Promise<KnowledgeDocument | undefined> {
     this.assertOpen()
+    await this.documentsReady
     const row = this.db.prepare('SELECT * FROM knowledge_documents WHERE id=?').get(id) as SqlRow | undefined
     return row === undefined ? undefined : rowToDocument(row)
   }
@@ -572,7 +587,10 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
         rows.push(...supplements.filter(row => !seen.has(String(row.id))).slice(0, limit - rows.length))
       }
     }
-    return rows.map(row => ({ entry: rowToEntry(row), score: rankToScore(Number(row.rank ?? 0)) }))
+    return rows.map(row => {
+      const entry = rowToEntry(row)
+      return { entry, score: relevanceScore(entry, text) }
+    })
   }
 
   private searchByTerms(
@@ -640,8 +658,9 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   async create(draft: KnowledgeDraft): Promise<KnowledgeEntry> {
     this.assertOpen()
+    await this.documentsReady
     const entry = this.transaction(() => this.insertEntry(draft))
-    this.syncKnowledgeDocuments(entry.knowledgeBaseId)
+    await this.syncKnowledgeDocuments(entry.knowledgeBaseId)
     return entry
   }
 
@@ -669,10 +688,11 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   async update(id: string, draft: KnowledgeDraft): Promise<KnowledgeEntry> {
     this.assertOpen()
+    await this.documentsReady
     const current = await this.get(id)
     const entry = this.transaction(() => this.updateEntry(id, draft, 'update'))
-    if (current !== undefined && current.knowledgeBaseId !== entry.knowledgeBaseId) this.syncKnowledgeDocuments(current.knowledgeBaseId)
-    this.syncKnowledgeDocuments(entry.knowledgeBaseId)
+    if (current !== undefined && current.knowledgeBaseId !== entry.knowledgeBaseId) await this.syncKnowledgeDocuments(current.knowledgeBaseId)
+    await this.syncKnowledgeDocuments(entry.knowledgeBaseId)
     return entry
   }
 
@@ -710,6 +730,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   async archive(id: string): Promise<KnowledgeEntry> {
     this.assertOpen()
+    await this.documentsReady
     const entry = this.transaction(() => {
       const row = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM knowledge_entries WHERE id = ?`).get(id) as SqlRow | undefined
       if (row === undefined) throw notFound('knowledge entry', id)
@@ -721,19 +742,20 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       this.db.prepare('DELETE FROM knowledge_fts WHERE knowledge_id = ?').run(id)
       return updated
     })
-    this.syncKnowledgeDocuments(entry.knowledgeBaseId)
+    await this.syncKnowledgeDocuments(entry.knowledgeBaseId)
     return entry
   }
 
   async delete(id: string): Promise<void> {
     this.assertOpen()
+    await this.documentsReady
     const current = await this.get(id)
     this.transaction(() => {
       this.db.prepare('DELETE FROM knowledge_fts WHERE knowledge_id = ?').run(id)
       const result = this.db.prepare('DELETE FROM knowledge_entries WHERE id = ?').run(id)
       if (result.changes === 0) throw notFound('knowledge entry', id)
     })
-    if (current !== undefined) this.syncKnowledgeDocuments(current.knowledgeBaseId)
+    if (current !== undefined) await this.syncKnowledgeDocuments(current.knowledgeBaseId)
   }
 
   async propose(input: CandidateProposal, sourceKey?: string): Promise<KnowledgeCandidate> {
@@ -743,6 +765,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   async writeDirect(input: CandidateProposal, sourceKey?: string): Promise<DirectWriteResult> {
     this.assertOpen()
+    await this.documentsReady
     let touchedBaseId: string | undefined
     const result = this.transaction((): DirectWriteResult => {
       const resolution = this.resolveDirectProposal(normalizeProposal(input))
@@ -772,7 +795,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
         entry,
       }
     })
-    if (touchedBaseId !== undefined) this.syncKnowledgeDocuments(touchedBaseId)
+    if (touchedBaseId !== undefined) await this.syncKnowledgeDocuments(touchedBaseId)
     return result
   }
 
@@ -817,7 +840,8 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     const entries = this.activeEntriesForDraft(proposal.draft)
     const bodyMatch = entries.find(entry => normalizedBody(entry.body) === normalizedBody(proposal.draft.body))
     const titleMatch = entries.find(entry => normalizedTitle(entry.title) === normalizedTitle(proposal.draft.title))
-    const target = bodyMatch ?? titleMatch
+    const referenceMatch = entries.find(entry => sharesCanonicalTopicReference(entry, proposal.draft))
+    const target = bodyMatch ?? titleMatch ?? referenceMatch
     if (target === undefined) return { outcome: 'created', proposal }
     if (potentiallyConflicts(target, proposal.draft)) {
       return {
@@ -857,6 +881,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   async review(id: string, decision: ReviewDecision): Promise<KnowledgeCandidate> {
     this.assertOpen()
+    await this.documentsReady
     const reviewed: KnowledgeCandidate = this.transaction(() => {
       const row = this.db.prepare('SELECT * FROM knowledge_candidates WHERE id = ?').get(id) as SqlRow | undefined
       if (row === undefined) throw notFound('knowledge candidate', id)
@@ -864,14 +889,29 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       if (candidate.status !== 'pending') throw conflict(`candidate ${id} was already ${candidate.status}`)
       let draft = decision.draft === undefined ? candidate.draft : normalizeDraft(decision.draft)
       if (decision.decision === 'approve') {
-        if (candidate.action === 'create') {
-          this.insertEntry(draft)
-        } else {
+        if (candidate.action === 'conflict') {
           if (candidate.targetId === undefined) throw new Error('candidate target is missing')
-          const target = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM knowledge_entries WHERE id = ?`).get(candidate.targetId) as SqlRow | undefined
-          if (target === undefined) throw notFound('candidate target', candidate.targetId)
-          if (decision.draft === undefined) draft = candidate.draft
-          this.updateEntry(candidate.targetId, draft, 'update')
+          const targetRow = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM knowledge_entries WHERE id = ?`).get(candidate.targetId) as SqlRow | undefined
+          if (targetRow === undefined) throw notFound('candidate target', candidate.targetId)
+          const target = rowToEntry(targetRow)
+          if (draft.knowledgeBaseId !== target.knowledgeBaseId) {
+            throw conflict('candidate approval cannot move a document between knowledge bases')
+          }
+          this.updateEntry(candidate.targetId, mergeKnowledgeDraft(target, draft, true), 'update')
+        } else {
+          const resolution = this.resolveDirectProposal({
+            action: candidate.action,
+            ...candidate.targetId === undefined ? {} : { targetId: candidate.targetId },
+            draft,
+            reason: candidate.reason,
+          })
+          if (resolution.outcome === 'conflict') {
+            throw conflict('knowledge changed during review and now requires conflict resolution')
+          }
+          if (resolution.outcome !== 'duplicate') {
+            if (resolution.proposal.action === 'create') this.insertEntry(resolution.proposal.draft)
+            else this.updateEntry(resolution.proposal.targetId as string, resolution.proposal.draft, 'update')
+          }
         }
       }
       const status = decision.decision === 'approve' ? 'approved' : 'rejected'
@@ -881,7 +921,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
         .run(status, reviewedAt, note ?? null, id)
       return { ...candidate, status, reviewedAt, ...note === undefined ? {} : { reviewNote: note } }
     })
-    if (decision.decision === 'approve') this.syncKnowledgeDocuments(reviewed.draft.knowledgeBaseId)
+    if (decision.decision === 'approve') await this.syncKnowledgeDocuments(reviewed.draft.knowledgeBaseId)
     return reviewed
   }
 
@@ -974,6 +1014,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   async close(): Promise<void> {
     if (this.closed) return
+    await this.documentsReady
     this.closed = true
     this.db.close()
   }
@@ -1002,91 +1043,77 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     }
   }
 
-  private syncAllDocuments(): void {
+  private async syncAllDocuments(): Promise<void> {
+    await this.documentStore.initialize()
     const bases = this.db.prepare('SELECT id FROM knowledge_bases').all() as SqlRow[]
-    for (const base of bases) this.syncKnowledgeDocuments(String(base.id))
+    for (const base of bases) await this.syncKnowledgeDocuments(String(base.id))
   }
 
-  private syncKnowledgeDocuments(knowledgeBaseId: string): void {
+  private async syncKnowledgeDocuments(knowledgeBaseId: string): Promise<void> {
     const baseRow = this.db.prepare('SELECT * FROM knowledge_bases WHERE id=?').get(knowledgeBaseId) as SqlRow | undefined
     if (baseRow === undefined) return
     const base = rowToKnowledgeBase(baseRow)
+    const directory = await this.documentStore.ensureBase(base)
     const entries = (this.db.prepare(`
       SELECT ${ENTRY_COLUMNS} FROM knowledge_entries
       WHERE knowledge_base_id=? AND status='active'
-      ORDER BY type, updated_at DESC, id
+      ORDER BY updated_at DESC, id
     `).all(knowledgeBaseId) as SqlRow[]).map(rowToEntry)
-    const desired = new Map<string, { title: string; content: string; entryCount: number }>()
-    desired.set('README.md', {
-      title: base.name,
-      content: renderKnowledgeBaseReadme(base, entries.length),
-      entryCount: entries.length,
-    })
-    for (const [type, meta] of Object.entries(DOCUMENT_TYPES)) {
-      const typed = entries.filter(entry => entry.type === type)
-      if (typed.length === 0) continue
-      desired.set(meta.relPath, {
-        title: meta.title,
-        content: renderEntryDocument(base, meta.title, typed),
-        entryCount: typed.length,
+    const desired = new Map<string, { entry: KnowledgeEntry; relPath: string; content: string; contentHash: string }>()
+    for (const entry of entries) {
+      const relPath = knowledgeDocumentPath(entry)
+      const markdown = renderKnowledgeMarkdown({
+        metadata: {
+          id: entry.id,
+          type: entry.type,
+          tags: entry.tags,
+          scope: entry.scope,
+          confidence: entry.confidence,
+          status: entry.status,
+        },
+        title: entry.title,
+        body: entry.body,
+      })
+      const stored = await this.documentStore.writeDocument(directory, relPath, markdown)
+      desired.set(entry.id, {
+        entry,
+        relPath,
+        content: `# ${markdownHeading(entry.title)}\n\n${entry.body.trim()}\n`,
+        contentHash: stored.contentHash,
       })
     }
-    const timestamp = nowIso()
+    const storedDocuments = await this.documentStore.listDocuments(directory)
+    for (const document of storedDocuments) {
+      const expected = desired.get(document.metadata.id)
+      if (expected === undefined || expected.relPath !== document.relPath) {
+        await this.documentStore.deleteDocument(directory, document.relPath, document.contentHash)
+      }
+    }
     const existing = this.db.prepare('SELECT id,rel_path,created_at FROM knowledge_documents WHERE knowledge_base_id=?')
       .all(knowledgeBaseId) as SqlRow[]
-    const byPath = new Map(existing.map(row => [String(row.rel_path), row]))
-    for (const [relPath, document] of desired) {
-      const previous = byPath.get(relPath)
-      const hash = createHash('sha256').update(document.content).digest('hex')
+    for (const document of desired.values()) {
       this.db.prepare(`
         INSERT INTO knowledge_documents(
           id,knowledge_base_id,rel_path,title,content,entry_count,content_hash,created_at,updated_at
         ) VALUES(?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(knowledge_base_id,rel_path) DO UPDATE SET
+        ON CONFLICT(id) DO UPDATE SET
+          knowledge_base_id=excluded.knowledge_base_id,rel_path=excluded.rel_path,
           title=excluded.title,content=excluded.content,entry_count=excluded.entry_count,
           content_hash=excluded.content_hash,updated_at=excluded.updated_at
         WHERE knowledge_documents.content_hash<>excluded.content_hash
+           OR knowledge_documents.rel_path<>excluded.rel_path
            OR knowledge_documents.title<>excluded.title
            OR knowledge_documents.entry_count<>excluded.entry_count
       `).run(
-        previous === undefined ? newId() : String(previous.id), knowledgeBaseId, relPath,
-        document.title, document.content, document.entryCount, hash,
-        previous === undefined ? timestamp : String(previous.created_at), timestamp,
+        document.entry.id, knowledgeBaseId, document.relPath,
+        document.entry.title, document.content, 1, document.contentHash,
+        document.entry.createdAt, document.entry.updatedAt,
       )
     }
     for (const row of existing) {
-      if (!desired.has(String(row.rel_path))) this.db.prepare('DELETE FROM knowledge_documents WHERE id=?').run(String(row.id))
+      if (!desired.has(String(row.id))) this.db.prepare('DELETE FROM knowledge_documents WHERE id=?').run(String(row.id))
     }
   }
-}
-
-const DOCUMENT_TYPES: Record<KnowledgeEntry['type'], { relPath: string; title: string }> = {
-  preference: { relPath: 'preferences.md', title: '偏好' },
-  fact: { relPath: 'facts.md', title: '事实' },
-  decision: { relPath: 'decisions.md', title: '决策' },
-  procedure: { relPath: 'procedures.md', title: '流程' },
-  lesson: { relPath: 'lessons.md', title: '经验' },
-}
-
-function renderKnowledgeBaseReadme(base: KnowledgeBase, entryCount: number): string {
-  const lines = [`# ${markdownHeading(base.name)}`, '']
-  if (base.description) lines.push(base.description, '')
-  lines.push(`> 当前包含 ${entryCount} 条已生效知识，由 DSH Knowledge 自动整理为 Markdown 文档。`, '')
-  if (base.defaultTags.length > 0) lines.push(`默认标签：${base.defaultTags.map(tag => `#${tag}`).join(' ')}`, '')
-  lines.push(`回写模型：${base.writebackProvider && base.writebackModel ? `${base.writebackProvider} / ${base.writebackModel}` : '跟随当前会话模型'}`, '')
-  if (base.extractionInstructions) lines.push('## 提取要求', '', base.extractionInstructions, '')
-  return `${lines.join('\n').trim()}\n`
-}
-
-function renderEntryDocument(base: KnowledgeBase, title: string, entries: KnowledgeEntry[]): string {
-  const lines = [`# ${title}`, '', `> ${base.name} · ${entries.length} 条知识`, '']
-  for (const entry of entries) {
-    lines.push(`## ${markdownHeading(entry.title)}`, '', entry.body.trim(), '')
-    const scope = entry.scope.kind === 'global' ? '全局' : `项目：${entry.scope.id}`
-    const metadata = [scope, ...entry.tags.map(tag => `#${tag}`), `置信度 ${Math.round(entry.confidence * 100)}%`]
-    lines.push(`<small>${metadata.join(' · ')}</small>`, '')
-  }
-  return `${lines.join('\n').trim()}\n`
 }
 
 function markdownHeading(value: string): string {
@@ -1226,6 +1253,23 @@ function normalizedBody(value: string): string {
   return value.normalize('NFKC').toLocaleLowerCase().replace(/\s+/gu, ' ').trim()
 }
 
+function sharesCanonicalTopicReference(current: KnowledgeEntry, incoming: KnowledgeDraft): boolean {
+  const currentReferences = canonicalTopicReferences(`${current.title}\n${current.body}`)
+  if (currentReferences.size === 0) return false
+  return [...canonicalTopicReferences(`${incoming.title}\n${incoming.body}`)]
+    .some(reference => currentReferences.has(reference))
+}
+
+function canonicalTopicReferences(value: string): Set<string> {
+  const references = new Set<string>()
+  for (const match of value.matchAll(/https?:\/\/(?:www\.)?github\.com\/([^\s/?#]+)\/([^\s/?#]+)/giu)) {
+    const owner = match[1]?.toLocaleLowerCase()
+    const repository = match[2]?.replace(/\.git$/iu, '').replace(/[.,，。;；:：!?！？]+$/u, '').toLocaleLowerCase()
+    if (owner && repository) references.add(`github:${owner}/${repository}`)
+  }
+  return references
+}
+
 function sameScope(left: KnowledgeDraft['scope'], right: KnowledgeDraft['scope']): boolean {
   return left.kind === right.kind && (left.kind === 'global' || left.id === (right as { kind: 'project'; id: string }).id)
 }
@@ -1339,9 +1383,26 @@ function fallbackTerms(text: string): string[] {
   return [...terms].slice(0, 20)
 }
 
-function rankToScore(rank: number): number {
-  return 1 / (1 + Math.max(0, rank))
+function relevanceScore(entry: KnowledgeEntry, query: string): number {
+  const normalizedQuery = normalizedBody(query)
+  if (normalizedQuery.length === 0) return 1
+  const title = normalizedBody(entry.title)
+  const body = normalizedBody(entry.body)
+  const tags = normalizedBody(entry.tags.join(' '))
+  const combined = `${title}\n${body}\n${tags}`
+  if (combined.includes(normalizedQuery)) return .98
+  const terms = fallbackTerms(query).filter(term => !SEARCH_STOP_TERMS.has(term))
+  if (terms.length === 0) return .25
+  const coverage = terms.filter(term => combined.includes(term)).length / terms.length
+  const titleCoverage = terms.filter(term => title.includes(term)).length / terms.length
+  const tagCoverage = terms.filter(term => tags.includes(term)).length / terms.length
+  return Math.min(.97, .05 + coverage * .72 + titleCoverage * .13 + tagCoverage * .1)
 }
+
+const SEARCH_STOP_TERMS = new Set([
+  'a', 'an', 'and', 'are', 'for', 'how', 'is', 'of', 'or', 'the', 'to', 'what', 'when', 'where', 'which', 'who', 'why',
+  '什么', '么是', '如何', '怎么', '是否', '介绍',
+])
 
 function encodeCursor(updatedAt: string, id: string): string {
   return Buffer.from(JSON.stringify({ updatedAt, id })).toString('base64url')

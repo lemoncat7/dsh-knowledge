@@ -16,6 +16,19 @@ DSH events / pre-step / HTTP / Web console
 
 The DSH core is never patched. `src/index.ts` is the composition root; every other module is independently testable.
 
+## DSH client contract
+
+The browser integration is compiled against the exact official client packages used by the supported DSH release. These packages are pinned as development-only dependencies; they are never bundled into the plugin:
+
+- `@deepseek-ai/dsh-client-runtime` supplies the official `ClientContext` and framework-standard slot props.
+- `@deepseek-ai/dsh-client-ui-layout` declares the single `conversation` slot.
+- `@deepseek-ai/dsh-client-ui-sidebar` declares the list `sidebar.footer.action` slot.
+- `@deepseek-ai/dsh-client-ui-settings-plugins` declares the keyed `settings.plugin.item` slot.
+- `@deepseek-ai/dsh-client-ui-theme` declares the theme service and `theme/change` event.
+- `@deepseek-ai/dsh-client-ui-slots` supplies `SlotMap`, `PropsRuntime` and the typed registration contract.
+
+`src/client.tsx` must not redeclare any of these services structurally. The TypeScript build includes both `.ts` and `.tsx`, so slot cardinality is checked before packaging: list entries require `id`, keyed entries require `key`, and the knowledge workspace shadows the official single `conversation` occupant at an explicit lower priority. Closing the workspace disposes only that registration and restores the official conversation occupant; the DSH shell is never replaced or patched.
+
 ## Layers
 
 - `domain.ts` owns stable value types, normalization, IDs and content hashing. It has no DSH dependency.
@@ -25,8 +38,8 @@ The DSH core is never patched. `src/index.ts` is the composition root; every oth
 - `management-proxy.ts` lets the embedded console operate on the selected central service while keeping the saved remote token on the DSH server.
 - `extraction.ts` snapshots completed turns, resolves writable mounts and validates model JSON fail-closed.
 - `retrieval.ts` owns mounted-scope authorization, signed handles, ranking and bounded rendering shared by proactive and tool-driven retrieval.
-- `recall.ts` contributes a lightweight mounted-base catalog and performs bounded proactive retrieval in the asynchronous `agent/pre-step` waterfall.
-- `tools.ts` registers read-only `knowledge_search` and paginated `knowledge_read` tools whose scope is resolved from the calling Agent.
+- `recall.ts` owns the official prompt-assembly knowledge map and bounded first-step automatic retrieval. It also removes durable UI notices and prior recall snapshots before later model requests.
+- `tools.ts` registers the tool-first retrieval chain: mounted-base discovery, scoped document search and paginated reading. Every tool resolves authorization from the calling Agent.
 - `api.ts` is a size-bounded HTTP adapter with two explicit authentication modes: same-origin administration for the embedded console and Bearer capabilities for remote clients.
 - `web.ts` serves a same-origin, CSP-constrained management console from package-owned static assets.
 - `web/` is a dependency-free browser application with a small API/state/view boundary.
@@ -35,7 +48,7 @@ The DSH core is never patched. `src/index.ts` is the composition root; every oth
 
 ## Data model and consistency
 
-SQLite is authoritative in local mode. Schema version 5 contains:
+SQLite is authoritative in local mode. Schema version 6 contains:
 
 - `knowledge_bases`: independently named destinations with default tags and extraction instructions.
 - `knowledge_mounts`: project/session policy overlays for recall, write mode and tag constraints.
@@ -46,6 +59,8 @@ SQLite is authoritative in local mode. Schema version 5 contains:
 - `extraction_jobs`: one idempotency record per `sessionId:turn`.
 - `api_tokens`: token metadata, permissions and SHA-256 token digests.
 - `knowledge_settings`: the authoritative global conservative/proactive writeback policy shared by local and remote clients.
+
+Each active `knowledge_entries` row represents one topic document and is materialized as one real Markdown file under `documents/base-<stable-id>/`. Related findings are Markdown sections or incremental content inside that row/file, rather than sibling one-fact documents. `knowledge_documents` indexes those files for the management console; the entry ID is the document ID, and the human-readable filename is derived from the title plus a stable ID suffix. Mutations complete only after the corresponding file synchronization finishes. SQLite remains authoritative so FTS, version history, direct-write reconciliation and remote providers keep one consistency model.
 
 Entry writes, version creation and FTS changes share one `BEGIN IMMEDIATE` transaction. Candidate approval and its resulting entry mutation are also one transaction. WAL mode permits readers during a writer, `busy_timeout` absorbs short contention, and foreign keys prevent orphan versions.
 
@@ -58,29 +73,32 @@ An active content hash unique index blocks byte-equivalent duplicate knowledge. 
 3. Without a writable mount, no extraction model call or job claim occurs.
 4. The relevant direct user input and final non-empty assistant message are copied into an immutable job snapshot.
 5. `extraction_jobs` atomically claims `sessionId:turn`; replaying the event cannot duplicate work.
-6. Existing knowledge is retrieved only from mounted destinations and framed with the conversation as untrusted JSON.
-7. The provider's authoritative global policy is loaded for every extraction. A bounded auxiliary LLM call returns strict candidate JSON naming one supplied destination; the policy never imposes a candidate-count quota.
-8. Runtime validation rejects unknown destinations, types, targets, arbitrary project IDs and malformed output. Conservative mode additionally requires durable knowledge backed by explicit or verified evidence and high confidence.
-9. Audit mounts keep valid proposals pending. Direct mounts call the provider's atomic reconciliation operation: duplicates are skipped, compatible same-topic content is merged with a new version, and possible contradictions remain pending without overwriting the active entry.
-10. A persistent DSH notice reports per-base direct and pending counts below the answer; failures produce a retryable failure notice.
-11. Before every later model request, plugin notices with `form: notice` are removed from the final request message list. Extraction snapshots also accept only direct user messages. Notices remain durable UI feedback but never consume or influence model context.
+6. The authoritative writeback policy is loaded and writable mounts are grouped by their configured extraction model route.
+7. Each route group searches its mounted bases for related existing documents, globally ranks the results and caps the comparison set.
+8. One bounded model call decides destination relevance and extracts strict document-mutation JSON together. It returns a stable `documentTitle`, optional `sectionTitle`, Markdown body and an existing `targetId` whenever relevant. This avoids a second routing-model call and prevents an overly conservative first gate from discarding valid destination-specific knowledge.
+9. Runtime validation rejects unknown destinations, non-durable retention, types, targets, arbitrary project IDs and malformed output. It then coalesces same-base, same-scope and same-title mutations into one document proposal, merging sections, tags and provenance. Ambiguous proposals that point at different existing documents become conflicts instead of silently choosing a target.
+10. Audit mounts keep valid proposals pending. Direct mounts automatically write high-confidence non-conflicting candidates; lower-confidence and conflicting candidates go to audit instead. Both direct write and audit approval reconcile against current documents again, atomically skipping duplicates, merging compatible same-topic content with a new version, and protecting possible contradictions from overwrite.
+11. A persistent DSH notice reports per-base direct and pending counts below the answer; failures produce a retryable failure notice.
+12. Before every later model request, plugin notices and prior recall snapshots are removed from the final request message list. Extraction snapshots also accept only direct user messages. Notices remain durable UI feedback but never consume or influence model context.
 
 The extractor explicitly refuses secrets and ephemeral output in its system policy. Conflicts always remain behind human review, including on direct-write mounts.
 
 ## Recall flow
 
-Recall is a hybrid of a replaceable runtime-context catalog, proactive snippets, and model-driven tools:
+Recall combines bounded automatic retrieval with model-driven tools:
 
-- `system-prompt/assemble` resolves the current session mounts and publishes only knowledge-base names, descriptions and tag filters as a lightweight runtime-context snapshot;
-- `agent/pre-step` sees only the current claimed user input and proactively searches a small configurable number of snippets (default 3);
-- `knowledge_search` lets the model issue a focused natural-language query across all or one mounted base;
-- `knowledge_read` opens an exact matched section through a signed, session-bound handle and paginates unusually long content;
-- remote retrieval can be awaited;
-- cancellation propagates through the current turn signal;
-- proactively injected snippets are attributed as plugin `dsh-knowledge`, form `recall`;
-- retrieval failure is fail-open and never prevents a model response.
+- the official `system-prompt/assemble` waterfall contributes a bounded map containing mounted-base names, ids, descriptions and tags, but no document body;
+- on the first step of each direct user turn, the plugin searches mounted bases, applies a configurable relevance floor and injects at most `autoRecallLimit` partial snippets with signed handles;
+- `knowledge_base_search` matches the current information need against the names, routing descriptions and tags of recall-enabled mounted bases, returning metadata only;
+- `knowledge_search` requires one exact base returned by the discovery tool and returns ranked snippets with signed handles;
+- `knowledge_read` opens an exact result through a signed, session-bound handle and paginates long documents;
+- `knowledge_write` creates knowledge in one exact writable mounted base or updates the document addressed by a signed search handle; the provider, mount mode and server reconciliation decide the physical destination and outcome;
+- remote retrieval is awaited and cancellation propagates through the current turn signal;
+- greetings and empty input skip automatic retrieval, and search failures fail open so the normal answer can continue.
 
-Only active entries from recall-enabled resolved mounts are searched. Each search and read applies that mount's include/exclude tag constraints and project scope. Exact project entries are ordered before global entries. Proactive retrieval injects only compact snippets and handles; full content enters the model context only after an explicit `knowledge_read` call. The framing tells the model that knowledge is contextual data and cannot override current system or user instructions.
+Only active entries from recall-enabled resolved mounts are searchable. Each stage re-resolves live mounts, and search/read enforce include/exclude tags and project scope. Exact project entries rank before global entries. Automatic snapshots are partial reference data and are removed before later steps; full document content enters the request only through `knowledge_read`.
+
+The prompt catalog is also the write-back contract. It names writable mounts and the authoritative conservative/proactive policy without injecting document bodies. This lets the main model call `knowledge_write` while source-search evidence is still in its current turn. The completed-turn extractor remains a bounded fallback and receives canonical source URLs present in the final answer, but never raw tool output or prior plugin notices.
 
 ## Local and remote topology
 

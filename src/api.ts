@@ -52,7 +52,7 @@ async function dispatch(
   const method = req.method ?? 'GET'
 
   if (method === 'GET' && segments[0] === 'health') {
-    return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 5 })
+    return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 6 })
   }
 
   const actor = options.authMode === 'same-origin' ? authenticateSameOrigin(req) : authenticateBearer(provider, req)
@@ -515,11 +515,15 @@ function parseSource(value: Record<string, unknown>): NonNullable<KnowledgeDraft
   const sessionId = optionalString(value.sessionId)
   const messageId = optionalString(value.messageId)
   const clientId = optionalString(value.clientId)
+  const evidence = value.evidence === 'explicit' || value.evidence === 'verified' || value.evidence === 'inferred'
+    ? value.evidence
+    : undefined
   return {
     ...sessionId === undefined ? {} : { sessionId },
     ...messageId === undefined ? {} : { messageId },
     ...typeof value.turn === 'number' && Number.isInteger(value.turn) ? { turn: value.turn } : {},
     ...clientId === undefined ? {} : { clientId },
+    ...evidence === undefined ? {} : { evidence },
   }
 }
 

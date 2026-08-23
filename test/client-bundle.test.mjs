@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
-test('browser bundle registers the sidebar knowledge panel', async () => {
+test('browser bundle switches the official conversation slot to the knowledge workspace', async () => {
   const source = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8')
   assert.match(source, /window\.__ModuleLoader__\.load/)
   assert.match(source, /sidebar\.footer\.action/)
@@ -11,11 +11,13 @@ test('browser bundle registers the sidebar knowledge panel', async () => {
   assert.match(source, /\\u8FD9\\u53F0 DSH \\u672A\\u542F\\u7528/)
   assert.match(source, /\\u91CD\\u8BD5/)
   assert.doesNotMatch(source, /return query\.length === 0 \? "\/knowledge"/)
-  assert.match(source, /dsh-knowledge-panel-title/)
-  assert.match(source, /dsh-knowledge-panel--maximized/)
-  assert.match(source, /1040/)
-  assert.match(source, /dsh-knowledge-resize-grip/)
-  assert.match(source, /ResizeObserver/)
+  assert.match(source, /name:\s*"conversation"/)
+  assert.match(source, /priority:\s*-1/)
+  assert.match(source, /knowledge-workspace/)
+  assert.match(source, /dsh-knowledge-workspace-title/)
+  assert.match(source, /\\u8FD4\\u56DE\\u5BF9\\u8BDD/)
+  assert.doesNotMatch(source, /dsh-knowledge-overlay|dsh-knowledge-mask/)
+  assert.doesNotMatch(source, /ResizeObserver|PANEL_SIZE_KEY/)
   assert.match(source, /settings\.plugin\.item/)
   assert.match(source, /dsh-knowledge-connection/)
   assert.match(source, /key:\s*KNOWLEDGE_SETTINGS_NAMESPACE/)
@@ -25,4 +27,8 @@ test('browser bundle registers the sidebar knowledge panel', async () => {
   assert.match(source, /CONNECTION_CONTROL_PATH/)
   assert.doesNotMatch(source, /settings\.mutate/)
   assert.doesNotMatch(source, /settingsScope/)
+  assert.match(source, /theme\/change/)
+  assert.match(source, /host-theme-ready/)
+  assert.match(source, /createKnowledgeHostTheme/)
+  assert.match(source, /getComputedStyle\(document\.body\)/)
 })

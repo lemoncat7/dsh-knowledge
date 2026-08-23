@@ -24,6 +24,11 @@
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
+.dsh-knowledge-trigger.is-active {
+  background: var(--dsw-alias-interactive-bg-selected, var(--dsw-alias-interactive-bg-hover));
+  color: var(--dsw-alias-interactive-primary, currentColor);
+}
+
 .dsh-knowledge-trigger--rail {
   width: 36px;
   height: 36px;
@@ -34,118 +39,72 @@
   border-radius: 50%;
 }
 
-.dsh-knowledge-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  box-sizing: border-box;
-}
-
-.dsh-knowledge-mask {
-  position: absolute;
-  inset: 0;
-  background: var(--dsw-alias-bg-mask-1);
-  backdrop-filter: var(--dsw-mask-blur);
-}
-
-.dsh-knowledge-panel {
-  position: relative;
-  z-index: 1;
+.dsh-knowledge-workspace {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  width: min(1180px, calc(100vw - 48px));
-  height: min(860px, calc(100vh - 48px));
-  min-width: min(1040px, calc(100vw - 32px));
-  min-height: 460px;
-  max-width: calc(100vw - 32px);
-  max-height: calc(100vh - 32px);
-  border-radius: 24px;
   overflow: hidden;
-  background: var(--dsw-alias-bg-layer-2);
-  box-shadow: var(--dsw-shadow-lv3);
-  resize: both;
+  background: var(--dsw-alias-bg-layer-1, #fff);
 }
 
-.dsh-knowledge-panel--maximized {
-  width: calc(100vw - 32px);
-  height: calc(100vh - 32px);
-  resize: none;
-}
-
-.dsh-knowledge-header {
+.dsh-knowledge-workspace-header {
   flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  min-height: 68px;
-  padding: 10px 16px 10px 24px;
+  min-height: 56px;
+  padding: 8px 16px 8px 20px;
   box-sizing: border-box;
   border-bottom: 1px solid var(--dsw-alias-divider-primary, rgba(128, 128, 128, .18));
+  background: var(--dsw-alias-bg-layer-2, #fff);
 }
 
-.dsh-knowledge-window-actions {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.dsh-knowledge-header h2,
-.dsh-knowledge-header p {
+.dsh-knowledge-workspace-header h2,
+.dsh-knowledge-workspace-header p {
   margin: 0;
 }
 
-.dsh-knowledge-header h2 {
+.dsh-knowledge-workspace-header h2 {
   color: var(--dsw-alias-label-primary);
-  font-size: 17px;
-  line-height: 26px;
+  font-size: 15px;
+  line-height: 22px;
   font-weight: 600;
 }
 
-.dsh-knowledge-header p {
+.dsh-knowledge-workspace-header p {
   color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 11px;
+  line-height: 16px;
 }
 
-.dsh-knowledge-window-button {
+.dsh-knowledge-workspace-close {
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
+  gap: 6px;
+  min-height: 32px;
+  padding: 5px 10px;
+  border: 1px solid var(--dsw-alias-divider-primary, rgba(128, 128, 128, .18));
+  border-radius: 9px;
+  background: var(--dsw-alias-bg-layer-1, transparent);
   color: var(--dsw-alias-label-primary);
   cursor: pointer;
+  font: inherit;
+  font-size: 12px;
 }
 
-.dsh-knowledge-window-button:hover {
+.dsh-knowledge-workspace-close:hover {
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
-.dsh-knowledge-window-button:focus-visible {
+.dsh-knowledge-workspace-close:focus-visible {
   outline: 2px solid var(--dsw-alias-interactive-primary, #335cff);
   outline-offset: 2px;
-}
-
-.dsh-knowledge-resize-grip {
-  position: absolute;
-  right: 3px;
-  bottom: 3px;
-  width: 20px;
-  height: 20px;
-  pointer-events: none;
-  background: repeating-linear-gradient(135deg, transparent 0 4px, var(--dsw-alias-divider-primary, rgba(128, 128, 128, .42)) 4px 6px);
-  clip-path: polygon(100% 0, 100% 100%, 0 100%);
 }
 
 .dsh-knowledge-frame {
@@ -201,26 +160,6 @@
 .dsh-knowledge-panel-state button:focus-visible {
   outline: 2px solid var(--dsw-alias-interactive-primary, #335cff);
   outline-offset: 2px;
-}
-
-@media (max-width: 760px) {
-  .dsh-knowledge-overlay {
-    padding: 0;
-  }
-
-  .dsh-knowledge-panel {
-    width: 100%;
-    height: 100%;
-    min-width: 0;
-    min-height: 0;
-    max-width: none;
-    max-height: none;
-    border-radius: 0;
-    resize: none;
-  }
-
-  .dsh-knowledge-window-actions > :first-child,
-  .dsh-knowledge-resize-grip { display: none; }
 }
 
 .dsh-knowledge-settings-card {

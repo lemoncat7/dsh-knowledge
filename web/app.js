@@ -1,5 +1,15 @@
 const API_BASE = document.querySelector('meta[name="dsh-knowledge-api"]')?.content || '/knowledge-api/v1'
 const AUTH_MODE = document.querySelector('meta[name="dsh-knowledge-auth-mode"]')?.content || 'bearer'
+const HOST_THEME_MESSAGE = '@lemoncat7/dsh-knowledge/host-theme'
+const HOST_THEME_READY_MESSAGE = '@lemoncat7/dsh-knowledge/host-theme-ready'
+const HOST_THEME_PROTOCOL_VERSION = 1
+const HOST_THEME_COLOR_TOKENS = new Set([
+  '--bg', '--surface', '--surface-raised', '--surface-soft', '--surface-hover',
+  '--text', '--text-secondary', '--text-tertiary', '--border', '--border-strong',
+  '--accent', '--accent-hover', '--accent-soft', '--on-accent',
+  '--success', '--success-soft', '--warning', '--warning-soft', '--danger', '--danger-soft',
+])
+const HOST_THEME_STYLE_TOKENS = new Set(['--shadow'])
 const TOKEN_KEY = 'dsh-knowledge.session-token'
 const TYPES = ['preference', 'fact', 'decision', 'procedure', 'lesson']
 const TYPE_LABELS = { preference: '偏好', fact: '事实', decision: '决策', procedure: '流程', lesson: '经验' }
@@ -7,20 +17,8 @@ const ACTION_LABELS = { create: '新增', update: '更新', conflict: '冲突' }
 const STATUS_LABELS = { active: '生效中', archived: '已归档', pending: '待审核', approved: '已通过', rejected: '已拒绝' }
 const CHANGE_LABELS = { create: '创建', update: '更新', archive: '归档', restore: '恢复' }
 const WRITE_MODE_LABELS = { none: '仅召回', audit: '审核写入', direct: '直接写入' }
-const TYPE_DOCUMENTS = {
-  preference: 'preferences.md', fact: 'facts.md', decision: 'decisions.md', procedure: 'procedures.md', lesson: 'lessons.md',
-}
+const EVIDENCE_LABELS = { explicit: '用户明确', verified: '结果已验证', inferred: '模型推断' }
 const DOCUMENT_LAYOUT_KEY = 'dsh-knowledge.document-layout'
-const DOCUMENT_COLUMN_LAYOUTS = Object.freeze({
-  library: {
-    widthKey: 'libraryWidth', hiddenKey: 'libraryHidden', cssVariable: '--library-width',
-    minimum: 170, maximum: 360, controls: 'knowledge-library-column',
-  },
-  documentList: {
-    widthKey: 'documentListWidth', hiddenKey: 'documentListHidden', cssVariable: '--document-list-width',
-    minimum: 210, maximum: 480, controls: 'document-list-column',
-  },
-})
 const pageParams = new URLSearchParams(location.search)
 const mountContext = {
   sessionId: pageParams.get('sessionId')?.trim() || '',
@@ -32,7 +30,7 @@ const savedDocumentLayout = readDocumentLayout()
 
 const state = {
   token: sessionStorage.getItem(TOKEN_KEY) || '',
-  view: 'overview',
+  view: 'entries',
   menuOpen: false,
   stats: null,
   overview: null,
@@ -53,13 +51,11 @@ const state = {
   entryFilters: { query: '', type: '', status: 'active', projectId: '', knowledgeBaseId: '' },
   documents: [],
   documentView: {
-    knowledgeBaseId: '', documentId: '', query: '', mode: 'documents',
+    knowledgeBaseId: '', documentId: '', query: '',
     sidebarHidden: savedDocumentLayout.sidebarHidden,
-    libraryHidden: savedDocumentLayout.libraryHidden,
-    documentListHidden: savedDocumentLayout.documentListHidden,
     sidebarWidth: savedDocumentLayout.sidebarWidth,
-    libraryWidth: savedDocumentLayout.libraryWidth,
-    documentListWidth: savedDocumentLayout.documentListWidth,
+    expandedBases: new Set(),
+    editor: null,
   },
   candidates: [],
   candidateStatus: 'pending',
@@ -74,20 +70,44 @@ const state = {
 
 let scrollRestoreFrame = 0
 
+function installHostThemeBridge() {
+  if (window.parent === window) return
+  window.addEventListener('message', event => {
+    if (event.source !== window.parent || event.origin !== window.location.origin) return
+    const message = event.data
+    if (!message || message.type !== HOST_THEME_MESSAGE || message.version !== HOST_THEME_PROTOCOL_VERSION) return
+    if (message.colorScheme !== 'light' && message.colorScheme !== 'dark') return
+    if (!message.tokens || typeof message.tokens !== 'object' || Array.isArray(message.tokens)) return
+
+    const root = document.documentElement
+    for (const name of [...HOST_THEME_COLOR_TOKENS, ...HOST_THEME_STYLE_TOKENS]) root.style.removeProperty(name)
+    for (const [name, value] of Object.entries(message.tokens)) {
+      if (typeof value !== 'string' || value.length === 0 || value.length > 512) continue
+      if (HOST_THEME_COLOR_TOKENS.has(name) && CSS.supports('color', value)) root.style.setProperty(name, value)
+      else if (HOST_THEME_STYLE_TOKENS.has(name) && CSS.supports('box-shadow', value)) root.style.setProperty(name, value)
+    }
+    root.dataset.dshHostTheme = 'true'
+    root.style.colorScheme = message.colorScheme
+    document.querySelector('meta[name="color-scheme"]')?.setAttribute('content', message.colorScheme)
+    const background = root.style.getPropertyValue('--bg')
+    if (background) document.querySelector('meta[name="theme-color"]')?.setAttribute('content', background)
+  })
+  window.parent.postMessage({
+    type: HOST_THEME_READY_MESSAGE,
+    version: HOST_THEME_PROTOCOL_VERSION,
+  }, window.location.origin)
+}
+
 function readDocumentLayout() {
   const fallback = {
-    sidebarHidden: false, libraryHidden: false, documentListHidden: false,
-    sidebarWidth: 236, libraryWidth: 220, documentListWidth: 280,
+    sidebarHidden: false,
+    sidebarWidth: 236,
   }
   try {
     const value = JSON.parse(localStorage.getItem(DOCUMENT_LAYOUT_KEY) || '{}')
     return {
       sidebarHidden: value.sidebarHidden === true,
-      libraryHidden: value.libraryHidden === true,
-      documentListHidden: value.documentListHidden === true,
       sidebarWidth: clampNumber(value.sidebarWidth, 190, 340, fallback.sidebarWidth),
-      libraryWidth: clampNumber(value.libraryWidth, 170, 360, fallback.libraryWidth),
-      documentListWidth: clampNumber(value.documentListWidth, 210, 480, fallback.documentListWidth),
     }
   } catch { return fallback }
 }
@@ -96,11 +116,7 @@ function saveDocumentLayout() {
   try {
     localStorage.setItem(DOCUMENT_LAYOUT_KEY, JSON.stringify({
       sidebarHidden: state.documentView.sidebarHidden,
-      libraryHidden: state.documentView.libraryHidden,
-      documentListHidden: state.documentView.documentListHidden,
       sidebarWidth: state.documentView.sidebarWidth,
-      libraryWidth: state.documentView.libraryWidth,
-      documentListWidth: state.documentView.documentListWidth,
     }))
   } catch {}
 }
@@ -217,7 +233,7 @@ async function boot() {
   if (AUTH_MODE === 'same-origin') {
     state.token = ''
     try { state.service = await api('service') } catch {}
-    await navigate('overview')
+    await navigate('entries')
     return
   }
   if (!state.token) {
@@ -226,7 +242,7 @@ async function boot() {
   }
   try {
     await api('entries?limit=1')
-    await navigate('overview')
+    await navigate('entries')
   } catch (error) {
     sessionStorage.removeItem(TOKEN_KEY)
     state.token = ''
@@ -253,7 +269,7 @@ function renderLogin(message = '') {
       try {
         await api('entries?limit=1')
         sessionStorage.setItem(TOKEN_KEY, token)
-        await navigate('overview')
+        await navigate('entries')
       } catch (requestError) {
         state.token = ''
         error.textContent = requestError.status === 401 ? '令牌无效或已被撤销。' : '连接失败，请检查服务状态后重试。'
@@ -377,6 +393,8 @@ async function loadDocuments() {
       : bases.find(base => base.status === 'active')?.id || bases[0]?.id || ''
   }
   selectDefaultDocument()
+  if (view.documentId) await loadDocumentEditor(view.documentId)
+  else view.editor = null
   if (!state.stats) await refreshStats()
 }
 
@@ -384,8 +402,101 @@ function selectDefaultDocument() {
   const view = state.documentView
   const documents = state.documents.filter(document => document.knowledgeBaseId === view.knowledgeBaseId)
   if (!documents.some(document => document.id === view.documentId)) {
-    view.documentId = documents.find(document => document.relPath === 'README.md')?.id || documents[0]?.id || ''
+    view.documentId = documents[0]?.id || ''
   }
+  if (view.knowledgeBaseId) view.expandedBases.add(view.knowledgeBaseId)
+}
+
+async function loadDocumentEditor(id) {
+  const entry = await api(`entries/${encodeURIComponent(id)}`)
+  state.documentView.editor = {
+    ...entry,
+    tagsText: entry.tags.join(', '),
+    dirty: false,
+    isNew: false,
+    saveState: '已保存',
+  }
+}
+
+function createBlankDocument(baseId) {
+  const base = state.knowledgeBases.find(item => item.id === baseId && item.status === 'active')
+  if (!base) return showToast('请先选择一个可用知识库。', 'error')
+  const view = state.documentView
+  view.knowledgeBaseId = base.id
+  view.documentId = ''
+  view.expandedBases.add(base.id)
+  view.editor = {
+    id: '', knowledgeBaseId: base.id, title: '', body: '', type: 'fact', tags: [], tagsText: '',
+    scope: { kind: 'global' }, confidence: .8, dirty: true, isNew: true, saveState: '新文档',
+  }
+  renderShell()
+  document.querySelector('.note-title-input')?.focus()
+}
+
+async function startBlankDocument(baseId) {
+  const editor = state.documentView.editor
+  const emptyDraft = editor?.isNew && !editor.title.trim() && !editor.body.trim()
+  if (editor?.dirty && !emptyDraft && !await saveDocumentEditor()) return
+  createBlankDocument(baseId)
+}
+
+async function selectDocument(id) {
+  const editor = state.documentView.editor
+  const emptyDraft = editor?.isNew && !editor.title.trim() && !editor.body.trim()
+  if (editor?.dirty && !emptyDraft && !await saveDocumentEditor()) return
+  state.documentView.documentId = id
+  await loadDocumentEditor(id)
+  renderShell()
+}
+
+function editorDraft(editor) {
+  return {
+    knowledgeBaseId: editor.knowledgeBaseId,
+    title: editor.title.trim(),
+    body: editor.body.trim(),
+    type: editor.type,
+    tags: parseTags(editor.tagsText),
+    scope: editor.scope,
+    confidence: editor.confidence,
+    ...(editor.source ? { source: editor.source } : {}),
+  }
+}
+
+async function saveDocumentEditor() {
+  const editor = state.documentView.editor
+  if (!editor || !editor.dirty) return true
+  if (!editor.title.trim() || !editor.body.trim()) {
+    showToast('标题和正文填写完整后才能保存。', 'error')
+    return false
+  }
+  editor.saveState = '正在保存…'
+  updateEditorSaveState(editor.saveState)
+  try {
+    const draft = editorDraft(editor)
+    const saved = editor.isNew
+      ? await api('entries', { method: 'POST', body: { draft } })
+      : await api(`entries/${encodeURIComponent(editor.id)}`, { method: 'PUT', body: { draft } })
+    editor.id = saved.id
+    editor.isNew = false
+    editor.dirty = false
+    editor.updatedAt = saved.updatedAt
+    editor.saveState = '已保存'
+    state.documentView.documentId = saved.id
+    updateEditorSaveState(editor.saveState)
+    const documents = await api('documents')
+    state.documents = documents
+    return true
+  } catch (error) {
+    editor.saveState = '保存失败'
+    updateEditorSaveState(editor.saveState)
+    showToast(friendlyError(error), 'error')
+    return false
+  }
+}
+
+function updateEditorSaveState(label) {
+  const node = document.querySelector('.editor-save-status')
+  if (node) node.textContent = label
 }
 
 async function loadCandidates() {
@@ -408,9 +519,9 @@ function renderShell() {
   captureScrollPosition()
   const titles = {
     overview: ['概览', '知识库运行状态与最近活动'],
-    bases: ['知识库', '创建知识库，并限定项目与会话的召回和写入范围'],
-    entries: ['文档', '按知识库浏览自动整理的 Markdown 文档'],
-    candidates: ['审核', '确认 AI 提取结果后再写入知识库'],
+    bases: ['知识库与挂载', '管理知识目录，并限定项目与会话的召回和写入范围'],
+    entries: ['知识文档', '在知识目录中阅读、整理和维护 Markdown 文档'],
+    candidates: ['待审核', '确认 AI 提取结果后再写入知识文档'],
     tokens: ['访问管理', '管理其他客户端连接中央知识库的权限'],
   }
   const [title, subtitle] = titles[state.view]
@@ -508,8 +619,8 @@ function setSidebarHidden(hidden) {
 function renderSidebar() {
   const pending = state.stats?.candidates.pending
   const navGroups = [
-    ['工作区', [['overview', '概览'], ['bases', '知识库'], ['entries', '文档'], ['candidates', '审核']]],
-    ['服务', [['tokens', '访问管理']].filter(([id]) => id !== 'tokens' || !state.service.remote)],
+    ['知识工作区', [['entries', '文档'], ['candidates', '待审核'], ['bases', '知识库与挂载']]],
+    ['连接', [['tokens', '访问管理']].filter(([id]) => id !== 'tokens' || !state.service.remote)],
   ].filter(([, items]) => items.length)
   return element('aside', { class: 'sidebar', 'aria-label': '知识库导航' },
     element('div', { class: 'brand' },
@@ -724,7 +835,6 @@ function renderKnowledgeBaseCard(base) {
         state.entryFilters.knowledgeBaseId = base.id
         state.documentView.knowledgeBaseId = base.id
         state.documentView.documentId = ''
-        state.documentView.mode = 'documents'
         void navigate('entries')
       }, 'ghost small'),
       archived ? actionButton('恢复', () => confirmRestoreKnowledgeBase(base), 'small') : actionButton('编辑', () => openKnowledgeBaseEditor(base), 'small'),
@@ -883,347 +993,153 @@ function compactEmpty(message) {
 }
 
 function renderEntries() {
-  if (state.documentView.mode === 'entries') return renderLegacyEntries()
   const view = state.documentView
   const query = view.query.trim().toLocaleLowerCase()
   const activeBases = state.knowledgeBases.filter(base => base.status === 'active')
-  const selectedBase = state.knowledgeBases.find(base => base.id === view.knowledgeBaseId)
-  const allBaseDocuments = state.documents.filter(document => document.knowledgeBaseId === view.knowledgeBaseId)
-  const visibleDocuments = allBaseDocuments.filter(document => !query || [document.title, document.relPath, document.content]
-    .some(value => value.toLocaleLowerCase().includes(query)))
-  const selectedDocument = state.documents.find(document => document.id === view.documentId)
+  const selectedBase = activeBases.find(base => base.id === view.knowledgeBaseId)
   const search = element('input', {
-    class: 'input', type: 'search', value: view.query, placeholder: '搜索文档标题、路径或正文', 'aria-label': '搜索知识库文档',
+    class: 'note-tree-search', type: 'search', value: view.query, placeholder: '搜索文档', 'aria-label': '搜索知识库文档',
     onInput: (event) => {
       view.query = event.target.value
-      const stillVisible = state.documents.some(document => document.id === view.documentId
-        && document.knowledgeBaseId === view.knowledgeBaseId
-        && (!view.query.trim() || [document.title, document.relPath, document.content].some(value => value.toLocaleLowerCase().includes(view.query.trim().toLocaleLowerCase()))))
-      if (!stillVisible) view.documentId = ''
       renderShell()
-      document.querySelector('.document-global-search input')?.focus()
+      const input = document.querySelector('.note-tree-search')
+      input?.focus()
+      input?.setSelectionRange(input.value.length, input.value.length)
     },
   })
-  if (!view.documentId && visibleDocuments.length) view.documentId = visibleDocuments[0].id
-  const currentDocument = state.documents.find(document => document.id === view.documentId) || selectedDocument
-
-  return element('section', { class: 'document-page', 'aria-labelledby': 'documents-heading' },
-    element('div', { class: 'document-page-toolbar' },
-      renderDocumentModeTabs(),
-      element('div', { class: 'search-box document-global-search' }, interfaceIcon('search', 'search-symbol'), search),
-      element('select', {
-        class: 'select compact-library-picker', 'aria-label': '选择知识库', value: view.knowledgeBaseId,
-        onChange: (event) => { view.knowledgeBaseId = event.target.value; view.documentId = ''; selectDefaultDocument(); renderShell() },
-      }, activeBases.map(base => element('option', { value: base.id, selected: base.id === view.knowledgeBaseId }, base.name))),
-      element('div', { class: 'document-toolbar-actions' },
-        renderDocumentColumnControls(),
-        actionButton('+ 新建知识', () => openEntryEditor(), 'primary'),
+  const tree = activeBases.map(base => {
+    const expanded = view.expandedBases.has(base.id) || Boolean(query)
+    const documents = state.documents.filter(document => document.knowledgeBaseId === base.id
+      && (!query || [document.title, document.relPath, document.content].some(value => value.toLocaleLowerCase().includes(query))))
+    return element('section', { class: 'note-tree-group', 'data-expanded': String(expanded) },
+      element('button', {
+        type: 'button', class: 'note-tree-base', 'aria-expanded': String(expanded),
+        onClick: () => {
+          view.knowledgeBaseId = base.id
+          if (expanded && !query) view.expandedBases.delete(base.id)
+          else view.expandedBases.add(base.id)
+          renderShell()
+        },
+      },
+      element('span', { class: 'tree-disclosure', 'aria-hidden': 'true' }),
+      element('span', { class: 'tree-folder-icon', 'aria-hidden': 'true' }),
+      element('span', { class: 'tree-base-name' }, base.name),
+      element('span', { class: 'tree-count' }, documents.length)),
+      expanded ? element('div', { class: 'note-tree-documents', role: 'group', 'aria-label': `${base.name}文档` },
+        documents.map(document => element('button', {
+          type: 'button', class: 'note-tree-document', 'aria-current': document.id === view.documentId ? 'page' : undefined,
+          onClick: () => { void selectDocument(document.id) },
+        }, element('span', { class: 'tree-document-icon', 'aria-hidden': 'true' }), element('span', { class: 'tree-document-copy' },
+          element('strong', {}, document.title), element('small', {}, document.relPath)))),
+        !query ? element('button', { type: 'button', class: 'note-tree-new', onClick: () => { void startBlankDocument(base.id) } },
+          element('span', { 'aria-hidden': 'true' }, '+'), '新建文档') : null,
+      ) : null,
+    )
+  })
+  return element('section', { class: 'note-workspace', 'aria-labelledby': 'documents-heading' },
+    element('aside', { class: 'note-tree-panel', 'aria-label': '知识目录' },
+      element('header', { class: 'note-tree-header' },
+        element('div', {}, element('h2', { id: 'documents-heading' }, '知识目录'), element('span', {}, `${state.documents.length} 篇文档`)),
+        actionButton('+', () => { void startBlankDocument(view.knowledgeBaseId || activeBases[0]?.id) }, 'ghost note-add-button', { 'aria-label': '新建文档', title: '新建文档' }),
       ),
+      element('div', { class: 'note-tree-search-wrap' }, interfaceIcon('search', 'search-symbol'), search),
+      element('nav', { class: 'note-tree', 'data-scroll-key': 'note-tree' }, tree.length ? tree : element('div', { class: 'note-tree-empty' }, '还没有知识库')),
+      element('footer', { class: 'note-tree-footer' }, actionButton('新建知识库', () => openKnowledgeBaseEditor(), 'ghost small')),
     ),
-    element('div', {
-      class: 'document-browser',
-      'data-library-hidden': String(view.libraryHidden),
-      'data-document-list-hidden': String(view.documentListHidden),
-      style: `--library-width:${view.libraryWidth}px;--document-list-width:${view.documentListWidth}px`,
-    },
-      element('aside', { id: 'knowledge-library-column', class: 'knowledge-library-column', 'aria-label': '知识库列表' },
-        element('header', { class: 'column-header' },
-          element('div', {}, element('h2', { id: 'documents-heading' }, '知识库'), element('span', {}, `${activeBases.length} 个可用`)),
-        ),
-        activeBases.length ? element('div', { class: 'library-list', role: 'listbox', tabindex: '0', 'data-scroll-key': 'library-list', onKeyDown: event => moveDocumentSelection(event, 'base') },
-          activeBases.map(base => {
-            const documentCount = state.documents.filter(document => document.knowledgeBaseId === base.id).length
-            const selected = base.id === view.knowledgeBaseId
-            return element('button', {
-              type: 'button', class: 'library-row', role: 'option', 'aria-selected': String(selected),
-              onClick: () => { view.knowledgeBaseId = base.id; view.documentId = ''; selectDefaultDocument(); renderShell() },
-            }, element('span', { class: 'library-dot', 'aria-hidden': 'true' }), element('span', { class: 'library-row-copy' },
-              element('strong', {}, base.name), element('small', {}, base.description || '通用知识库')),
-            element('span', { class: 'library-count', 'aria-label': `${documentCount} 篇文档` }, documentCount))
-          })) : compactEmpty('还没有知识库'),
-        element('footer', { class: 'column-footer' }, actionButton('+ 新建知识库', () => openKnowledgeBaseEditor(), 'ghost small')),
-      ),
-      renderColumnResizer('library', '调整知识库栏宽度'),
-      element('aside', { id: 'document-list-column', class: 'document-list-column', 'aria-label': '文档列表' },
-        element('header', { class: 'column-header' },
-          element('div', {}, element('h2', {}, selectedBase?.name || '文档'), element('span', {}, query ? `找到 ${visibleDocuments.length} 篇` : `${allBaseDocuments.length} 篇文档`)),
-        ),
-        visibleDocuments.length ? element('div', { class: 'document-list', role: 'listbox', tabindex: '0', 'data-scroll-key': 'document-list', onKeyDown: event => moveDocumentSelection(event, 'document') },
-          visibleDocuments.map(document => element('button', {
-            type: 'button', class: 'document-row', role: 'option', 'aria-selected': String(document.id === view.documentId),
-            onClick: () => { view.documentId = document.id; renderShell() },
-          }, element('span', { class: 'document-icon', 'aria-hidden': 'true' }, document.relPath === 'README.md' ? '▣' : '≡'),
-          element('span', { class: 'document-row-copy' }, element('strong', {}, document.title), element('small', {}, document.relPath)),
-          element('span', { class: 'document-entry-count' }, document.entryCount))))
-          : element('div', { class: 'document-empty' }, query ? '没有匹配的文档' : '这个知识库还没有文档'),
-      ),
-      renderColumnResizer('documentList', '调整文档栏宽度'),
-      renderDocumentReader(currentDocument, selectedBase),
-    ),
+    renderNoteEditor(view.editor, selectedBase),
   )
 }
 
-function setDocumentColumnHidden(column, hidden) {
-  if (column === 'library') state.documentView.libraryHidden = hidden
-  else state.documentView.documentListHidden = hidden
-  saveDocumentLayout()
-  renderShell()
-}
-
-function renderDocumentColumnControls() {
-  return element('div', { class: 'document-column-controls', role: 'group', 'aria-label': '显示文档栏位' },
-    element('span', { class: 'document-column-controls-label', 'aria-hidden': 'true' }, '显示'),
-    documentColumnControl('library', '知识库栏'),
-    documentColumnControl('documentList', '文档栏'),
-  )
-}
-
-function documentColumnControl(column, label) {
-  const layout = DOCUMENT_COLUMN_LAYOUTS[column]
-  const visible = !state.documentView[layout.hiddenKey]
-  const action = `${visible ? '收起' : '展开'}${label}`
-  return element('button', {
-    type: 'button', class: 'document-column-control', 'data-column': column,
-    'aria-label': action, 'aria-pressed': String(visible), title: action,
-    onClick: () => setDocumentColumnHidden(column, visible),
-  }, label)
-}
-
-function renderColumnResizer(column, label) {
-  const layout = DOCUMENT_COLUMN_LAYOUTS[column]
-  const hidden = state.documentView[layout.hiddenKey]
-  if (hidden) return null
-  const value = state.documentView[layout.widthKey]
-  return element('div', {
-    class: 'column-resizer', 'data-column': column, role: 'separator', tabindex: '0',
-    title: `${label}；可拖动或使用左右方向键`,
-    'aria-label': label, 'aria-controls': layout.controls, 'aria-orientation': 'vertical',
-    'aria-valuemin': layout.minimum, 'aria-valuemax': layout.maximum, 'aria-valuenow': value,
-    'aria-valuetext': `${value} 像素`,
-    onPointerDown: event => startColumnResize(event, column),
-    onKeyDown: event => resizeColumnWithKeyboard(event, column),
-  }, element('span', { 'aria-hidden': 'true' }, '⋮'))
-}
-
-function startColumnResize(event, column) {
-  if (event.button !== 0) return
-  event.preventDefault()
-  const layout = DOCUMENT_COLUMN_LAYOUTS[column]
-  const handle = event.currentTarget
-  const browser = handle.closest('.document-browser')
-  if (!browser) return
-  const startX = event.clientX
-  const startWidth = state.documentView[layout.widthKey]
-  handle.setPointerCapture?.(event.pointerId)
-  handle.classList.add('is-dragging')
-  document.body.classList.add('is-resizing-columns')
-  const move = moveEvent => {
-    const width = clampNumber(startWidth + moveEvent.clientX - startX, layout.minimum, layout.maximum, startWidth)
-    setDocumentColumnWidth(column, width, browser, handle)
-  }
-  const finish = () => {
-    handle.classList.remove('is-dragging')
-    document.body.classList.remove('is-resizing-columns')
-    handle.removeEventListener('pointermove', move)
-    handle.removeEventListener('pointerup', finish)
-    handle.removeEventListener('pointercancel', finish)
-    saveDocumentLayout()
-  }
-  handle.addEventListener('pointermove', move)
-  handle.addEventListener('pointerup', finish)
-  handle.addEventListener('pointercancel', finish)
-}
-
-function resizeColumnWithKeyboard(event, column) {
-  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
-  event.preventDefault()
-  const layout = DOCUMENT_COLUMN_LAYOUTS[column]
-  const current = state.documentView[layout.widthKey]
-  const browser = event.currentTarget.closest('.document-browser')
-  const width = event.key === 'Home' ? layout.minimum
-    : event.key === 'End' ? layout.maximum
-    : clampNumber(current + (event.key === 'ArrowRight' ? 16 : -16), layout.minimum, layout.maximum, current)
-  setDocumentColumnWidth(column, width, browser, event.currentTarget)
-  saveDocumentLayout()
-}
-
-function setDocumentColumnWidth(column, width, browser, handle) {
-  const layout = DOCUMENT_COLUMN_LAYOUTS[column]
-  state.documentView[layout.widthKey] = width
-  browser?.style.setProperty(layout.cssVariable, `${width}px`)
-  handle?.setAttribute('aria-valuenow', String(width))
-  handle?.setAttribute('aria-valuetext', `${width} 像素`)
-}
-
-function renderDocumentModeTabs() {
-  return element('div', { class: 'tabs', role: 'tablist', 'aria-label': '知识视图' },
-    documentViewTab('文档', 'documents'),
-    documentViewTab('条目管理', 'entries'),
-  )
-}
-
-function documentViewTab(label, mode) {
-  return element('button', {
-    type: 'button', role: 'tab', class: 'tab', 'aria-selected': String(state.documentView.mode === mode),
-    onClick: async () => {
-      state.documentView.mode = mode
-      if (mode === 'entries') await loadEntries()
-      else await loadDocuments()
-      renderShell()
-    },
-  }, label)
-}
-
-function moveDocumentSelection(event, kind) {
-  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Enter') return
-  const view = state.documentView
-  const values = kind === 'base'
-    ? state.knowledgeBases.filter(base => base.status === 'active').map(base => base.id)
-    : state.documents.filter(document => document.knowledgeBaseId === view.knowledgeBaseId).map(document => document.id)
-  const current = kind === 'base' ? view.knowledgeBaseId : view.documentId
-  if (event.key === 'Enter') return
-  event.preventDefault()
-  const index = Math.max(0, values.indexOf(current))
-  const next = event.key === 'ArrowDown' ? Math.min(values.length - 1, index + 1) : Math.max(0, index - 1)
-  if (!values[next]) return
-  if (kind === 'base') { view.knowledgeBaseId = values[next]; view.documentId = ''; selectDefaultDocument() }
-  else view.documentId = values[next]
-  renderShell()
-  document.querySelector(kind === 'base' ? '.library-list' : '.document-list')?.focus()
-}
-
-function renderDocumentReader(document, base) {
-  if (!document) return element('main', { class: 'document-reader document-reader-empty' },
-    element('div', {}, element('strong', {}, '选择一篇文档'), element('p', {}, '文档内容会在这里显示。')))
-  return element('main', { class: 'document-reader', 'aria-labelledby': 'document-reader-title' },
-    element('header', { class: 'reader-toolbar' },
-      element('div', { class: 'reader-title' }, element('span', {}, base?.name || document.knowledgeBaseId), element('strong', { id: 'document-reader-title' }, document.relPath)),
-      element('select', {
-        class: 'select mobile-document-picker', 'aria-label': '选择文档',
-        onChange: (event) => { state.documentView.documentId = event.target.value; renderShell() },
-      }, state.documents.filter(item => item.knowledgeBaseId === document.knowledgeBaseId)
-        .map(item => element('option', { value: item.id, selected: item.id === document.id }, item.relPath))),
-      element('div', { class: 'reader-actions' }, badge(`${document.entryCount} 条知识`), actionButton('添加内容', () => openEntryEditor(), 'small')),
-    ),
-    element('article', { class: 'markdown-document', 'data-scroll-key': 'document-reader' }, renderMarkdown(document.content)),
-    element('footer', { class: 'reader-footer' },
-      element('span', {}, `自动整理 · ${formatDate(document.updatedAt)}`),
-      element('span', {}, `SHA-256 · ${document.contentHash.slice(0, 8)}`),
-    ),
-  )
-}
-
-function renderMarkdown(markdown) {
-  const nodes = []
-  const lines = markdown.replaceAll('\r\n', '\n').split('\n')
-  let paragraph = []
-  let list = []
-  let code = []
-  let inCode = false
-  const flushParagraph = () => {
-    if (paragraph.length) nodes.push(element('p', {}, paragraph.join(' ')))
-    paragraph = []
-  }
-  const flushList = () => {
-    if (list.length) nodes.push(element('ul', {}, list.map(item => element('li', {}, item))))
-    list = []
-  }
-  const flushCode = () => {
-    if (code.length) nodes.push(element('pre', {}, element('code', {}, code.join('\n'))))
-    code = []
-  }
-  for (const raw of lines) {
-    const line = raw.trimEnd()
-    if (line.startsWith('```')) {
-      flushParagraph(); flushList()
-      if (inCode) flushCode()
-      inCode = !inCode
-      continue
+function renderNoteEditor(editor, base) {
+  if (!editor) return element('main', { class: 'note-editor note-editor-empty' },
+    element('div', { class: 'note-empty-content' },
+      element('span', { class: 'empty-document-mark', 'aria-hidden': 'true' }),
+      element('h3', {}, '选择或新建一篇文档'),
+      element('p', {}, '文档保存后会立即参与当前知识库的搜索与召回。'),
+      actionButton('新建文档', () => { void startBlankDocument(state.documentView.knowledgeBaseId || state.knowledgeBases.find(item => item.status === 'active')?.id) }, 'primary'),
+    ))
+  const saveShortcut = event => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === 's') {
+      event.preventDefault()
+      void saveDocumentEditor().then(saved => { if (saved) renderShell() })
     }
-    if (inCode) { code.push(raw); continue }
-    const heading = /^(#{1,4})\s+(.+)$/.exec(line)
-    const bullet = /^[-*]\s+(.+)$/.exec(line)
-    if (heading) {
-      flushParagraph(); flushList()
-      nodes.push(element(`h${heading[1].length}`, {}, heading[2]))
-    } else if (line.startsWith('> ')) {
-      flushParagraph(); flushList()
-      nodes.push(element('blockquote', {}, line.slice(2)))
-    } else if (bullet) {
-      flushParagraph(); list.push(bullet[1])
-    } else if (!line.trim()) {
-      flushParagraph(); flushList()
-    } else if (/^<small>.*<\/small>$/.test(line.trim())) {
-      flushParagraph(); flushList()
-      nodes.push(element('small', { class: 'markdown-metadata' }, line.trim().replace(/^<small>|<\/small>$/g, '')))
-    } else paragraph.push(line.trim())
   }
-  flushParagraph(); flushList(); flushCode()
-  return nodes
-}
-
-function renderLegacyEntries() {
-  const queryInput = element('input', { class: 'input', type: 'search', value: state.entryFilters.query, placeholder: '搜索标题、正文或标签', 'aria-label': '搜索知识' })
-  const projectInput = element('input', { class: 'input', value: state.entryFilters.projectId, placeholder: '项目路径（可选）', 'aria-label': '按项目路径筛选' })
-  const applyFilters = async () => {
-    state.entryFilters.query = queryInput.value
-    state.entryFilters.projectId = projectInput.value
-    state.loading = true
-    renderShell()
-    try { await loadEntries() } catch (error) { state.error = friendlyError(error) } finally { state.loading = false; renderShell() }
+  const update = (key, value) => {
+    editor[key] = value
+    editor.dirty = true
+    editor.saveState = '未保存'
+    updateEditorSaveState(editor.saveState)
   }
-  const toolbar = element('form', { class: 'toolbar', onSubmit: (event) => { event.preventDefault(); void applyFilters() } },
-    element('div', { class: 'search-box' }, element('span', { class: 'search-symbol', 'aria-hidden': 'true' }, '⌕'), queryInput),
-    selectControl('状态', [{ value: 'active', label: '生效中' }, { value: 'archived', label: '已归档' }], state.entryFilters.status, (value) => { state.entryFilters.status = value; void applyFilters() }),
-    selectControl('类型', [{ value: '', label: '全部类型' }, ...TYPES.map(type => ({ value: type, label: TYPE_LABELS[type] }))], state.entryFilters.type, (value) => { state.entryFilters.type = value; void applyFilters() }),
-    selectControl('知识库', [{ value: '', label: '全部知识库' }, ...state.knowledgeBases.map(base => ({ value: base.id, label: base.name }))], state.entryFilters.knowledgeBaseId, (value) => { state.entryFilters.knowledgeBaseId = value; void applyFilters() }),
-    projectInput,
-    actionButton('搜索', () => {}, 'primary', { type: 'submit' }),
-  )
-  return element('section', { class: 'document-page legacy-entries-page', 'aria-labelledby': 'entries-heading' },
-    element('div', { class: 'document-page-toolbar legacy-entries-toolbar' },
-      renderDocumentModeTabs(),
-      element('div', { class: 'document-toolbar-actions' }, actionButton('+ 新建知识', () => openEntryEditor(), 'primary')),
-    ),
-    element('div', { class: 'section-heading' }, element('div', {}, element('h2', { id: 'entries-heading' }, `${STATUS_LABELS[state.entryFilters.status]} · ${state.entries.length}`), element('p', {}, '搜索范围会包含全局知识和指定项目知识'))),
-    toolbar,
-    state.entries.length
-      ? element('div', { class: 'card-grid' }, state.entries.map(renderEntryCard))
-      : emptyState('没有匹配的知识', '调整筛选条件，或者手动创建第一条知识。', '新建知识', () => openEntryEditor()),
-    state.nextCursor ? element('div', { class: 'loading' }, actionButton('加载更多', async () => {
-      const cursor = state.nextCursor
-      state.nextCursor = null
-      try { await loadEntries(cursor); renderShell() } catch (error) { showToast(friendlyError(error), 'error') }
-    })) : null,
-  )
-}
-
-function renderEntryCard(entry) {
-  const archived = entry.status === 'archived'
-  return element('article', { class: 'knowledge-card' },
-    element('div', { class: 'card-top' },
-      element('div', {}, badge(knowledgeBaseName(entry.knowledgeBaseId)), ' ', badge(TYPE_LABELS[entry.type], 'accent'), ' ', archived ? badge('已归档') : badge('生效中', 'success')),
-      element('span', { class: 'field-hint' }, `v${entry.version}`),
-    ),
-    element('h3', {}, entry.title),
-    element('p', {}, entry.body),
-    entry.tags.length ? element('div', { class: 'tag-row', 'aria-label': '标签' }, entry.tags.map(tag => element('span', { class: 'tag' }, `#${tag}`))) : null,
-    element('div', { class: 'card-footer' },
-      element('span', { class: 'field-hint' }, `${scopeLabel(entry.scope)} · ${formatDate(entry.updatedAt)}`),
-      element('div', { class: 'card-actions' },
-        actionButton('历史', () => openHistory(entry), 'ghost small'),
-        actionButton(archived ? '编辑并恢复' : '编辑', () => openEntryEditor(entry), 'ghost small'),
-        !archived ? actionButton('归档', () => confirmArchive(entry), 'ghost small') : actionButton('彻底删除', () => confirmDelete(entry), 'danger small'),
+  const title = element('input', {
+    class: 'note-title-input', value: editor.title, maxlength: 200, placeholder: '无标题文档', 'aria-label': '文档标题',
+    onInput: event => update('title', event.target.value), onKeyDown: saveShortcut,
+  })
+  const body = element('textarea', {
+    class: 'note-body-editor', maxlength: 50000, placeholder: '从这里开始记录…', 'aria-label': '文档正文',
+    onInput: event => { update('body', event.target.value); resizeDocumentEditor(event.target) }, onKeyDown: saveShortcut,
+  })
+  body.value = editor.body
+  window.requestAnimationFrame(() => resizeDocumentEditor(body))
+  return element('main', { class: 'note-editor', 'aria-label': '文档编辑器' },
+    element('header', { class: 'note-editor-toolbar' },
+      element('div', { class: 'note-breadcrumb' },
+        element('span', {}, base?.name || '知识库'),
+        element('span', { 'aria-hidden': 'true' }, '/'),
+        element('strong', {}, editor.isNew ? '新文档' : state.documents.find(item => item.id === editor.id)?.relPath || editor.title)),
+      element('div', { class: 'note-editor-actions' },
+        element('span', { class: 'editor-save-status', role: 'status' }, editor.saveState),
+        !editor.isNew ? actionButton('删除', () => confirmDeleteDocument(editor), 'ghost small') : null,
+        actionButton(editor.isNew ? '创建文档' : '保存', () => { void saveDocumentEditor().then(saved => { if (saved) renderShell() }) }, 'primary small'),
       ),
     ),
+    element('div', { class: 'note-editor-scroll', 'data-scroll-key': 'note-editor' },
+      element('article', { class: 'note-paper' },
+        title,
+        element('div', { class: 'note-document-meta' },
+          element('span', {}, editor.isNew ? '尚未保存' : `更新于 ${formatDate(editor.updatedAt)}`),
+          element('span', {}, editor.scope.kind === 'global' ? '全局知识' : `项目 · ${editor.scope.id}`)),
+        body,
+      ),
+    ),
+    element('footer', { class: 'note-inspector' },
+      element('label', {}, element('span', {}, '类型'), element('select', {
+        class: 'note-meta-select', onChange: event => update('type', event.target.value),
+      }, TYPES.map(type => element('option', { value: type, selected: type === editor.type }, TYPE_LABELS[type])))),
+      element('label', { class: 'note-tags-field' }, element('span', {}, '标签'), element('input', {
+        value: editor.tagsText, placeholder: '用逗号分隔', onInput: event => update('tagsText', event.target.value),
+      })),
+      element('span', { class: 'note-format-hint' }, 'Markdown · Ctrl/⌘ S 保存'),
+    ),
   )
+}
+
+function resizeDocumentEditor(editor) {
+  editor.style.height = 'auto'
+  editor.style.height = `${Math.max(420, editor.scrollHeight)}px`
+}
+
+function confirmDeleteDocument(editor) {
+  openConfirm({
+    title: `删除“${editor.title}”？`,
+    message: '文档和对应的召回知识会被永久删除，此操作无法撤销。',
+    confirmLabel: '永久删除', danger: true,
+    onConfirm: async () => {
+      await api(`entries/${encodeURIComponent(editor.id)}`, { method: 'DELETE' })
+      state.documentView.documentId = ''
+      state.documentView.editor = null
+      state.stats = null
+      await loadDocuments()
+      renderShell()
+      showToast('文档已删除。')
+    },
+  })
 }
 
 function renderCandidates() {
   const statuses = [['pending', '待审核'], ['approved', '已通过'], ['rejected', '已拒绝']]
   return element('section', { 'aria-labelledby': 'candidates-heading' },
     element('div', { class: 'section-heading' },
-      element('div', {}, element('h2', { id: 'candidates-heading' }, 'AI 提取候选'), element('p', {}, '审核写入的结果与冲突项会在这里等待确认；直接写入的普通结果会自动生效。')),
+      element('div', {}, element('h2', { id: 'candidates-heading' }, 'AI 提取候选'), element('p', {}, '审核写入、模型推断、低置信度结果和冲突项会在这里等待确认；只有高置信度且证据明确的结果才能直接写入。')),
       element('div', { class: 'tabs', role: 'tablist', 'aria-label': '候选状态' }, statuses.map(([value, label]) => element('button', {
         type: 'button', role: 'tab', class: 'tab', 'aria-selected': String(state.candidateStatus === value),
         onClick: async () => { state.candidateStatus = value; await navigate('candidates') },
@@ -1236,11 +1152,17 @@ function renderCandidates() {
 
 function renderCandidateCard(candidate) {
   const pending = candidate.status === 'pending'
-  const targetDocument = TYPE_DOCUMENTS[candidate.draft.type] || 'README.md'
+  const targetDocument = candidate.action === 'create'
+    ? `新文档“${candidate.draft.title}”`
+    : `文档“${candidate.draft.title}”`
   return element('article', { class: 'candidate' },
     element('div', { class: 'candidate-header' },
       element('div', {},
-        element('div', {}, badge(knowledgeBaseName(candidate.draft.knowledgeBaseId)), ' ', badge(ACTION_LABELS[candidate.action], candidate.action === 'conflict' ? 'warning' : 'accent'), ' ', badge(TYPE_LABELS[candidate.draft.type])),
+        element('div', {},
+          badge(knowledgeBaseName(candidate.draft.knowledgeBaseId)), ' ',
+          badge(ACTION_LABELS[candidate.action], candidate.action === 'conflict' ? 'warning' : 'accent'), ' ',
+          badge(TYPE_LABELS[candidate.draft.type]), ' ',
+          candidate.draft.source?.evidence ? badge(EVIDENCE_LABELS[candidate.draft.source.evidence] || candidate.draft.source.evidence) : null),
         element('h3', {}, candidate.draft.title),
       ),
       badge(STATUS_LABELS[candidate.status], candidate.status === 'approved' ? 'success' : candidate.status === 'rejected' ? 'danger' : 'warning'),
@@ -1249,7 +1171,7 @@ function renderCandidateCard(candidate) {
       element('p', { class: 'candidate-content' }, candidate.draft.body),
       element('div', { class: 'candidate-reason' },
         element('strong', {}, '文档变更'),
-        element('span', { class: 'candidate-target' }, `将${candidate.action === 'create' ? '追加' : '更新'}到 ${targetDocument}`),
+        element('span', { class: 'candidate-target' }, `${candidate.action === 'create' ? '创建' : '更新'}${targetDocument}`),
         element('strong', {}, '模型判断依据'), candidate.reason || '未提供判断说明'),
     ),
     element('div', { class: 'candidate-footer' },
@@ -1373,7 +1295,7 @@ function openKnowledgeBaseEditor(base) {
     )),
     provider.wrapper, model.wrapper, modelHint,
   )
-  openModal({
+  openSheet({
     title: base ? '编辑知识库' : '创建知识库',
     description: '匹配描述先判断对话是否属于该库；提取要求再规定应该收录什么。',
     body: form,
@@ -1421,7 +1343,7 @@ function openBulkMountEditor() {
     includeTags.wrapper,
     excludeTags.wrapper,
   )
-  openModal({
+  openSheet({
     title: `批量挂载到${manager.targetKind === 'project' ? '项目' : '会话'}`,
     description: targetId,
     body: form,
@@ -1520,7 +1442,7 @@ function openMountEditor(base, targetKind, targetId, explicit, inherited) {
   }
   enabled.addEventListener('change', updateAvailability)
   updateAvailability()
-  openModal({
+  openSheet({
     title: `${targetKind === 'project' ? '项目' : '会话'}挂载 · ${base.name}`,
     description: targetId,
     body: form,
@@ -1646,8 +1568,8 @@ function openEntryEditor(entry, candidate) {
   )
   body.wrapper.classList.add('span-2')
   tags.wrapper.classList.add('span-2')
-  const modeTitle = candidate ? '编辑并通过候选' : entry ? '编辑知识' : '新建知识'
-  const modal = openModal({ title: modeTitle, description: candidate ? '保存后，这条候选会立即通过并写入知识库。' : '知识保存后会立即参与后续召回。', body: form, primaryLabel: candidate ? '通过并保存' : '保存', onPrimary: async () => {
+  const modeTitle = candidate ? '编辑并通过候选' : entry ? '编辑知识文档' : '新建知识文档'
+  const modal = openSheet({ title: modeTitle, description: candidate ? '保存后，这条候选会立即通过并写入知识库。' : '文档保存后会立即参与后续召回。', body: form, primaryLabel: candidate ? '通过并保存' : '保存文档', onPrimary: async () => {
     if (!form.reportValidity()) return false
     const draft = {
       knowledgeBaseId: knowledgeBase.input.value,
@@ -1777,10 +1699,15 @@ function openConfirm({ title, message, confirmLabel, danger, onConfirm }) {
   return openModal({ title, body: element('p', {}, message), primaryLabel: confirmLabel, primaryVariant: danger ? 'danger' : 'primary', onPrimary: async () => { await onConfirm(); return true } })
 }
 
-function openModal({ title, description = '', body, primaryLabel, primaryVariant = 'primary', onPrimary, cancelLabel = '取消' }) {
+function openSheet(options) {
+  return openModal({ ...options, presentation: 'sheet' })
+}
+
+function openModal({ title, description = '', body, primaryLabel, primaryVariant = 'primary', onPrimary, cancelLabel = '取消', presentation = 'modal' }) {
   const previouslyFocused = document.activeElement
-  const backdrop = element('div', { class: 'dialog-backdrop' })
-  const dialog = element('section', { class: `dialog ${primaryLabel ? '' : 'narrow'}`.trim(), role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'dialog-title' })
+  const isSheet = presentation === 'sheet'
+  const backdrop = element('div', { class: `dialog-backdrop${isSheet ? ' sheet-backdrop' : ''}` })
+  const dialog = element('section', { class: `dialog${isSheet ? ' sheet' : ''} ${primaryLabel ? '' : 'narrow'}`.trim(), role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'dialog-title' })
   let busy = false
   const close = () => {
     if (busy) return
@@ -1851,4 +1778,5 @@ function friendlyError(error) {
   return error.message || '操作失败，请稍后重试。'
 }
 
+installHostThemeBridge()
 void boot()

@@ -15,6 +15,7 @@ export type KnowledgeBaseStatus = 'active' | 'archived'
 export type KnowledgeMountTargetKind = 'project' | 'session'
 export type KnowledgeWriteMode = 'none' | 'audit' | 'direct'
 export type KnowledgeWritebackPolicy = 'conservative' | 'proactive'
+export type KnowledgeEvidence = 'explicit' | 'verified' | 'inferred'
 
 export interface KnowledgeSettings {
   writebackPolicy: KnowledgeWritebackPolicy
@@ -102,6 +103,7 @@ export interface KnowledgeSource {
   messageId?: string
   turn?: number
   clientId?: string
+  evidence?: KnowledgeEvidence
 }
 
 export interface KnowledgeDraft {
@@ -266,6 +268,12 @@ export function normalizeDraft(input: KnowledgeDraft): KnowledgeDraft {
   }
   if (input.scope.kind === 'project' && input.scope.id.trim().length === 0) {
     throw new Error('project scope requires a non-empty id')
+  }
+  if (input.source?.evidence !== undefined
+    && input.source.evidence !== 'explicit'
+    && input.source.evidence !== 'verified'
+    && input.source.evidence !== 'inferred') {
+    throw new Error('knowledge source evidence is unsupported')
   }
   return {
     knowledgeBaseId,

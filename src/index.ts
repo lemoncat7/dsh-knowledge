@@ -19,7 +19,7 @@ import { LocalKnowledgeProvider } from './local-provider.js'
 import { registerRemoteManagementProxy } from './management-proxy.js'
 import type { KnowledgeProvider } from './provider.js'
 import { KnowledgeProviderRouter } from './provider-router.js'
-import { registerKnowledgeCatalog, registerRecall } from './recall.js'
+import { registerKnowledgeCatalog, registerKnowledgeRecall } from './recall.js'
 import { KnowledgeHandleCodec } from './retrieval.js'
 import { RemoteKnowledgeProvider, RemoteProviderError } from './remote-provider.js'
 import { createWritebackMessage, type RuntimeContextLike } from './runtime.js'
@@ -37,8 +37,8 @@ export { RemoteKnowledgeProvider, RemoteProviderError } from './remote-provider.
 /** Human-readable Cordis plugin name. */
 export const name = 'dsh-knowledge'
 
-/** Extraction, native retrieval tools, and mounted-base context require the corresponding DSH host services. */
-export const inject = ['llm', 'tools', 'systemPrompt']
+/** Extraction and native retrieval tools require the corresponding DSH host services. */
+export const inject = ['llm', 'tools']
 
 /** Mount storage, hybrid retrieval, extraction, and the optional authenticated HTTP API. */
 export function apply(ctx: Context, config: KnowledgeConfig): void {
@@ -81,8 +81,8 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
 
   const coordinator = new ExtractionCoordinator(runtime, provider, resolved)
   const handleCodec = new KnowledgeHandleCodec(randomBytes(32))
+  registerKnowledgeRecall(runtime, provider, resolved, handleCodec)
   registerKnowledgeCatalog(runtime, provider, resolved)
-  registerRecall(runtime, provider, resolved, handleCodec)
   registerKnowledgeTools(runtime, provider, handleCodec)
 
   let refreshManagementApi = (): void => {}
