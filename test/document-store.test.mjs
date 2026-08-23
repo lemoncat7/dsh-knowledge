@@ -10,6 +10,7 @@ import {
 import {
   KNOWLEDGE_BASE_MANIFEST,
   KnowledgeDocumentStore,
+  isWindowsReplaceError,
   supportsDirectorySync,
 } from '../lib/documents/store.js'
 
@@ -85,4 +86,13 @@ test('directory durability follows platform file-system capabilities', () => {
   assert.equal(supportsDirectorySync('win32'), false)
   assert.equal(supportsDirectorySync('linux'), true)
   assert.equal(supportsDirectorySync('darwin'), true)
+})
+
+test('existing files use the Windows replacement fallback only for compatible rename errors', () => {
+  const error = code => Object.assign(new Error(code), { code })
+  assert.equal(isWindowsReplaceError(error('EPERM'), true, 'win32'), true)
+  assert.equal(isWindowsReplaceError(error('EEXIST'), true, 'win32'), true)
+  assert.equal(isWindowsReplaceError(error('EPERM'), false, 'win32'), false)
+  assert.equal(isWindowsReplaceError(error('EPERM'), true, 'linux'), false)
+  assert.equal(isWindowsReplaceError(error('EACCES'), true, 'win32'), false)
 })

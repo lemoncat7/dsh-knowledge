@@ -204,13 +204,31 @@ async function atomicWrite(target: string, content: string, replace: boolean): P
       }
       await unlink(target)
     }
-    await rename(temporary, target)
+    await replaceWithTemporary(temporary, target, replace)
     await syncParentDirectory(target)
   } finally {
     await unlink(temporary).catch(error => {
       if (!isNodeError(error, 'ENOENT')) throw error
     })
   }
+}
+
+async function replaceWithTemporary(temporary: string, target: string, replace: boolean): Promise<void> {
+  try {
+    await rename(temporary, target)
+  } catch (error) {
+    if (!isWindowsReplaceError(error, replace, process.platform)) throw error
+    await unlink(target).catch(unlinkError => {
+      if (!isNodeError(unlinkError, 'ENOENT')) throw unlinkError
+    })
+    await rename(temporary, target)
+  }
+}
+
+export function isWindowsReplaceError(error: unknown, replace: boolean, platform: NodeJS.Platform): boolean {
+  return replace
+    && platform === 'win32'
+    && (isNodeError(error, 'EPERM') || isNodeError(error, 'EEXIST'))
 }
 
 async function syncFile(path: string): Promise<void> {
