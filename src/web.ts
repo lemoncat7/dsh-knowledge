@@ -10,6 +10,7 @@ interface Asset {
 
 const STATIC_ASSETS = new Map<string, Asset>([
   ['app.js', loadAsset('../web/app.js', 'text/javascript; charset=utf-8')],
+  ['markdown-preview.js', loadAsset('../web/markdown-preview.js', 'text/javascript; charset=utf-8')],
   ['styles.css', loadAsset('../web/styles.css', 'text/css; charset=utf-8')],
 ])
 const ASSET_VERSION = createHash('sha256')

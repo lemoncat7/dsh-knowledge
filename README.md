@@ -30,7 +30,7 @@
 - DSH“设置 → 插件”提供“知识库连接”卡片，可选择本地来源或填写中央服务地址和只写客户端令牌，保存后实时验证并切换 Provider。
 - Bearer Token 仅保存 SHA-256 摘要，支持 `read / propose / write / admin` 权限及吊销。
 - 认证 HTTP API，可作为其他 DSH 客户端和未来桌面端的中央知识库。
-- 笔记软件式双栏文档界面：左侧以“知识库 → 文档”树形目录浏览和新建，右侧直接编辑标题、Markdown 正文、类型和标签。
+- 笔记软件式双栏文档界面：左侧以“知识库 → 文档”树形目录浏览和新建，右侧支持 Markdown 编辑与安全预览；已有文档默认预览，新建文档默认编辑。
 - 每个生效主题对应一篇真实 Markdown 文档；相似知识作为章节或增量内容写入同一文档。创建、改名、保存、归档和删除会同步 SQLite、全文索引、版本历史与物理文件。
 - 知识库管理拆分为“知识库”和“项目与会话挂载”两个工作区；支持按名称、描述、标签和模型即时搜索，避免知识库较多时逐张翻找。
 - 随插件安装的响应式 Web 管理台，覆盖概览、文档树与编辑器、AI 候选审核和客户端令牌管理。
@@ -54,13 +54,13 @@ dsh plugin --profile web add @lemoncat7/dsh-knowledge@next
 需要固定本次预览版本时：
 
 ```bash
-dsh plugin --profile web add @lemoncat7/dsh-knowledge@0.8.0-alpha.8
+dsh plugin --profile web add @lemoncat7/dsh-knowledge@0.8.0-alpha.10
 ```
 
 也可以从 [GitHub Releases](https://github.com/lemoncat7/dsh-knowledge/releases) 下载对应版本的完整预构建包后安装：
 
 ```bash
-dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.8.0-alpha.8.tgz
+dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.8.0-alpha.10.tgz
 ```
 
 卸载：
@@ -141,7 +141,7 @@ pnpm dsh web
 - 创建和编辑多个知识库，管理默认标签与提取要求。
 - 在知识库页切换全局“严谨 / 主动”回写策略。
 - 管理当前项目挂载和会话覆盖，设定召回、写入模式与标签范围。
-- 在左侧知识目录中搜索、新建和切换文档，并在右侧编辑器中直接保存 Markdown 内容。
+- 在左侧知识目录中搜索、新建和切换文档，在右侧进行 Markdown 编辑与安全预览；文档区域随窗口自适应，窄屏时知识目录切换为抽屉。
 - 查看 AI 提取依据，直接通过、编辑后通过或拒绝候选。
 - 创建、查看和撤销客户端令牌；新令牌原文只显示一次。
 

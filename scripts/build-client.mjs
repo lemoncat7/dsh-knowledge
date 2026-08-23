@@ -26,3 +26,14 @@ await build({
     js: 'return module.exports; } });',
   },
 })
+
+await build({
+  entryPoints: ['src/web-markdown-preview.ts'],
+  outfile: 'web/markdown-preview.js',
+  bundle: true,
+  format: 'iife',
+  globalName: 'DshKnowledgeMarkdown',
+  platform: 'browser',
+  target: 'es2022',
+  minify: true,
+})

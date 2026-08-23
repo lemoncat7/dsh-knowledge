@@ -52,6 +52,8 @@ const state = {
   documents: [],
   documentView: {
     knowledgeBaseId: '', documentId: '', query: '',
+    mode: 'preview',
+    treeOpen: false,
     sidebarHidden: savedDocumentLayout.sidebarHidden,
     sidebarWidth: savedDocumentLayout.sidebarWidth,
     expandedBases: new Set(),
@@ -409,6 +411,7 @@ function selectDefaultDocument() {
 
 async function loadDocumentEditor(id) {
   const entry = await api(`entries/${encodeURIComponent(id)}`)
+  state.documentView.mode = 'preview'
   state.documentView.editor = {
     ...entry,
     tagsText: entry.tags.join(', '),
@@ -424,6 +427,8 @@ function createBlankDocument(baseId) {
   const view = state.documentView
   view.knowledgeBaseId = base.id
   view.documentId = ''
+  view.mode = 'edit'
+  view.treeOpen = false
   view.expandedBases.add(base.id)
   view.editor = {
     id: '', knowledgeBaseId: base.id, title: '', body: '', type: 'fact', tags: [], tagsText: '',
@@ -445,6 +450,7 @@ async function selectDocument(id) {
   const emptyDraft = editor?.isNew && !editor.title.trim() && !editor.body.trim()
   if (editor?.dirty && !emptyDraft && !await saveDocumentEditor()) return
   state.documentView.documentId = id
+  state.documentView.treeOpen = false
   await loadDocumentEditor(id)
   renderShell()
 }
@@ -538,6 +544,10 @@ function renderShell() {
         element('div', { class: 'topbar-title' },
           actionButton('☰', () => { state.menuOpen = !state.menuOpen; renderShell() }, 'ghost mobile-menu', { 'aria-label': '打开导航菜单' }),
           paneToggleButton('main', !state.documentView.sidebarHidden, () => setSidebarHidden(!state.documentView.sidebarHidden), '主导航栏'),
+          state.view === 'entries' ? paneToggleButton('library', state.documentView.treeOpen, () => {
+            state.documentView.treeOpen = !state.documentView.treeOpen
+            renderShell()
+          }, '知识目录') : null,
           element('div', {}, element('h1', {}, title), element('p', {}, subtitle)),
         ),
       ),
@@ -1036,7 +1046,10 @@ function renderEntries() {
       ) : null,
     )
   })
-  return element('section', { class: 'note-workspace', 'aria-labelledby': 'documents-heading' },
+  return element('section', {
+    class: 'note-workspace', 'aria-labelledby': 'documents-heading',
+    'data-tree-open': String(view.treeOpen),
+  },
     element('aside', { class: 'note-tree-panel', 'aria-label': '知识目录' },
       element('header', { class: 'note-tree-header' },
         element('div', {}, element('h2', { id: 'documents-heading' }, '知识目录'), element('span', {}, `${state.documents.length} 篇文档`)),
@@ -1046,6 +1059,10 @@ function renderEntries() {
       element('nav', { class: 'note-tree', 'data-scroll-key': 'note-tree' }, tree.length ? tree : element('div', { class: 'note-tree-empty' }, '还没有知识库')),
       element('footer', { class: 'note-tree-footer' }, actionButton('新建知识库', () => openKnowledgeBaseEditor(), 'ghost small')),
     ),
+    view.treeOpen ? element('button', {
+      type: 'button', class: 'note-tree-scrim', 'aria-label': '关闭知识目录',
+      onClick: () => { view.treeOpen = false; renderShell() },
+    }) : null,
     renderNoteEditor(view.editor, selectedBase),
   )
 }
@@ -1079,7 +1096,8 @@ function renderNoteEditor(editor, base) {
     onInput: event => { update('body', event.target.value); resizeDocumentEditor(event.target) }, onKeyDown: saveShortcut,
   })
   body.value = editor.body
-  window.requestAnimationFrame(() => resizeDocumentEditor(body))
+  const mode = state.documentView.mode === 'edit' ? 'edit' : 'preview'
+  if (mode === 'edit') window.requestAnimationFrame(() => resizeDocumentEditor(body))
   return element('main', { class: 'note-editor', 'aria-label': '文档编辑器' },
     element('header', { class: 'note-editor-toolbar' },
       element('div', { class: 'note-breadcrumb' },
@@ -1087,18 +1105,25 @@ function renderNoteEditor(editor, base) {
         element('span', { 'aria-hidden': 'true' }, '/'),
         element('strong', {}, editor.isNew ? '新文档' : state.documents.find(item => item.id === editor.id)?.relPath || editor.title)),
       element('div', { class: 'note-editor-actions' },
+        element('div', { class: 'note-mode-switch', role: 'tablist', 'aria-label': '文档视图' }, [
+          ['edit', '编辑'],
+          ['preview', '预览'],
+        ].map(([value, label]) => element('button', {
+          type: 'button', role: 'tab', 'aria-selected': String(mode === value),
+          onClick: () => switchDocumentMode(value),
+        }, label))),
         element('span', { class: 'editor-save-status', role: 'status' }, editor.saveState),
         !editor.isNew ? actionButton('删除', () => confirmDeleteDocument(editor), 'ghost small') : null,
         actionButton(editor.isNew ? '创建文档' : '保存', () => { void saveDocumentEditor().then(saved => { if (saved) renderShell() }) }, 'primary small'),
       ),
     ),
     element('div', { class: 'note-editor-scroll', 'data-scroll-key': 'note-editor' },
-      element('article', { class: 'note-paper' },
-        title,
+      element('article', { class: `note-paper is-${mode}`, 'data-document-mode': mode },
+        mode === 'edit' ? title : element('h1', { class: 'note-preview-title' }, editor.title || '无标题文档'),
         element('div', { class: 'note-document-meta' },
           element('span', {}, editor.isNew ? '尚未保存' : `更新于 ${formatDate(editor.updatedAt)}`),
           element('span', {}, editor.scope.kind === 'global' ? '全局知识' : `项目 · ${editor.scope.id}`)),
-        body,
+        mode === 'edit' ? body : renderMarkdownPreview(editor.body),
       ),
     ),
     element('footer', { class: 'note-inspector' },
@@ -1108,9 +1133,23 @@ function renderNoteEditor(editor, base) {
       element('label', { class: 'note-tags-field' }, element('span', {}, '标签'), element('input', {
         value: editor.tagsText, placeholder: '用逗号分隔', onInput: event => update('tagsText', event.target.value),
       })),
-      element('span', { class: 'note-format-hint' }, 'Markdown · Ctrl/⌘ S 保存'),
+      element('span', { class: 'note-format-hint' }, mode === 'edit' ? 'Markdown · Ctrl/⌘ S 保存' : 'Markdown 预览'),
     ),
   )
+}
+
+function switchDocumentMode(mode) {
+  if (mode !== 'edit' && mode !== 'preview') return
+  state.documentView.mode = mode
+  renderShell()
+  if (mode === 'edit') window.requestAnimationFrame(() => document.querySelector('.note-body-editor')?.focus())
+}
+
+function renderMarkdownPreview(markdown) {
+  if (!markdown.trim()) return element('div', { class: 'markdown-preview is-empty', role: 'document' }, '暂无正文')
+  const preview = element('div', { class: 'markdown-preview', role: 'document' })
+  preview.innerHTML = window.DshKnowledgeMarkdown.renderMarkdown(markdown)
+  return preview
 }
 
 function resizeDocumentEditor(editor) {
