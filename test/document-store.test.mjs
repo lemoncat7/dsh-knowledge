@@ -10,6 +10,7 @@ import {
 import {
   KNOWLEDGE_BASE_MANIFEST,
   KnowledgeDocumentStore,
+  supportsDirectorySync,
 } from '../lib/documents/store.js'
 
 const base = {
@@ -78,4 +79,10 @@ test('document parser rejects malformed metadata and store blocks path traversal
   assert.throws(() => parseKnowledgeMarkdown('# no front matter'), /front matter/)
   assert.throws(() => parseKnowledgeMarkdown('---\nid: x\ntype: fact\nscope:\n  kind: global\n---\n\n# Empty'), /body cannot be empty/)
   await assert.rejects(() => store.readDocument(directory, '../outside.md'), /escapes/)
+})
+
+test('directory durability follows platform file-system capabilities', () => {
+  assert.equal(supportsDirectorySync('win32'), false)
+  assert.equal(supportsDirectorySync('linux'), true)
+  assert.equal(supportsDirectorySync('darwin'), true)
 })

@@ -92,6 +92,7 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(styles, /\.note-tree-panel/)
   assert.match(styles, /\.note-editor/)
   assert.match(styles, /writeback-policy-option\[aria-checked="true"\]/)
+  assert.match(styles, /grid-template-columns: subgrid/)
   const shellSource = application.slice(application.indexOf('function renderShell()'), application.indexOf('function renderSidebar()'))
   assert.doesNotMatch(shellSource, /新建知识库|新建知识/)
   const sidebarSource = application.slice(application.indexOf('function renderSidebar()'), application.indexOf('function renderCurrentView()'))

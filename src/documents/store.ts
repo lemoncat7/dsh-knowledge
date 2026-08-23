@@ -193,8 +193,7 @@ async function atomicWrite(target: string, content: string, replace: boolean): P
   const temporary = join(dirname(target), `.${basename(target)}.${randomUUID()}.tmp`)
   try {
     await writeFile(temporary, content, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
-    const handle = await open(temporary, 'r')
-    try { await handle.sync() } finally { await handle.close() }
+    await syncFile(temporary)
     if (!replace) {
       try {
         const targetHandle = await open(target, 'wx', 0o600)
@@ -206,13 +205,31 @@ async function atomicWrite(target: string, content: string, replace: boolean): P
       await unlink(target)
     }
     await rename(temporary, target)
-    const directoryHandle = await open(dirname(target), 'r')
-    try { await directoryHandle.sync() } finally { await directoryHandle.close() }
+    await syncParentDirectory(target)
   } finally {
     await unlink(temporary).catch(error => {
       if (!isNodeError(error, 'ENOENT')) throw error
     })
   }
+}
+
+async function syncFile(path: string): Promise<void> {
+  // Windows requires a writable handle for FlushFileBuffers, which backs
+  // FileHandle.sync(). POSIX accepts this mode as well.
+  const handle = await open(path, 'r+')
+  try { await handle.sync() } finally { await handle.close() }
+}
+
+async function syncParentDirectory(target: string): Promise<void> {
+  // Windows does not expose directory handles that Node can fsync. The file
+  // itself has already been flushed before the atomic rename.
+  if (!supportsDirectorySync(process.platform)) return
+  const handle = await open(dirname(target), 'r')
+  try { await handle.sync() } finally { await handle.close() }
+}
+
+export function supportsDirectorySync(platform: NodeJS.Platform): boolean {
+  return platform !== 'win32'
 }
 
 async function collectMarkdownFiles(root: string): Promise<string[]> {
