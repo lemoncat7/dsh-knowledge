@@ -81,32 +81,6 @@
   line-height: 16px;
 }
 
-.dsh-knowledge-workspace-close {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-height: 32px;
-  padding: 5px 10px;
-  border: 1px solid var(--dsw-alias-divider-primary, rgba(128, 128, 128, .18));
-  border-radius: 9px;
-  background: var(--dsw-alias-bg-layer-1, transparent);
-  color: var(--dsw-alias-label-primary);
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-}
-
-.dsh-knowledge-workspace-close:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-
-.dsh-knowledge-workspace-close:focus-visible {
-  outline: 2px solid var(--dsw-alias-interactive-primary, #335cff);
-  outline-offset: 2px;
-}
-
 .dsh-knowledge-frame {
   flex: 1;
   width: 100%;

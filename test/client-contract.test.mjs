@@ -14,5 +14,6 @@ test('browser integration is type-checked against the official DSH client contra
   assert.match(source, /ClientContext.*@deepseek-ai\/dsh-client-runtime\/client/)
   assert.match(source, /PropsRuntime.*@deepseek-ai\/dsh-client-ui-slots/)
   assert.match(source, /type ConversationSlotProps = PropsRuntime<'conversation'>/)
+  assert.doesNotMatch(source, /dsh-knowledge-workspace-close/)
   assert.doesNotMatch(source, /interface\s+(?:ClientContext|SlotService)\b/)
 })

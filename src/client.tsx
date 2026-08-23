@@ -6,7 +6,6 @@ import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import {
-  IconCloseOutline16,
   IconDataOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import cssText from './client.css'
@@ -80,7 +79,7 @@ function createKnowledgeWorkspaceController(client: ClientContext): KnowledgeWor
     toggle: () => {
       if (disposeWorkspace !== undefined) return close()
       const dispose = client.slots.register({ name: 'conversation', priority: -1 }, props => (
-        <KnowledgeWorkspace {...props} client={client} onClose={close} />
+        <KnowledgeWorkspace {...props} client={client} />
       ))
       disposeWorkspace = dispose
       notify()
@@ -311,8 +310,7 @@ function KnowledgeWorkspace({
   sessionId,
   useSessions,
   client,
-  onClose,
-}: ConversationSlotProps & { client: ClientContext; onClose: () => void }) {
+}: ConversationSlotProps & { client: ClientContext }) {
   const [panelState, setPanelState] = useState<'loading' | 'ready' | 'unavailable' | 'error'>('loading')
   const [managementPath, setManagementPath] = useState<string>()
   const [panelError, setPanelError] = useState('')
@@ -382,10 +380,6 @@ function KnowledgeWorkspace({
           <h2 id="dsh-knowledge-workspace-title">知识库</h2>
           <p>文档、审核、挂载与访问管理</p>
         </div>
-        <button type="button" className="dsh-knowledge-workspace-close" onClick={onClose}>
-          <IconCloseOutline16 size={16} />
-          <span>返回对话</span>
-        </button>
       </header>
       {panelState === 'ready' && knowledgeUrl !== undefined
         ? <iframe ref={frame} className="dsh-knowledge-frame" src={knowledgeUrl} title="知识库管理台" onLoad={sendTheme} />
