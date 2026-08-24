@@ -74,8 +74,10 @@ let scrollRestoreFrame = 0
 
 function installHostThemeBridge() {
   if (window.parent === window) return
+  const parentOrigin = referrerOrigin()
   window.addEventListener('message', event => {
-    if (event.source !== window.parent || event.origin !== window.location.origin) return
+    if (event.source !== window.parent) return
+    if (parentOrigin && event.origin !== parentOrigin) return
     const message = event.data
     if (!message || message.type !== HOST_THEME_MESSAGE || message.version !== HOST_THEME_PROTOCOL_VERSION) return
     if (message.colorScheme !== 'light' && message.colorScheme !== 'dark') return
@@ -97,7 +99,17 @@ function installHostThemeBridge() {
   window.parent.postMessage({
     type: HOST_THEME_READY_MESSAGE,
     version: HOST_THEME_PROTOCOL_VERSION,
-  }, window.location.origin)
+  }, parentOrigin || '*')
+}
+
+function referrerOrigin() {
+  if (!document.referrer) return ''
+  try {
+    const origin = new URL(document.referrer).origin
+    return origin === 'null' ? '' : origin
+  } catch {
+    return ''
+  }
 }
 
 function readDocumentLayout() {

@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { createHash } from 'node:crypto'
+import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { RuntimeContextLike } from './runtime.js'
 
@@ -24,6 +24,7 @@ export function registerKnowledgeWeb(
   webPath: string,
   apiPrefix: string,
   authMode: 'bearer' | 'same-origin' = 'bearer',
+  embedToken?: string,
 ): () => void {
   const webServer = ctx.webServer ?? ctx.get('webServer') as RuntimeContextLike['webServer']
   if (webServer === undefined) throw new Error('exposeWeb requires the DSH webServer service')
@@ -35,11 +36,17 @@ export function registerKnowledgeWeb(
   return webServer.register({
     kind: 'prefix',
     path: webPath,
-    handler: (req, res) => serveWeb(req, res, webPath, index),
+    handler: (req, res) => serveWeb(req, res, webPath, index, embedToken),
   })
 }
 
-function serveWeb(req: IncomingMessage, res: ServerResponse, webPath: string, index: Buffer): void {
+function serveWeb(
+  req: IncomingMessage,
+  res: ServerResponse,
+  webPath: string,
+  index: Buffer,
+  embedToken?: string,
+): void {
   const method = req.method ?? 'GET'
   if (method !== 'GET' && method !== 'HEAD') {
     res.writeHead(405, { allow: 'GET, HEAD', ...securityHeaders() })
@@ -49,7 +56,8 @@ function serveWeb(req: IncomingMessage, res: ServerResponse, webPath: string, in
   const pathname = new URL(req.url ?? '/', 'http://knowledge.local').pathname
   const relative = pathname.slice(webPath.length).replace(/^\/+|\/+$/g, '')
   if (relative.length === 0) {
-    sendAsset(res, method, { body: index, contentType: 'text/html; charset=utf-8' })
+    const embedded = embedToken !== undefined && hasValidEmbedToken(req.url, embedToken)
+    sendAsset(res, method, { body: index, contentType: 'text/html; charset=utf-8' }, embedded)
     return
   }
   const asset = STATIC_ASSETS.get(relative)
@@ -61,9 +69,9 @@ function serveWeb(req: IncomingMessage, res: ServerResponse, webPath: string, in
   sendAsset(res, method, asset)
 }
 
-function sendAsset(res: ServerResponse, method: string, asset: Asset): void {
+function sendAsset(res: ServerResponse, method: string, asset: Asset, embedded = false): void {
   res.writeHead(200, {
-    ...securityHeaders(),
+    ...securityHeaders(embedded),
     'content-type': asset.contentType,
     'content-length': asset.body.byteLength,
     'cache-control': asset.contentType.startsWith('text/html') ? 'no-store' : 'public, max-age=31536000, immutable',
@@ -71,14 +79,23 @@ function sendAsset(res: ServerResponse, method: string, asset: Asset): void {
   res.end(method === 'HEAD' ? undefined : asset.body)
 }
 
-function securityHeaders(): Record<string, string> {
+function securityHeaders(embedded = false): Record<string, string> {
+  const policy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"
   return {
-    'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'",
+    'content-security-policy': embedded ? policy : `${policy}; frame-ancestors 'self'`,
     'referrer-policy': 'no-referrer',
     'x-content-type-options': 'nosniff',
-    'x-frame-options': 'SAMEORIGIN',
+    ...embedded ? {} : { 'x-frame-options': 'SAMEORIGIN' },
     'cross-origin-opener-policy': 'same-origin',
   }
+}
+
+function hasValidEmbedToken(rawUrl: string | undefined, expected: string): boolean {
+  const supplied = new URL(rawUrl ?? '/', 'http://knowledge.local').searchParams.get('embed')
+  if (supplied === null) return false
+  const suppliedBytes = Buffer.from(supplied)
+  const expectedBytes = Buffer.from(expected)
+  return suppliedBytes.byteLength === expectedBytes.byteLength && timingSafeEqual(suppliedBytes, expectedBytes)
 }
 
 function loadAsset(path: string, contentType: string): Asset {

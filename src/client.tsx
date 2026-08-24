@@ -343,10 +343,15 @@ function KnowledgeWorkspace({
   }, [loadManagement])
 
   const sendTheme = useCallback((): void => {
-    const target = frame.current?.contentWindow
-    if (target === undefined || target === null) return
+    const currentFrame = frame.current
+    if (currentFrame === null) return
+    const target = currentFrame.contentWindow
+    if (target === null) return
     const computed = getComputedStyle(document.body)
-    target.postMessage(createKnowledgeHostTheme(computed, client.theme.getTheme()), window.location.origin)
+    target.postMessage(
+      createKnowledgeHostTheme(computed, client.theme.getTheme()),
+      frameOrigin(currentFrame) ?? '*',
+    )
   }, [client])
 
   const scheduleTheme = useCallback((): void => {
@@ -360,7 +365,10 @@ function KnowledgeWorkspace({
   useEffect(() => {
     const off = client.on('theme/change', scheduleTheme)
     const onMessage = (event: MessageEvent): void => {
-      if (event.origin !== window.location.origin || event.source !== frame.current?.contentWindow) return
+      const currentFrame = frame.current
+      if (event.source !== currentFrame?.contentWindow) return
+      const expectedOrigin = frameOrigin(currentFrame)
+      if (expectedOrigin !== undefined && event.origin !== expectedOrigin) return
       const data = event.data as { type?: unknown; version?: unknown } | null
       if (data?.type === KNOWLEDGE_THEME_READY_MESSAGE && data.version === KNOWLEDGE_THEME_PROTOCOL_VERSION) sendTheme()
     }
@@ -404,7 +412,16 @@ function knowledgePanelUrl(managementPath: string, sessionId?: string, projectId
   if (sessionId !== undefined) params.set('sessionId', sessionId)
   if (projectId !== undefined) params.set('projectId', projectId)
   const query = params.toString()
-  return query.length === 0 ? managementPath : `${managementPath}?${query}`
+  return query.length === 0 ? managementPath : `${managementPath}${managementPath.includes('?') ? '&' : '?'}${query}`
+}
+
+function frameOrigin(frame: HTMLIFrameElement): string | undefined {
+  try {
+    const origin = new URL(frame.src).origin
+    return origin === 'null' ? undefined : origin
+  } catch {
+    return undefined
+  }
 }
 
 function installStyles(): () => void {

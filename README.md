@@ -48,13 +48,13 @@ dsh plugin --profile web add @lemoncat7/dsh-knowledge
 需要固定本次正式版本时：
 
 ```bash
-dsh plugin --profile web add @lemoncat7/dsh-knowledge@1.0.0
+dsh plugin --profile web add @lemoncat7/dsh-knowledge@1.0.1
 ```
 
 也可以从 [GitHub Releases](https://github.com/lemoncat7/dsh-knowledge/releases) 下载对应版本的完整预构建包后安装：
 
 ```bash
-dsh plugin --profile web add ./lemoncat7-dsh-knowledge-1.0.0.tgz
+dsh plugin --profile web add ./lemoncat7-dsh-knowledge-1.0.1.tgz
 ```
 
 卸载：

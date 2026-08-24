@@ -81,6 +81,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
 
   const coordinator = new ExtractionCoordinator(runtime, provider, resolved)
   const handleCodec = new KnowledgeHandleCodec(randomBytes(32))
+  const managementEmbedToken = randomBytes(32).toString('base64url')
   registerKnowledgeRecall(runtime, provider, resolved, handleCodec)
   registerKnowledgeCatalog(runtime, provider, resolved)
   registerKnowledgeTools(runtime, provider, handleCodec)
@@ -179,7 +180,13 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
     httpRuntime.effect(() => () => { disposeManagementApi?.() }, 'dsh-knowledge.management-api')
 
     if (resolved.exposeWeb) {
-      const disposeWeb = registerKnowledgeWeb(httpRuntime, resolved.webPath, LOCAL_MANAGEMENT_API_PREFIX, 'same-origin')
+      const disposeWeb = registerKnowledgeWeb(
+        httpRuntime,
+        resolved.webPath,
+        LOCAL_MANAGEMENT_API_PREFIX,
+        'same-origin',
+        managementEmbedToken,
+      )
       httpRuntime.effect(() => disposeWeb, 'dsh-knowledge.web')
     }
 
@@ -191,7 +198,9 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
       canSwitchRemote: () => !publicApiEnabled,
       writable: resolved.connectionPath !== undefined,
       managementAvailable: () => resolved.exposeWeb && (activeConnection.backend === 'remote' || managementProvider !== undefined),
-      ...resolved.exposeWeb ? { managementPath: resolved.webPath } : {},
+      ...resolved.exposeWeb
+        ? { managementPath: `${resolved.webPath}?embed=${encodeURIComponent(managementEmbedToken)}` }
+        : {},
       update: updateConnection,
     })
     httpRuntime.effect(() => disposeControl, 'dsh-knowledge.connection-control')

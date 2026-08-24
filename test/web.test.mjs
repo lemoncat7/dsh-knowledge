@@ -14,7 +14,7 @@ test('management console serves a secured same-origin application', async (t) =>
     },
     get() { return undefined },
   }
-  const dispose = registerKnowledgeWeb(ctx, '/knowledge', '/knowledge-local/v1', 'same-origin')
+  const dispose = registerKnowledgeWeb(ctx, '/knowledge', '/knowledge-local/v1', 'same-origin', 'desktop-embed-token')
   assert.equal(route.kind, 'prefix')
   assert.equal(route.path, '/knowledge')
   const server = createServer((req, res) => void route.handler(req, res))
@@ -85,7 +85,7 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(application, /data-scroll-key/)
   assert.match(application, /host-theme-ready/)
   assert.match(application, /event\.source !== window\.parent/)
-  assert.match(application, /event\.origin !== window\.location\.origin/)
+  assert.match(application, /parentOrigin && event\.origin !== parentOrigin/)
   assert.match(application, /CSS\.supports\('color'/)
   assert.match(application, /root\.style\.colorScheme/)
 
@@ -119,6 +119,16 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(markdownPreview.headers.get('content-type'), /text\/javascript/)
   assert.equal(markdownPreview.headers.get('cache-control'), 'public, max-age=31536000, immutable')
   assert.match(await markdownPreview.text(), /DshKnowledgeMarkdown/)
+
+  const embedded = await fetch(`${base}/knowledge?embed=desktop-embed-token`)
+  assert.equal(embedded.status, 200)
+  assert.equal(embedded.headers.get('x-frame-options'), null)
+  assert.doesNotMatch(embedded.headers.get('content-security-policy'), /frame-ancestors/)
+
+  const invalidEmbed = await fetch(`${base}/knowledge?embed=wrong-token`)
+  assert.equal(invalidEmbed.status, 200)
+  assert.equal(invalidEmbed.headers.get('x-frame-options'), 'SAMEORIGIN')
+  assert.match(invalidEmbed.headers.get('content-security-policy'), /frame-ancestors 'self'/)
 
   const missing = await fetch(`${base}/knowledge/not-found.js`)
   assert.equal(missing.status, 404)
