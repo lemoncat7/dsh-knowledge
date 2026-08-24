@@ -5,6 +5,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import {
   IconDataOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -61,6 +62,28 @@ export function apply(ctx: ClientContext): void {
     name: 'settings.plugin.item',
     key: KNOWLEDGE_SETTINGS_NAMESPACE,
   }, KnowledgeConnectionCard))
+
+  ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
+    name: 'conversation.chat.turnTail',
+    select: owner => ({ turn: owner.turn.turn }),
+  }, props => <KnowledgeWritebackStatus sessionId={String(props.sessionId)} turn={props.matched.turn} />))
+}
+
+function KnowledgeWritebackStatus({ sessionId, turn }: { sessionId: string; turn: number }) {
+  const [summary, setSummary] = useState<string>()
+  useEffect(() => {
+    const controller = new AbortController()
+    void fetch(`/knowledge-control/v1/writeback-status?sessionId=${encodeURIComponent(sessionId)}&turn=${turn}`, {
+      headers: { accept: 'application/json' }, signal: controller.signal,
+    }).then(async response => response.ok ? response.json() as Promise<{ summary?: string }> : undefined)
+      .then(value => { if (value?.summary) setSummary(value.summary) })
+      .catch(() => {})
+    return () => { controller.abort() }
+  }, [sessionId, turn])
+  if (summary === undefined) return null
+  return <div className="dsh-knowledge-writeback-status">
+    <span>上下文注入</span><strong>dsh-knowledge</strong><span>{summary}</span>
+  </div>
 }
 
 function createKnowledgeWorkspaceController(client: ClientContext): KnowledgeWorkspaceController {

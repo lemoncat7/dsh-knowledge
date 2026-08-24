@@ -19,7 +19,6 @@ export interface SessionLike {
   id: string
   header: { cwd?: string }
   events: readonly SessionEventLike[]
-  append?(type: 'user/message', data: MessageLike, options: { surfaceOp: 'append' }): SessionEventLike
 }
 
 export interface AgentLike {
@@ -148,15 +147,5 @@ export function createRecallMessage(text: string): MessageLike {
     role: 'user',
     content: [{ type: 'text', text }],
     source: { kind: 'plugin', plugin: 'dsh-knowledge', form: 'recall' },
-  }
-}
-
-export function createWritebackMessage(summary: string): MessageLike {
-  const bounded = summary.trim().slice(0, 120)
-  return {
-    id: randomUUID(),
-    role: 'user',
-    content: [{ type: 'text', text: bounded }],
-    source: { kind: 'plugin', plugin: 'dsh-knowledge', form: 'notice', summary: bounded },
   }
 }

@@ -78,8 +78,8 @@ An active content hash unique index blocks byte-equivalent duplicate knowledge. 
 8. One bounded model call decides destination relevance and extracts strict document-mutation JSON together. It returns a stable `documentTitle`, optional `sectionTitle`, Markdown body and an existing `targetId` whenever relevant. This avoids a second routing-model call and prevents an overly conservative first gate from discarding valid destination-specific knowledge.
 9. Runtime validation rejects unknown destinations, non-durable retention, types, targets, arbitrary project IDs and malformed output. It then coalesces same-base, same-scope and same-title mutations into one document proposal, merging sections, tags and provenance. Ambiguous proposals that point at different existing documents become conflicts instead of silently choosing a target.
 10. Audit mounts keep valid proposals pending. Direct mounts automatically write high-confidence non-conflicting candidates; lower-confidence and conflicting candidates go to audit instead. Both direct write and audit approval reconcile against current documents again, atomically skipping duplicates, merging compatible same-topic content with a new version, and protecting possible contradictions from overwrite.
-11. A persistent DSH notice reports per-base direct and pending counts below the answer; failures produce a retryable failure notice.
-12. Before every later model request, plugin notices and prior recall snapshots are removed from the final request message list. Extraction snapshots also accept only direct user messages. Notices remain durable UI feedback but never consume or influence model context.
+11. Per-base direct and pending counts are written to the service log and exposed through the completed-turn UI extension. The plugin never appends a synthetic `user/message`, so write-back cannot change model context, the conversation tail, or branching semantics.
+12. Before every later model request, legacy plugin notices and prior recall snapshots are removed from the final request message list. Extraction snapshots accept only direct user messages.
 
 The extractor explicitly refuses secrets and ephemeral output in its system policy. Conflicts always remain behind human review, including on direct-write mounts.
 
@@ -98,7 +98,7 @@ Recall combines bounded automatic retrieval with model-driven tools:
 
 Only active entries from recall-enabled resolved mounts are searchable. Each stage re-resolves live mounts, and search/read enforce include/exclude tags and project scope. Exact project entries rank before global entries. Automatic snapshots are partial reference data and are removed before later steps; full document content enters the request only through `knowledge_read`.
 
-The prompt catalog is also the write-back contract. It names writable mounts and the authoritative conservative/proactive policy without injecting document bodies. This lets the main model call `knowledge_write` while source-search evidence is still in its current turn. The completed-turn extractor remains a bounded fallback and receives canonical source URLs present in the final answer, but never raw tool output or prior plugin notices.
+The prompt catalog is also the write-back contract. It names writable mounts without injecting document bodies. The main model may call `knowledge_write` only when the current direct user message explicitly requests persistence. Every ordinary answer is handled by the bounded completed-turn extractor, which receives canonical source URLs present in the final answer but never raw tool output or prior plugin notices.
 
 ## Local and remote topology
 

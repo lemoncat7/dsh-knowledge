@@ -22,7 +22,7 @@ import { KnowledgeProviderRouter } from './provider-router.js'
 import { registerKnowledgeCatalog, registerKnowledgeRecall } from './recall.js'
 import { KnowledgeHandleCodec } from './retrieval.js'
 import { RemoteKnowledgeProvider, RemoteProviderError } from './remote-provider.js'
-import { createWritebackMessage, type RuntimeContextLike } from './runtime.js'
+import type { RuntimeContextLike } from './runtime.js'
 import { loadServiceSettings, serviceSettingsPath, storeServiceSettings } from './service-settings.js'
 import { registerKnowledgeTools } from './tools.js'
 import { registerKnowledgeWeb } from './web.js'
@@ -80,6 +80,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   let activeConnection = initialConnection
 
   const coordinator = new ExtractionCoordinator(runtime, provider, resolved)
+  const writebackStatuses = new Map<string, string>()
   const handleCodec = new KnowledgeHandleCodec(randomBytes(32))
   const managementEmbedToken = randomBytes(32).toString('base64url')
   registerKnowledgeRecall(runtime, provider, resolved, handleCodec)
@@ -204,6 +205,25 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
       update: updateConnection,
     })
     httpRuntime.effect(() => disposeControl, 'dsh-knowledge.connection-control')
+
+    const disposeWritebackStatus = httpRuntime.webServer?.register({
+      kind: 'exact',
+      path: '/knowledge-control/v1/writeback-status',
+      handler(req, res) {
+        if (req.method !== 'GET') {
+          res.writeHead(405, { allow: 'GET' }).end()
+          return
+        }
+        const url = new URL(req.url ?? '/', 'http://localhost')
+        const key = `${url.searchParams.get('sessionId') ?? ''}:${url.searchParams.get('turn') ?? ''}`
+        const summary = writebackStatuses.get(key)
+        res.writeHead(summary === undefined ? 404 : 200, {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'no-store',
+        }).end(JSON.stringify(summary === undefined ? { status: 'missing' } : { status: 'completed', summary }))
+      },
+    })
+    if (disposeWritebackStatus !== undefined) httpRuntime.effect(() => disposeWritebackStatus, 'dsh-knowledge.writeback-status')
   }
 
   if (runtime.inject !== undefined) {
@@ -216,7 +236,6 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
 
   if (resolved.extractionEnabled) {
     runtime.on('agent/turn-stopping', async ({ agent, turn, signal }) => {
-      if (agent.session.append === undefined) throw new Error('synchronous knowledge writeback requires Session.append')
       let summary: string
       try {
         const result = await coordinator.run(agent.session, turn, signal)
@@ -236,7 +255,9 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
           ? '知识库回写 · 失败：提取结果超过模型输出上限'
           : '知识库回写 · 失败，可稍后重试'
       }
-      agent.session.append('user/message', createWritebackMessage(summary), { surfaceOp: 'append' })
+      writebackStatuses.set(`${agent.session.id}:${turn}`, summary)
+      if (writebackStatuses.size > 1000) writebackStatuses.delete(writebackStatuses.keys().next().value as string)
+      runtime.logger.info(`dsh-knowledge: ${summary}`)
     })
   }
 

@@ -22,7 +22,7 @@
 - 全局与项目范围，以及偏好、事实、决策、流程、经验五类知识。
 - SQLite WAL、FTS5 全文搜索、原子事务、完整版本历史和幂等提取任务。
 - 回答前通过 DSH 官方提示组装接口提供有界的挂载库地图，并自动召回最多 3 条达到相关性门槛的摘要；不自动注入完整文档。模型可继续按“`knowledge_base_search` 找库 → `knowledge_search` 搜索指定库 → `knowledge_read` 读取文档”的顺序核对完整内容。
-- 可写挂载同时向模型声明 `knowledge_write`：更新已有知识必须使用搜索得到的签名 handle，新建知识必须指定当前可写挂载；工具内部完成本地/远程路由，并沿用审核、直写、去重、合并和冲突保护。
+- 可写挂载同时向模型声明 `knowledge_write`，但仅响应用户当前轮明确提出的知识库写入要求；普通回答在完整结束后自动提取，不在正文中叙述回写，也不追加伪用户消息。更新已有知识必须使用搜索得到的签名 handle，新建知识必须指定当前可写挂载；工具内部完成本地/远程路由，并沿用审核、直写、去重、合并和冲突保护。
 - 用户明确要求时，模型可调用 `knowledge_base_create` 和 `knowledge_base_update` 创建或修改知识库；工具内部跟随当前 Provider 自动写入本地 SQLite 或远程中央服务，模型不传也不猜存储位置。
 - 创建或修改工具不会自动挂载知识库，也不会回退、双写或同步到另一端；结果会明确返回实际写入的 `local` 或 `remote`。
 - 搜索和读取由服务端按当前会话挂载、项目范围及包含/排除标签强制限权，读取句柄带签名且仅限当前会话。
@@ -48,13 +48,13 @@ dsh plugin --profile web add @lemoncat7/dsh-knowledge
 需要固定本次正式版本时：
 
 ```bash
-dsh plugin --profile web add @lemoncat7/dsh-knowledge@1.0.1
+dsh plugin --profile web add @lemoncat7/dsh-knowledge@1.0.2
 ```
 
 也可以从 [GitHub Releases](https://github.com/lemoncat7/dsh-knowledge/releases) 下载对应版本的完整预构建包后安装：
 
 ```bash
-dsh plugin --profile web add ./lemoncat7-dsh-knowledge-1.0.1.tgz
+dsh plugin --profile web add ./lemoncat7-dsh-knowledge-1.0.2.tgz
 ```
 
 卸载：
@@ -139,7 +139,7 @@ pnpm dsh web
 - 查看 AI 提取依据，直接通过、编辑后通过或拒绝候选。
 - 创建、查看和撤销客户端令牌；新令牌原文只显示一次。
 
-知识库的 `description` 同时用于读取和回写路由：它以轻量目录形式告诉模型每个挂载库覆盖什么主题，`knowledge_base_search` 也用它匹配当前信息需求；文档正文不会随目录注入。主模型可以在掌握本轮工具结果时调用 `knowledge_write`，回答结束后的单次严格提取则作为自动兜底，同时判断长期价值、目标知识库、重复/更新/冲突。挂载只表示“可选”，不代表每次回答都要写入。`extractionInstructions` 用于匹配后继续限定具体收录规则。
+知识库的 `description` 同时用于读取和回写路由：它以轻量目录形式告诉模型每个挂载库覆盖什么主题，`knowledge_base_search` 也用它匹配当前信息需求；文档正文不会随目录注入。仅当用户当前轮明确要求写入知识库时，主模型才可调用 `knowledge_write`。其他回答统一在完整结束后进行一次严格提取，同时判断长期价值、目标知识库、重复、更新与冲突。挂载只表示“可选”，不代表每次回答都要写入。`extractionInstructions` 用于匹配后继续限定具体收录规则。
 
 创建示例：
 

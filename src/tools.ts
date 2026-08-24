@@ -45,7 +45,7 @@ export function registerKnowledgeTools(
 function writeTool(provider: KnowledgeProvider, codec: KnowledgeHandleCodec): ToolDefinitionLike {
   return {
     name: 'knowledge_write',
-    description: 'Persist durable knowledge as a topic document in a writable knowledge base mounted in THIS session. Related findings belong in sections of the same document, never one document per fact. Search first and pass the matching document handle; send only new Markdown material, never a rewritten full document. Create only when no related document exists, using a stable subject title and an exact mounted base id or name. The tool enforces scope, routes to the active local or remote provider, and applies audit, deduplication, merge, version, and conflict policy.',
+    description: 'Use ONLY when the current direct user message explicitly asks to save, remember, record, or write content into a knowledge base. Normal durable findings are handled automatically after the answer and MUST NOT trigger this tool. Persist explicit requests as topic documents in a writable mounted base. Search first and pass the matching document handle; send only new Markdown material.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -64,6 +64,9 @@ function writeTool(provider: KnowledgeProvider, codec: KnowledgeHandleCodec): To
     isConcurrencySafe: () => false,
     async execute(raw: unknown, exec: ToolRunContextLike): Promise<string> {
       const agent = requireAgent(exec)
+      if (!currentUserExplicitlyRequestsKnowledgeWrite(agent)) {
+        throw new Error('knowledge_write requires an explicit knowledge-base write request in the current user message; normal answers are written back automatically after completion')
+      }
       const args = asRecord(raw)
       const content = requireNonEmptyString(args.content, 'content', 50_000)
       const handle = optionalString(args.handle, 'handle', 4096)
@@ -131,6 +134,29 @@ function writeTool(provider: KnowledgeProvider, codec: KnowledgeHandleCodec): To
       }, null, 2)
     },
   }
+}
+
+function currentUserExplicitlyRequestsKnowledgeWrite(agent: AgentLike): boolean {
+  let turnStart = -1
+  for (let index = agent.session.events.length - 1; index >= 0; index -= 1) {
+    if (agent.session.events[index]?.type === 'turn/start') { turnStart = index; break }
+  }
+  const text = agent.session.events.slice(turnStart + 1)
+    .filter(event => event.type === 'user/message')
+    .map(event => event.data as unknown as { source?: { kind?: string }; content?: Array<{ type?: string; text?: string }> })
+    .filter(message => message.source?.kind === 'user')
+    .flatMap(message => message.content ?? [])
+    .filter(block => block.type === 'text' && typeof block.text === 'string')
+    .map(block => block.text)
+    .join('\n')
+    .normalize('NFKC')
+    .toLocaleLowerCase('zh-CN')
+  if (text.length === 0) return false
+  if (/(?:不要|别|无需|不需要|禁止|取消).{0,12}(?:写入|回写|存入|保存|收录|记录|记住|加入|添加|沉淀).{0,12}知识库/iu.test(text)) return false
+  if (/(?:do\s+not|don't|never|no\s+need\s+to).{0,24}(?:write|save|store|record|remember|add|persist).{0,24}(?:knowledge|memory)/iu.test(text)) return false
+  return /(?:请|麻烦|帮我|把|将).{0,80}(?:写入|回写|存入|保存到|保存进|收录到|记录到|记到|加入|添加到|沉淀到).{0,40}知识库/iu.test(text)
+    || /(?:请|麻烦|帮我).{0,20}(?:记住|记下来|记录下来|保存下来)(?:这|该|上述|以上|当前|刚才|它|内容|结论|信息)/iu.test(text)
+    || /(?:please\s+)?(?:write|save|store|record|remember|add|persist).{0,60}(?:to|in|into)?\s*(?:the\s+)?(?:knowledge\s*(?:base|store)|memory)/iu.test(text)
 }
 
 function searchKnowledgeBaseTool(provider: KnowledgeProvider): ToolDefinitionLike {

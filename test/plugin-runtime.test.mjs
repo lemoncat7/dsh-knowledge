@@ -4,18 +4,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { apply, LocalKnowledgeProvider } from '../lib/index.js'
-import { createWritebackMessage } from '../lib/runtime.js'
-
-test('message IDs do not depend on the ambient global crypto object', () => {
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto')
-  Object.defineProperty(globalThis, 'crypto', { configurable: true, value: {} })
-  try {
-    assert.match(createWritebackMessage('test').id, /^[0-9a-f-]{36}$/)
-  } finally {
-    if (descriptor === undefined) delete globalThis.crypto
-    else Object.defineProperty(globalThis, 'crypto', descriptor)
-  }
-})
 
 test('plugin gates completed-turn extraction and keeps knowledge surface messages out of model input', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-knowledge-runtime-'))
@@ -124,9 +112,8 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
   assert.equal(job?.status, 'completed')
   const pending = await observer.listCandidates('pending', 10)
   assert.equal(pending.length, 6)
-  assert.equal(session.events.at(-1).data.source.form, 'notice')
-  assert.match(session.events.at(-1).data.source.summary, /待审 6/)
-  const writebackNotice = session.events.at(-1).data
+  assert.equal(session.events.at(-1).type, 'assistant/message')
+  const writebackNotice = staleNotice
   assert.deepEqual(extractionRequests.map(request => [request.provider, request.model]).sort(), [
     ['kimi', 'kimi-k2.7-code'], ['mock', 'extractor'],
   ])
@@ -323,7 +310,7 @@ test('conservative write-back accepts durable source-backed GitHub research with
   assert.match(entries[0].body, /## 风险与结论/)
   assert.deepEqual(entries[0].tags, ['dsh', 'github', 'license', '结论', '维护状态', '风险'])
   assert.equal((await observer.listDocuments('default')).length, 1)
-  assert.match(session.events.at(-1).data.source.summary, /直写 1/)
+  assert.equal(session.events.at(-1).type, 'assistant/message')
 })
 
 test('knowledge_write uses the active mounted provider and preserves merge and scope policy', async (t) => {
@@ -356,7 +343,12 @@ test('knowledge_write uses the active mounted provider and preserves merge and s
     targetKind: 'project', targetId: '/workspace/github', knowledgeBaseId: 'default',
     enabled: true, recallEnabled: true, writeMode: 'direct', includeTags: ['github'], excludeTags: ['temporary'], extractionInstructions: '',
   })
-  const session = { id: 'tool-session', header: { cwd: '/workspace/github' }, events: [{ type: 'turn/start', seq: 0, data: { turn: 3 } }] }
+  const session = { id: 'tool-session', header: { cwd: '/workspace/github' }, events: [
+    { type: 'turn/start', seq: 0, data: { turn: 3 } },
+    { type: 'user/message', seq: 1, data: {
+      id: 'explicit-write', role: 'user', content: [{ type: 'text', text: '请把这项内容写入知识库。' }], source: { kind: 'user' },
+    } },
+  ] }
   const exec = { agent: { session }, signal: new AbortController().signal }
   const created = JSON.parse(await tools.get('knowledge_write').execute({
     base: 'GitHub 项目收藏', title: 'example/repository', type: 'fact', scope: 'project',
@@ -383,6 +375,35 @@ test('knowledge_write uses the active mounted provider and preserves merge and s
     tools.get('knowledge_write').execute({ base: 'not-mounted', title: 'x', type: 'fact', content: 'x' }, exec),
     /not mounted for write-back/,
   )
+
+  session.events.push(
+    { type: 'turn/start', seq: session.events.length, data: { turn: 4 } },
+    { type: 'user/message', seq: session.events.length + 1, data: {
+      id: 'normal-request', role: 'user', content: [{ type: 'text', text: '继续分析这个仓库的问题。' }], source: { kind: 'user' },
+    } },
+  )
+  await assert.rejects(
+    tools.get('knowledge_write').execute({
+      base: 'GitHub 项目收藏', title: 'forbidden/automatic-write', type: 'fact',
+      content: '普通回答中的内容不允许由主模型在回答过程中主动写入知识库。',
+    }, exec),
+    /requires an explicit knowledge-base write request/,
+  )
+
+  session.events.push(
+    { type: 'turn/start', seq: session.events.length, data: { turn: 5 } },
+    { type: 'user/message', seq: session.events.length + 1, data: {
+      id: 'negative-write', role: 'user', content: [{ type: 'text', text: '这次不要写入知识库，只回答问题。' }], source: { kind: 'user' },
+    } },
+  )
+  await assert.rejects(
+    tools.get('knowledge_write').execute({
+      base: 'GitHub 项目收藏', title: 'forbidden/negative-write', type: 'fact',
+      content: '用户明确禁止写入时，知识库工具必须拒绝执行。',
+    }, exec),
+    /requires an explicit knowledge-base write request/,
+  )
+
 })
 
 test('direct write approves all non-conflicts and skips unmounted sessions', async (t) => {
@@ -474,7 +495,7 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
   const unmounted = sessionFor('unmounted', 1)
   await listeners.get('agent/turn-stopping')({ agent: { session: unmounted }, turn: 1, signal: new AbortController().signal })
   assert.equal(streamCalls, 0)
-  assert.match(unmounted.events.at(-1).data.source.summary, /未挂载/)
+  assert.equal(unmounted.events.at(-1).type, 'assistant/message')
 
   const observer = new LocalKnowledgeProvider(databasePath)
   t.after(() => observer.close())
@@ -501,6 +522,5 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
   assert.ok(pending.some(candidate => candidate.action === 'conflict'))
   assert.ok(pending.some(candidate => candidate.draft.source?.evidence === 'inferred'))
   assert.equal((await observer.list({ status: 'active', limit: 10 })).items.length, 2)
-  assert.match(direct.events.at(-1).data.source.summary, /直写 1/)
-  assert.match(direct.events.at(-1).data.source.summary, /待审 2/)
+  assert.equal(direct.events.at(-1).type, 'assistant/message')
 })

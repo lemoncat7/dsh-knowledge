@@ -284,3 +284,17 @@
   .dsh-knowledge-source-picker,
   .dsh-knowledge-remote-fields { grid-template-columns: 1fr; }
 }
+
+.dsh-knowledge-writeback-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--dsw-alias-label-tertiary, #6b7280);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.dsh-knowledge-writeback-status strong {
+  color: var(--dsw-alias-label-secondary, #374151);
+  font-weight: 600;
+}

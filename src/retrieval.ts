@@ -165,14 +165,15 @@ export function formatMountCatalog(
     output += [
       '',
       'Write-back protocol:',
-      '1. Use knowledge_write for durable, reusable knowledge that clearly matches a writable mounted base; never use generic file tools.',
-      '2. Knowledge is document-oriented: related findings about one subject belong in sections of the same topic document, never one document per fact.',
-      '3. Search first and pass the signed handle when adding to an existing document. Create only when no related document exists; use a stable subject title and one exact writable base id or name.',
-      '4. Send only new Markdown sections or paragraphs. The knowledge service owns deduplication, merging, conflict protection, audit placement, versions, and local/remote routing.',
-      '5. Never write secrets, credentials, transient task status, routine narration, generic background knowledge, or unsupported speculation.',
+      '1. Automatic write-back runs only after the completed answer. Do not call knowledge_write merely because the answer contains durable knowledge.',
+      '2. Call knowledge_write only when the current direct user message explicitly asks to save, remember, record, or write something into the knowledge base. Never mention automatic write-back in the answer.',
+      '3. Knowledge is document-oriented: related findings about one subject belong in sections of the same topic document, never one document per fact.',
+      '4. Search first and pass the signed handle when adding to an existing document. Create only when no related document exists; use a stable subject title and one exact writable base id or name.',
+      '5. Send only new Markdown sections or paragraphs. The knowledge service owns deduplication, merging, conflict protection, audit placement, versions, and local/remote routing.',
+      '6. Never write secrets, credentials, transient task status, routine narration, generic background knowledge, or unsupported speculation.',
       writebackPolicy === 'conservative'
-        ? '6. Policy CONSERVATIVE: write rarely. A user-requested memory or a concrete source-backed result directly covered by the base may qualify; marginal suggestions do not.'
-        : '6. Policy PROACTIVE: capture clearly useful durable conclusions, while still skipping noise, uncertainty, and already-recorded material.',
+        ? '7. Policy CONSERVATIVE applies to the post-answer extractor; explicit tool writes still require a direct user request.'
+        : '7. Policy PROACTIVE applies to the post-answer extractor; explicit tool writes still require a direct user request.',
     ].join('\n')
   } else {
     output += '\n\nWrite-back is disabled for every mounted base in this session.'
