@@ -45,22 +45,16 @@
 dsh plugin --profile web add @lemoncat7/dsh-knowledge
 ```
 
-安装包含文档型知识库、主题聚合和新管理界面的 `0.8` 预览版：
+需要固定本次正式版本时：
 
 ```bash
-dsh plugin --profile web add @lemoncat7/dsh-knowledge@next
-```
-
-需要固定本次预览版本时：
-
-```bash
-dsh plugin --profile web add @lemoncat7/dsh-knowledge@0.8.0-alpha.10
+dsh plugin --profile web add @lemoncat7/dsh-knowledge@1.0.0
 ```
 
 也可以从 [GitHub Releases](https://github.com/lemoncat7/dsh-knowledge/releases) 下载对应版本的完整预构建包后安装：
 
 ```bash
-dsh plugin --profile web add ./lemoncat7-dsh-knowledge-0.8.0-alpha.10.tgz
+dsh plugin --profile web add ./lemoncat7-dsh-knowledge-1.0.0.tgz
 ```
 
 卸载：
