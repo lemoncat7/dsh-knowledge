@@ -172,6 +172,16 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     return this.request<KnowledgeEntry>(`entries/${encodeURIComponent(id)}`, { method: 'PUT', body: { draft }, signal })
   }
 
+  async finalize(id: string, state: 'resolved' | 'complete', note?: string, signal?: AbortSignal): Promise<KnowledgeEntry> {
+    return this.request<KnowledgeEntry>(`documents/${encodeURIComponent(id)}/finalize`, {
+      method: 'POST', body: { state, ...note === undefined ? {} : { note } }, signal,
+    })
+  }
+
+  async reopen(id: string, signal?: AbortSignal): Promise<KnowledgeEntry> {
+    return this.request<KnowledgeEntry>(`documents/${encodeURIComponent(id)}/reopen`, { method: 'POST', signal })
+  }
+
   async archive(id: string, signal?: AbortSignal): Promise<KnowledgeEntry> {
     return this.request<KnowledgeEntry>(`entries/${encodeURIComponent(id)}/archive`, { method: 'POST', signal })
   }
@@ -209,6 +219,10 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     await this.request<unknown>(`extraction-jobs/${encodeURIComponent(sourceKey)}/fail`, { method: 'POST', body: { error }, signal })
   }
 
+  async resetExtraction(sourceKey: string, signal?: AbortSignal): Promise<void> {
+    await this.request<unknown>(`extraction-jobs/${encodeURIComponent(sourceKey)}/reset`, { method: 'POST', signal })
+  }
+
   async extractionJob(sourceKey: string, signal?: AbortSignal): Promise<ExtractionJobRecord | undefined> {
     try {
       return await this.request<ExtractionJobRecord>(`extraction-jobs/${encodeURIComponent(sourceKey)}`, { signal })
@@ -244,9 +258,10 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     const text = await response.text()
     const payload = text.length === 0 ? undefined : safeJson(text)
     if (!response.ok) {
-      const message = isRecord(payload) && typeof payload.error === 'string'
-        ? payload.error
-        : `knowledge server returned HTTP ${response.status}`
+      const detail = remoteErrorDetail(payload, text)
+      const message = detail === undefined
+        ? `knowledge server returned HTTP ${response.status} for ${path}`
+        : `knowledge server rejected ${path}: ${detail}`
       throw new RemoteProviderError(message, response.status)
     }
     return payload as T
@@ -270,4 +285,14 @@ function safeJson(text: string): unknown {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function remoteErrorDetail(payload: unknown, text: string): string | undefined {
+  if (isRecord(payload)) {
+    if (typeof payload.error === 'string') return payload.error
+    if (isRecord(payload.error) && typeof payload.error.message === 'string') return payload.error.message
+    if (typeof payload.message === 'string') return payload.message
+  }
+  const compact = text.replace(/\s+/g, ' ').trim()
+  return compact.length === 0 ? undefined : compact.slice(0, 500)
 }

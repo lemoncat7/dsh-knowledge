@@ -3,8 +3,9 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 test('browser integration is type-checked against the official DSH client contract', async () => {
-  const [source, tsconfigText] = await Promise.all([
+  const [source, css, tsconfigText] = await Promise.all([
     readFile(new URL('../src/client.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/client.css', import.meta.url), 'utf8'),
     readFile(new URL('../tsconfig.json', import.meta.url), 'utf8'),
   ])
   const tsconfig = JSON.parse(tsconfigText)
@@ -15,5 +16,7 @@ test('browser integration is type-checked against the official DSH client contra
   assert.match(source, /PropsRuntime.*@deepseek-ai\/dsh-client-ui-slots/)
   assert.match(source, /type ConversationSlotProps = PropsRuntime<'conversation'>/)
   assert.doesNotMatch(source, /dsh-knowledge-workspace-close/)
+  assert.match(css, /\.dsh-knowledge-workspace-header \[data-xiaohei-workspace-close\]/)
+  assert.match(css, /--knowledge-pane: var\(--xiaohei-plugin-pane-fill, var\(--dsw-alias-bg-base/)
   assert.doesNotMatch(source, /interface\s+(?:ClientContext|SlotService)\b/)
 })

@@ -23,10 +23,10 @@ interface ComputedStyleLike {
 }
 
 const TOKEN_SOURCES = {
-  '--bg': ['--dsw-alias-bg-layer-1', '--dsw-alias-bg-base'],
-  '--surface': ['--dsw-alias-bg-layer-2', '--dsw-alias-bg-layer-1'],
-  '--surface-raised': ['--dsw-alias-bg-layer-3', '--dsw-alias-bg-overlay', '--dsw-alias-bg-layer-2'],
-  '--surface-soft': ['--dsw-alias-bg-module-platform', '--dsw-alias-bg-layer-3', '--dsw-alias-bg-layer-2'],
+  '--bg': ['--xiaohei-plugin-workspace-fill', '--dsw-alias-bg-layer-1', '--dsw-alias-bg-base'],
+  '--surface': ['--xiaohei-plugin-pane-fill', '--dsw-alias-bg-layer-2', '--dsw-alias-bg-layer-1'],
+  '--surface-raised': ['--xiaohei-plugin-raised-fill', '--dsw-alias-bg-layer-3', '--dsw-alias-bg-overlay', '--dsw-alias-bg-layer-2'],
+  '--surface-soft': ['--xiaohei-plugin-control-fill', '--dsw-alias-bg-module-platform', '--dsw-alias-bg-layer-3', '--dsw-alias-bg-layer-2'],
   '--surface-hover': ['--dsw-alias-interactive-bg-hover', '--dsw-alias-bg-layer-3'],
   '--text': ['--dsw-alias-label-primary'],
   '--text-secondary': ['--dsw-alias-label-secondary', '--dsw-alias-label-primary-dimmed'],

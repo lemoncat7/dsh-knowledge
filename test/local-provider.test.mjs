@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { access, mkdtemp, rm } from 'node:fs/promises'
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -200,7 +200,11 @@ test('audit approval merges a same-topic candidate into its document', async (t)
     },
     reason: '新增内容可能改变原有兼容性结论。',
   }, 'audit-document-conflict:1')
-  await provider.review(conflictCandidate.id, { decision: 'approve' })
+  await assert.rejects(
+    () => provider.review(conflictCandidate.id, { decision: 'approve' }),
+    /explicit merge resolution/,
+  )
+  await provider.review(conflictCandidate.id, { decision: 'approve', resolution: 'merge' })
   const resolved = await provider.get(existing.id)
   assert.equal(resolved?.version, 3)
   assert.match(resolved?.body || '', /## 仓库/)
@@ -229,6 +233,38 @@ test('audit approval merges a same-topic candidate into its document', async (t)
   assert.match(afterRestart?.body || '', /## 兼容性风险/)
   assert.equal((await reopened.search({ text: '旧版配置兼容性风险', limit: 10 }))[0]?.entry.id, existing.id)
   assert.equal((await reopened.listDocuments('default')).length, 1)
+})
+
+test('concurrent review treats distinct document sections as compatible additions', async (t) => {
+  const provider = await fixture(t)
+  const existing = await provider.create({
+    knowledgeBaseId: 'default', title: '项目排查记录', body: '## 基础信息\n\n当前服务使用版本 1.0。',
+    type: 'fact', tags: ['项目'], scope: { kind: 'global' }, confidence: .9,
+  })
+  const first = await provider.propose({
+    action: 'update', targetId: existing.id,
+    draft: {
+      knowledgeBaseId: 'default', title: '项目排查记录', body: '## 变更记录\n\n提交 123 增加了配置同步。',
+      type: 'fact', tags: ['变更'], scope: { kind: 'global' }, confidence: .94,
+    },
+    reason: '追加变更记录。',
+  }, 'concurrent-section:1')
+  const second = await provider.propose({
+    action: 'update', targetId: existing.id,
+    draft: {
+      knowledgeBaseId: 'default', title: '项目排查记录', body: '## 排查结论\n\n测试 8 项均已通过。',
+      type: 'fact', tags: ['结论'], scope: { kind: 'global' }, confidence: .95,
+    },
+    reason: '追加排查结论。',
+  }, 'concurrent-section:2')
+
+  assert.equal((await provider.review(first.id, { decision: 'approve' })).status, 'approved')
+  const reviewed = await provider.review(second.id, { decision: 'approve' })
+  assert.equal(reviewed.status, 'approved')
+  assert.equal(reviewed.action, 'update')
+  const result = await provider.get(existing.id)
+  assert.match(result?.body || '', /提交 123/)
+  assert.match(result?.body || '', /测试 8 项/)
 })
 
 test('search scores exact topic matches above incidental term matches', async (t) => {
@@ -283,6 +319,54 @@ test('each active entry is persisted as one editable Markdown document', async (
 
   await provider.archive(entry.id)
   assert.deepEqual(await provider.listDocuments('default'), [])
+})
+
+test('finalized documents remain recallable but reject every content mutation until reopened', async (t) => {
+  const provider = await fixture(t)
+  const entry = await provider.create({
+    ...globalDraft,
+    title: 'Closed incident investigation',
+    body: 'The incident root cause was confirmed and the production fix was verified.',
+  })
+
+  const finalized = await provider.finalize(entry.id, 'resolved', 'Production verification passed; incident closed.')
+  assert.equal(finalized.documentState, 'resolved')
+  assert.equal(finalized.finalizationNote, 'Production verification passed; incident closed.')
+  assert.ok(finalized.finalizedAt)
+  assert.equal((await provider.search({ text: 'incident root cause', limit: 10 }))[0]?.entry.id, entry.id)
+
+  const document = (await provider.listDocuments('default'))[0]
+  assert.equal(document?.documentState, 'resolved')
+  assert.equal(document?.finalizationNote, 'Production verification passed; incident closed.')
+  const markdown = await readFile(join(provider.fixtureRoot, 'documents', 'base-default', document.relPath), 'utf8')
+  assert.match(markdown, /documentState: resolved/)
+  assert.match(markdown, /finalizationNote: Production verification passed; incident closed\./)
+
+  await assert.rejects(
+    () => provider.update(entry.id, { ...globalDraft, title: entry.title, body: 'Attempted edit.' }),
+    /is finalized as resolved/,
+  )
+  await assert.rejects(
+    () => provider.propose({
+      action: 'update', targetId: entry.id,
+      draft: { ...globalDraft, title: entry.title, body: 'Attempted candidate update.' },
+      reason: 'Must not modify finalized knowledge.',
+    }),
+    /is finalized as resolved/,
+  )
+  const direct = await provider.writeDirect({
+    action: 'create',
+    draft: { ...globalDraft, title: entry.title, body: 'New material for the same finalized topic.' },
+    reason: 'Must be skipped because the topic is finalized.',
+  })
+  assert.equal(direct.outcome, 'finalized')
+  assert.equal(direct.entry?.id, entry.id)
+
+  const reopened = await provider.reopen(entry.id)
+  assert.equal(reopened.documentState, 'open')
+  assert.equal(reopened.finalizedAt, undefined)
+  const updated = await provider.update(entry.id, { ...globalDraft, title: entry.title, body: 'Editing is allowed after reopening.' })
+  assert.match(updated.body, /allowed after reopening/)
 })
 
 test('knowledge bases mount by project and session with session overrides', async (t) => {

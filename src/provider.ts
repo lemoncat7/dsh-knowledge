@@ -53,6 +53,8 @@ export interface KnowledgeProvider {
   versions(id: string, signal?: AbortSignal): Promise<KnowledgeVersion[]>
   create(draft: KnowledgeDraft, signal?: AbortSignal): Promise<KnowledgeEntry>
   update(id: string, draft: KnowledgeDraft, signal?: AbortSignal): Promise<KnowledgeEntry>
+  finalize(id: string, state: 'resolved' | 'complete', note?: string, signal?: AbortSignal): Promise<KnowledgeEntry>
+  reopen(id: string, signal?: AbortSignal): Promise<KnowledgeEntry>
   archive(id: string, signal?: AbortSignal): Promise<KnowledgeEntry>
   delete(id: string, signal?: AbortSignal): Promise<void>
   propose(proposal: CandidateProposal, sourceKey?: string, signal?: AbortSignal): Promise<KnowledgeCandidate>
@@ -62,6 +64,7 @@ export interface KnowledgeProvider {
   claimExtraction(sourceKey: string, signal?: AbortSignal): Promise<boolean>
   completeExtraction(sourceKey: string, candidateCount: number, signal?: AbortSignal): Promise<void>
   failExtraction(sourceKey: string, error: string, signal?: AbortSignal): Promise<void>
+  resetExtraction(sourceKey: string, signal?: AbortSignal): Promise<void>
   extractionJob(sourceKey: string, signal?: AbortSignal): Promise<ExtractionJobRecord | undefined>
   close(): Promise<void>
 }

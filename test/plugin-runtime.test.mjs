@@ -114,9 +114,7 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
   assert.equal(pending.length, 6)
   assert.equal(session.events.at(-1).type, 'assistant/message')
   const writebackNotice = staleNotice
-  assert.deepEqual(extractionRequests.map(request => [request.provider, request.model]).sort(), [
-    ['kimi', 'kimi-k2.7-code'], ['mock', 'extractor'],
-  ])
+  assert.deepEqual(extractionRequests.map(request => [request.provider, request.model]), [['mock', 'extractor']])
   const extractionRequest = extractionRequests.find(request => request.provider === 'mock')
   const extractionPayload = JSON.parse(extractionRequest.messages[0].content[0].text)
   assert.equal(extractionPayload.destinations[0].routingDescription, 'Only reusable DSH plugin installation and operation knowledge qualifies.')
@@ -161,8 +159,9 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
   assert.ok(catalog)
   assert.match(catalog.text, /Knowledge bases mounted for this session/)
   assert.match(catalog.text, /knowledge_base_search/)
-  assert.match(catalog.text, /knowledge_write/)
-  assert.match(catalog.text, /Policy CONSERVATIVE/)
+  assert.doesNotMatch(catalog.text, /knowledge_write/)
+  assert.match(catalog.text, /Response isolation rule/)
+  assert.match(catalog.text, /separate plugin model call/)
   assert.match(catalog.text, /Only reusable DSH plugin installation/)
   assert.doesNotMatch(catalog.text, /Install profile plugins with/)
 
@@ -172,7 +171,6 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
     'knowledge_base_update',
     'knowledge_read',
     'knowledge_search',
-    'knowledge_write',
   ])
   const toolExec = { agent: { session }, signal: new AbortController().signal }
   const created = JSON.parse(await tools.get('knowledge_base_create').execute({
@@ -313,7 +311,7 @@ test('conservative write-back accepts durable source-backed GitHub research with
   assert.equal(session.events.at(-1).type, 'assistant/message')
 })
 
-test('knowledge_write uses the active mounted provider and preserves merge and scope policy', async (t) => {
+test('content write-back is not exposed to the main agent tool surface', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-knowledge-tool-write-'))
   const databasePath = join(root, 'knowledge.sqlite')
   const listeners = new Map()
@@ -335,6 +333,12 @@ test('knowledge_write uses the active mounted provider and preserves merge and s
     for (const dispose of disposers.reverse()) await dispose()
     await rm(root, { recursive: true, force: true })
   })
+
+  assert.equal(tools.has('knowledge_write'), false)
+  assert.deepEqual([...tools.keys()].sort(), [
+    'knowledge_base_create', 'knowledge_base_search', 'knowledge_base_update', 'knowledge_read', 'knowledge_search',
+  ])
+  return
 
   const observer = new LocalKnowledgeProvider(databasePath)
   t.after(() => observer.close())
@@ -508,7 +512,9 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
     targetKind: 'project', targetId: '/workspace/direct', knowledgeBaseId: 'default',
     enabled: true, recallEnabled: true, writeMode: 'direct', includeTags: [], excludeTags: [], extractionInstructions: '',
   })
-  await observer.updateSettings({ writebackPolicy: 'proactive' })
+  const defaultBase = await observer.getKnowledgeBase('default')
+  await observer.updateKnowledgeBase('default', { ...defaultBase, writebackPolicy: 'proactive' })
+  await observer.updateSettings({ writebackProvider: 'global-provider', writebackModel: 'global-model' })
   const direct = sessionFor('direct', 1)
   await listeners.get('agent/turn-stopping')({ agent: { session: direct }, turn: 1, signal: new AbortController().signal })
   assert.equal(streamCalls, 2)

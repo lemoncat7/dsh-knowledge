@@ -35,7 +35,7 @@ test('remote provider interoperates with the authenticated local API', async (t)
   })
 
   const health = await fetch(`http://127.0.0.1:${address.port}/knowledge-api/v1/health`).then(response => response.json())
-  assert.deepEqual(health, { ok: true, service: 'dsh-knowledge', schemaVersion: 6 })
+  assert.deepEqual(health, { ok: true, service: 'dsh-knowledge', schemaVersion: 9 })
 
   assert.equal((await remote.getSettings()).writebackPolicy, 'conservative')
   assert.equal((await remote.updateSettings({ writebackPolicy: 'proactive' })).writebackPolicy, 'proactive')
@@ -104,6 +104,20 @@ test('remote provider interoperates with the authenticated local API', async (t)
   assert.match((await remote.get(entry.id))?.body || '', /tokens private/)
   assert.equal((await remote.search({ text: 'authenticated HTTPS tokens private', limit: 5 }))[0]?.entry.id, entry.id)
   assert.equal((await remote.listDocuments('default')).length, 1)
+  const finalized = await remote.finalize(entry.id, 'complete', 'The central-service documentation is complete.')
+  assert.equal(finalized.documentState, 'complete')
+  assert.equal((await remote.getDocument(entry.id))?.documentState, 'complete')
+  await assert.rejects(
+    () => remote.update(entry.id, { ...entry, body: 'Finalized documents cannot be edited.' }),
+    /is finalized as collection complete/,
+  )
+  const finalizedWrite = await remote.writeDirect({
+    action: 'create',
+    draft: { ...entry, body: 'Additional material for the same finalized topic.' },
+    reason: 'Must not modify a finalized document.',
+  })
+  assert.equal(finalizedWrite.outcome, 'finalized')
+  assert.equal((await remote.reopen(entry.id)).documentState, 'open')
   await assert.rejects(() => remote.deleteKnowledgeBase(base.id), /must be archived/)
   await remote.archiveKnowledgeBase(base.id)
   await remote.deleteKnowledgeBase(base.id)

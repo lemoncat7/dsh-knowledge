@@ -5,6 +5,8 @@ import { dirname } from 'node:path'
 
 export interface KnowledgeServiceSettings {
   publicApiEnabled: boolean
+  writebackProvider?: string
+  writebackModel?: string
 }
 
 export function serviceSettingsPath(connectionPath: string | undefined): string | undefined {
@@ -21,9 +23,13 @@ export function loadServiceSettings(path: string | undefined): KnowledgeServiceS
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('stored knowledge service settings must be a JSON object')
   }
-  const enabled = (value as { publicApiEnabled?: unknown }).publicApiEnabled
+  const stored = value as { publicApiEnabled?: unknown; writebackProvider?: unknown; writebackModel?: unknown }
+  const enabled = stored.publicApiEnabled
   if (typeof enabled !== 'boolean') throw new Error('stored public API setting must be a boolean')
-  return { publicApiEnabled: enabled }
+  const provider = typeof stored.writebackProvider === 'string' ? stored.writebackProvider.trim() : undefined
+  const model = typeof stored.writebackModel === 'string' ? stored.writebackModel.trim() : undefined
+  if ((provider === undefined) !== (model === undefined)) throw new Error('stored client writeback provider and model must be configured together')
+  return { publicApiEnabled: enabled, ...provider && model ? { writebackProvider: provider, writebackModel: model } : {} }
 }
 
 export async function storeServiceSettings(path: string, settings: KnowledgeServiceSettings): Promise<void> {

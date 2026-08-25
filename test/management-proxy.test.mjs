@@ -23,9 +23,18 @@ test('remote management proxy keeps credentials server-side and exposes a synthe
     webServer: { register(route) { handler = route.handler; return () => {} } },
     get() { return undefined },
   }
+  let localRoute = { writebackProvider: 'cli', writebackModel: 'client-model' }
   registerRemoteManagementProxy(ctx, '/knowledge-local/v1', () => ({
     backend: 'remote', remoteUrl, remoteToken: token, remoteTimeoutMs: 5000,
-  }))
+  }), {
+    current: () => localRoute,
+    async update(patch) {
+      localRoute = patch.writebackProvider && patch.writebackModel
+        ? { writebackProvider: patch.writebackProvider, writebackModel: patch.writebackModel }
+        : {}
+      return localRoute
+    },
+  })
   const proxy = createServer((req, res) => void handler(req, res))
   await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve))
   const proxyAddress = proxy.address()
@@ -38,7 +47,21 @@ test('remote management proxy keeps credentials server-side and exposes a synthe
   assert.equal((await fetch(`${base}/stats`)).status, 401)
   const headers = { 'x-dsh-knowledge-client': 'management-web' }
   const service = await (await fetch(`${base}/service`, { headers })).json()
-  assert.deepEqual(service, { publicApiEnabled: true, publicApiPrefix: remoteUrl, remote: true })
+  assert.deepEqual(service, {
+    publicApiEnabled: true, publicApiPrefix: remoteUrl, remote: true,
+    writebackProvider: 'cli', writebackModel: 'client-model',
+  })
+  const updated = await (await fetch(`${base}/service`, {
+    method: 'PUT', headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ writebackProvider: 'local', writebackModel: 'device-model' }),
+  })).json()
+  assert.equal(updated.writebackModel, 'device-model')
+  assert.equal(receivedAuthorization, '')
+  const centralToggle = await fetch(`${base}/service`, {
+    method: 'PUT', headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ publicApiEnabled: false }),
+  })
+  assert.equal(centralToggle.status, 409)
   const stats = await (await fetch(`${base}/stats`, { headers })).json()
   assert.equal(stats.entries.active, 3)
   assert.equal(stats.path, '/knowledge-api/v1/stats')

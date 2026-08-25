@@ -39,7 +39,7 @@ The browser integration is compiled against the exact official client packages u
 - `extraction.ts` snapshots completed turns, resolves writable mounts and validates model JSON fail-closed.
 - `retrieval.ts` owns mounted-scope authorization, signed handles, ranking and bounded rendering shared by proactive and tool-driven retrieval.
 - `recall.ts` owns the official prompt-assembly knowledge map and bounded first-step automatic retrieval. It also removes durable UI notices and prior recall snapshots before later model requests.
-- `tools.ts` registers the tool-first retrieval chain: mounted-base discovery, scoped document search and paginated reading. Every tool resolves authorization from the calling Agent.
+- `tools.ts` registers the tool-first retrieval chain: mounted-base discovery, scoped document search and paginated reading, plus explicit knowledge-base administration. Content write-back is deliberately absent from the main Agent tool surface.
 - `api.ts` is a size-bounded HTTP adapter with two explicit authentication modes: same-origin administration for the embedded console and Bearer capabilities for remote clients.
 - `web.ts` serves a same-origin, CSP-constrained management console from package-owned static assets.
 - `web/` is a dependency-free browser application with a small API/state/view boundary.
@@ -92,13 +92,13 @@ Recall combines bounded automatic retrieval with model-driven tools:
 - `knowledge_base_search` matches the current information need against the names, routing descriptions and tags of recall-enabled mounted bases, returning metadata only;
 - `knowledge_search` requires one exact base returned by the discovery tool and returns ranked snippets with signed handles;
 - `knowledge_read` opens an exact result through a signed, session-bound handle and paginates long documents;
-- `knowledge_write` creates knowledge in one exact writable mounted base or updates the document addressed by a signed search handle; the provider, mount mode and server reconciliation decide the physical destination and outcome;
+- content write-back, including an explicit user request to save knowledge, runs only in the separate completed-turn extractor and never in the main Agent loop;
 - remote retrieval is awaited and cancellation propagates through the current turn signal;
 - greetings and empty input skip automatic retrieval, and search failures fail open so the normal answer can continue.
 
 Only active entries from recall-enabled resolved mounts are searchable. Each stage re-resolves live mounts, and search/read enforce include/exclude tags and project scope. Exact project entries rank before global entries. Automatic snapshots are partial reference data and are removed before later steps; full document content enters the request only through `knowledge_read`.
 
-The prompt catalog is also the write-back contract. It names writable mounts without injecting document bodies. The main model may call `knowledge_write` only when the current direct user message explicitly requests persistence. Every ordinary answer is handled by the bounded completed-turn extractor, which receives canonical source URLs present in the final answer but never raw tool output or prior plugin notices.
+The prompt catalog states a strict response-isolation contract: the main model must never narrate persistence attempts, refusals or results. Every answer, including one that explicitly requests persistence, is handled by the bounded completed-turn extractor, which receives canonical source URLs present in the final answer but never raw tool output or prior plugin notices.
 
 ## Local and remote topology
 

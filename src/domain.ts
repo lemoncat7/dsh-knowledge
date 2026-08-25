@@ -9,6 +9,8 @@ export type KnowledgeScope =
   | { kind: 'project'; id: string }
 
 export type KnowledgeStatus = 'active' | 'archived'
+export const KNOWLEDGE_DOCUMENT_STATES = ['open', 'resolved', 'complete'] as const
+export type KnowledgeDocumentState = typeof KNOWLEDGE_DOCUMENT_STATES[number]
 export type CandidateAction = 'create' | 'update' | 'conflict'
 export type CandidateStatus = 'pending' | 'approved' | 'rejected'
 export type KnowledgeBaseStatus = 'active' | 'archived'
@@ -19,11 +21,15 @@ export type KnowledgeEvidence = 'explicit' | 'verified' | 'inferred'
 
 export interface KnowledgeSettings {
   writebackPolicy: KnowledgeWritebackPolicy
+  writebackProvider?: string
+  writebackModel?: string
   updatedAt: string
 }
 
 export interface KnowledgeSettingsPatch {
-  writebackPolicy: KnowledgeWritebackPolicy
+  writebackPolicy?: KnowledgeWritebackPolicy
+  writebackProvider?: string | null
+  writebackModel?: string | null
 }
 
 export interface KnowledgeBaseDraft {
@@ -31,6 +37,7 @@ export interface KnowledgeBaseDraft {
   description: string
   defaultTags: string[]
   extractionInstructions: string
+  writebackPolicy: KnowledgeWritebackPolicy
   /** Empty means use the model route from the current assistant turn. */
   writebackProvider?: string
   writebackModel?: string
@@ -41,6 +48,7 @@ export interface KnowledgeBasePatch {
   description?: string
   defaultTags?: string[]
   extractionInstructions?: string
+  writebackPolicy?: KnowledgeWritebackPolicy
   writebackProvider?: string | null
   writebackModel?: string | null
 }
@@ -61,6 +69,9 @@ export interface KnowledgeDocument {
   content: string
   entryCount: number
   contentHash: string
+  documentState: KnowledgeDocumentState
+  finalizedAt?: string
+  finalizationNote?: string
   createdAt: string
   updatedAt: string
 }
@@ -120,6 +131,9 @@ export interface KnowledgeDraft {
 export interface KnowledgeEntry extends KnowledgeDraft {
   id: string
   status: KnowledgeStatus
+  documentState: KnowledgeDocumentState
+  finalizedAt?: string
+  finalizationNote?: string
   version: number
   createdAt: string
   updatedAt: string
@@ -129,7 +143,12 @@ export interface KnowledgeVersion {
   id: string
   knowledgeId: string
   version: number
-  snapshot: KnowledgeDraft & { status: KnowledgeStatus }
+  snapshot: KnowledgeDraft & {
+    status: KnowledgeStatus
+    documentState: KnowledgeDocumentState
+    finalizedAt?: string
+    finalizationNote?: string
+  }
   changeKind: 'create' | 'update' | 'archive' | 'restore'
   createdAt: string
 }
@@ -150,7 +169,7 @@ export interface KnowledgeCandidate extends CandidateProposal {
   reviewNote?: string
 }
 
-export type DirectWriteOutcome = 'created' | 'merged' | 'duplicate' | 'conflict'
+export type DirectWriteOutcome = 'created' | 'merged' | 'duplicate' | 'conflict' | 'finalized'
 
 export interface DirectWriteResult {
   outcome: DirectWriteOutcome
@@ -189,6 +208,7 @@ export interface ListResult<T> {
 
 export interface ReviewDecision {
   decision: 'approve' | 'reject'
+  resolution?: 'merge'
   note?: string
   draft?: KnowledgeDraft
 }
@@ -305,6 +325,10 @@ export function normalizeKnowledgeBaseDraft(input: KnowledgeBaseDraft): Knowledg
   const name = input.name.trim()
   const description = input.description.trim()
   const extractionInstructions = input.extractionInstructions.trim()
+  const writebackPolicy = input.writebackPolicy ?? 'conservative'
+  if (writebackPolicy !== 'conservative' && writebackPolicy !== 'proactive') {
+    throw new Error('knowledge base writeback policy must be conservative or proactive')
+  }
   if (name.length === 0 || name.length > 100) throw new Error('knowledge base name must contain 1-100 characters')
   if (description.length > 2000) throw new Error('knowledge base description must contain at most 2000 characters')
   if (extractionInstructions.length > 4000) throw new Error('knowledge base extraction instructions must contain at most 4000 characters')
@@ -324,6 +348,7 @@ export function normalizeKnowledgeBaseDraft(input: KnowledgeBaseDraft): Knowledg
     description,
     defaultTags: normalizeTags(input.defaultTags),
     extractionInstructions,
+    writebackPolicy,
     ...writebackProvider === undefined || writebackModel === undefined
       ? {}
       : { writebackProvider, writebackModel },
@@ -362,8 +387,15 @@ export function isKnowledgeType(value: unknown): value is KnowledgeType {
 }
 
 export function normalizeKnowledgeSettings(input: KnowledgeSettingsPatch): KnowledgeSettingsPatch {
-  if (input.writebackPolicy !== 'conservative' && input.writebackPolicy !== 'proactive') {
+  if (input.writebackPolicy !== undefined && input.writebackPolicy !== 'conservative' && input.writebackPolicy !== 'proactive') {
     throw new Error('knowledge writeback policy must be conservative or proactive')
   }
-  return { writebackPolicy: input.writebackPolicy }
+  const clearRoute = input.writebackProvider === null || input.writebackModel === null
+  const provider = typeof input.writebackProvider === 'string' ? input.writebackProvider.trim() : undefined
+  const model = typeof input.writebackModel === 'string' ? input.writebackModel.trim() : undefined
+  if (!clearRoute && (provider === undefined) !== (model === undefined)) throw new Error('global writeback provider and model must be configured together')
+  return {
+    ...input.writebackPolicy === undefined ? {} : { writebackPolicy: input.writebackPolicy },
+    ...clearRoute ? { writebackProvider: null, writebackModel: null } : provider && model ? { writebackProvider: provider, writebackModel: model } : {},
+  }
 }

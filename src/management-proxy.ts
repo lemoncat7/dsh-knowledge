@@ -9,6 +9,10 @@ export function registerRemoteManagementProxy(
   ctx: RuntimeContextLike,
   prefix: string,
   current: () => KnowledgeConnectionSettings,
+  localService: {
+    current(): { writebackProvider?: string; writebackModel?: string }
+    update(patch: { writebackProvider?: string | null; writebackModel?: string | null }): Promise<{ writebackProvider?: string; writebackModel?: string }>
+  },
 ): () => void {
   const webServer = ctx.webServer ?? ctx.get('webServer') as RuntimeContextLike['webServer']
   if (webServer === undefined) throw new Error('remote knowledge management requires the DSH webServer service')
@@ -16,7 +20,7 @@ export function registerRemoteManagementProxy(
     kind: 'prefix',
     path: prefix,
     handler: async (req, res) => {
-      try { await dispatch(prefix, current(), req, res) } catch (error) { sendError(res, error) }
+      try { await dispatch(prefix, current(), localService, req, res) } catch (error) { sendError(res, error) }
     },
   })
 }
@@ -24,6 +28,10 @@ export function registerRemoteManagementProxy(
 async function dispatch(
   prefix: string,
   settings: KnowledgeConnectionSettings,
+  localService: {
+    current(): { writebackProvider?: string; writebackModel?: string }
+    update(patch: { writebackProvider?: string | null; writebackModel?: string | null }): Promise<{ writebackProvider?: string; writebackModel?: string }>
+  },
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
@@ -35,11 +43,35 @@ async function dispatch(
   const relative = incoming.pathname.slice(prefix.length).replace(/^\/+/, '')
   const method = req.method ?? 'GET'
   if (relative === 'service') {
-    if (method !== 'GET') throw httpError(409, '请在中央 DSH 的知识库管理台中修改远程 API 状态。')
+    if (method === 'GET') {
+      const local = localService.current()
+      return sendJson(res, 200, {
+      publicApiEnabled: true,
+      publicApiPrefix: settings.remoteUrl,
+      remote: true,
+      ...local.writebackProvider && local.writebackModel
+        ? { writebackProvider: local.writebackProvider, writebackModel: local.writebackModel }
+        : {},
+      })
+    }
+    if (method !== 'PUT') throw httpError(405, '不支持此本机设置请求方法。')
+    const body = JSON.parse(await readBody(req) ?? '{}') as Record<string, unknown>
+    if (body.publicApiEnabled !== undefined) throw httpError(409, '请在中央 DSH 的知识库管理台中修改远程 API 状态。')
+    const writebackProvider = body.writebackProvider
+    const writebackModel = body.writebackModel
+    if (writebackProvider !== undefined && writebackProvider !== null && typeof writebackProvider !== 'string') throw httpError(400, 'writebackProvider must be a string or null')
+    if (writebackModel !== undefined && writebackModel !== null && typeof writebackModel !== 'string') throw httpError(400, 'writebackModel must be a string or null')
+    const updated = await localService.update({
+      ...writebackProvider === undefined ? {} : { writebackProvider },
+      ...writebackModel === undefined ? {} : { writebackModel },
+    })
     return sendJson(res, 200, {
       publicApiEnabled: true,
       publicApiPrefix: settings.remoteUrl,
       remote: true,
+      ...updated.writebackProvider && updated.writebackModel
+        ? { writebackProvider: updated.writebackProvider, writebackModel: updated.writebackModel }
+        : {},
     })
   }
   if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) throw httpError(405, '不支持此远程管理请求方法。')

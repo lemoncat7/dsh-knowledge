@@ -20,9 +20,9 @@ test('same-origin management API controls public access and deletes revoked toke
     authMode: 'same-origin',
     service: {
       current: () => ({ publicApiEnabled: enabled, publicApiPrefix: '/knowledge-api/v1' }),
-      async update(value) {
-        enabled = value
-        return { publicApiEnabled: enabled, publicApiPrefix: '/knowledge-api/v1' }
+      async update(patch) {
+        enabled = patch.publicApiEnabled ?? enabled
+        return { publicApiEnabled: enabled, publicApiPrefix: '/knowledge-api/v1', ...(patch.writebackProvider && patch.writebackModel ? { writebackProvider: patch.writebackProvider, writebackModel: patch.writebackModel } : {}) }
       },
     },
   })

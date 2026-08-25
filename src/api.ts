@@ -13,8 +13,8 @@ export const LOCAL_MANAGEMENT_API_PREFIX = '/knowledge-local/v1'
 export interface KnowledgeApiOptions {
   authMode?: 'bearer' | 'same-origin'
   service?: {
-    current(): { publicApiEnabled: boolean; publicApiPrefix: string }
-    update(publicApiEnabled: boolean): Promise<{ publicApiEnabled: boolean; publicApiPrefix: string }>
+    current(): { publicApiEnabled: boolean; publicApiPrefix: string; writebackProvider?: string; writebackModel?: string }
+    update(patch: { publicApiEnabled?: boolean; writebackProvider?: string | null; writebackModel?: string | null }): Promise<{ publicApiEnabled: boolean; publicApiPrefix: string; writebackProvider?: string; writebackModel?: string }>
   }
 }
 
@@ -52,7 +52,7 @@ async function dispatch(
   const method = req.method ?? 'GET'
 
   if (method === 'GET' && segments[0] === 'health') {
-    return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 6 })
+    return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 9 })
   }
 
   const actor = options.authMode === 'same-origin' ? authenticateSameOrigin(req) : authenticateBearer(provider, req)
@@ -65,10 +65,10 @@ async function dispatch(
       const body = await readObject(req)
       if (!isRecord(body.patch)) throw httpError(400, 'knowledge settings patch is invalid')
       const writebackPolicy = body.patch.writebackPolicy
-      if (writebackPolicy !== 'conservative' && writebackPolicy !== 'proactive') {
-        throw httpError(400, 'writebackPolicy must be conservative or proactive')
-      }
-      return sendJson(res, 200, await provider.updateSettings({ writebackPolicy }))
+      if (writebackPolicy !== undefined && writebackPolicy !== 'conservative' && writebackPolicy !== 'proactive') throw httpError(400, 'writebackPolicy must be conservative or proactive')
+      return sendJson(res, 200, await provider.updateSettings({
+        ...writebackPolicy === undefined ? {} : { writebackPolicy },
+      }))
     }
   }
 
@@ -77,8 +77,16 @@ async function dispatch(
     if (method === 'GET') return sendJson(res, 200, options.service.current())
     if (method === 'PUT') {
       const body = await readObject(req)
-      if (typeof body.publicApiEnabled !== 'boolean') throw httpError(400, 'publicApiEnabled must be a boolean')
-      return sendJson(res, 200, await options.service.update(body.publicApiEnabled))
+      if (body.publicApiEnabled !== undefined && typeof body.publicApiEnabled !== 'boolean') throw httpError(400, 'publicApiEnabled must be a boolean')
+      const writebackProvider = body.writebackProvider
+      const writebackModel = body.writebackModel
+      if (writebackProvider !== undefined && writebackProvider !== null && typeof writebackProvider !== 'string') throw httpError(400, 'writebackProvider must be a string or null')
+      if (writebackModel !== undefined && writebackModel !== null && typeof writebackModel !== 'string') throw httpError(400, 'writebackModel must be a string or null')
+      return sendJson(res, 200, await options.service.update({
+        ...body.publicApiEnabled === undefined ? {} : { publicApiEnabled: body.publicApiEnabled },
+        ...writebackProvider === undefined ? {} : { writebackProvider },
+        ...writebackModel === undefined ? {} : { writebackModel },
+      }))
     }
   }
 
@@ -198,6 +206,19 @@ async function dispatch(
       if (document === undefined) throw httpError(404, `knowledge document "${segments[1]}" was not found`)
       return sendJson(res, 200, document)
     }
+    if (method === 'POST' && segments[1] !== undefined && segments[2] === 'finalize' && segments.length === 3) {
+      requirePermission(actor.permissions, 'write')
+      const body = await readObject(req)
+      if (body.state !== 'resolved' && body.state !== 'complete') {
+        throw httpError(400, 'document finalization state must be resolved or complete')
+      }
+      const note = optionalString(body.note)
+      return sendJson(res, 200, await provider.finalize(segments[1], body.state, note))
+    }
+    if (method === 'POST' && segments[1] !== undefined && segments[2] === 'reopen' && segments.length === 3) {
+      requirePermission(actor.permissions, 'write')
+      return sendJson(res, 200, await provider.reopen(segments[1]))
+    }
   }
 
   if (segments[0] === 'entries') {
@@ -298,6 +319,10 @@ async function dispatch(
       await provider.failExtraction(sourceKey, typeof body.error === 'string' ? body.error : 'remote extraction failed')
       return sendJson(res, 204, undefined)
     }
+    if (method === 'POST' && segments[2] === 'reset') {
+      await provider.resetExtraction(sourceKey)
+      return sendJson(res, 204, undefined)
+    }
   }
 
   if (segments[0] === 'tokens') {
@@ -332,8 +357,7 @@ function parseKnowledgeBaseDraft(value: unknown): KnowledgeBaseDraft {
       description: typeof value.description === 'string' ? value.description : '',
       defaultTags: Array.isArray(value.defaultTags) ? value.defaultTags.filter((tag): tag is string => typeof tag === 'string') : [],
       extractionInstructions: typeof value.extractionInstructions === 'string' ? value.extractionInstructions : '',
-      ...typeof value.writebackProvider === 'string' ? { writebackProvider: value.writebackProvider } : {},
-      ...typeof value.writebackModel === 'string' ? { writebackModel: value.writebackModel } : {},
+      writebackPolicy: value.writebackPolicy === 'proactive' ? 'proactive' : 'conservative',
     })
   } catch (error) {
     throw httpError(400, error instanceof Error ? error.message : 'knowledge base draft is invalid')
@@ -361,17 +385,9 @@ function parseKnowledgeBasePatch(value: unknown): KnowledgeBasePatch {
     if (typeof value.extractionInstructions !== 'string') throw httpError(400, 'knowledge base patch extractionInstructions must be a string')
     patch.extractionInstructions = value.extractionInstructions
   }
-  if (Object.hasOwn(value, 'writebackProvider') || Object.hasOwn(value, 'writebackModel')) {
-    const provider = value.writebackProvider
-    const model = value.writebackModel
-    if (provider !== undefined && provider !== null && typeof provider !== 'string') {
-      throw httpError(400, 'knowledge base patch writebackProvider must be a string or null')
-    }
-    if (model !== undefined && model !== null && typeof model !== 'string') {
-      throw httpError(400, 'knowledge base patch writebackModel must be a string or null')
-    }
-    patch.writebackProvider = typeof provider === 'string' ? provider : null
-    patch.writebackModel = typeof model === 'string' ? model : null
+  if (Object.hasOwn(value, 'writebackPolicy')) {
+    if (value.writebackPolicy !== 'conservative' && value.writebackPolicy !== 'proactive') throw httpError(400, 'knowledge base patch writebackPolicy is invalid')
+    patch.writebackPolicy = value.writebackPolicy
   }
   if (Object.keys(patch).length === 0) throw httpError(400, 'knowledge base patch must contain at least one editable field')
   return patch
@@ -503,9 +519,11 @@ function parseProposal(value: unknown): CandidateProposal {
 
 function parseReview(value: Record<string, unknown>): ReviewDecision {
   if (value.decision !== 'approve' && value.decision !== 'reject') throw httpError(400, 'review decision is invalid')
+  if (value.resolution !== undefined && value.resolution !== 'merge') throw httpError(400, 'review resolution is invalid')
   const note = optionalString(value.note)
   return {
     decision: value.decision,
+    ...value.resolution === 'merge' ? { resolution: value.resolution } : {},
     ...note === undefined ? {} : { note },
     ...value.draft === undefined ? {} : { draft: parseDraft(value.draft) },
   }

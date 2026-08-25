@@ -43,6 +43,7 @@ function markdown(body = '服务使用 Docker Compose 部署。') {
       scope: { kind: 'global' },
       confidence: 0.93,
       status: 'active',
+      documentState: 'open',
     },
     title: 'Docker 部署规范',
     body,

@@ -22,8 +22,8 @@ import { KnowledgeProviderRouter } from './provider-router.js'
 import { registerKnowledgeCatalog, registerKnowledgeRecall } from './recall.js'
 import { KnowledgeHandleCodec } from './retrieval.js'
 import { RemoteKnowledgeProvider, RemoteProviderError } from './remote-provider.js'
-import type { RuntimeContextLike } from './runtime.js'
-import { loadServiceSettings, serviceSettingsPath, storeServiceSettings } from './service-settings.js'
+import type { AgentLike, RuntimeContextLike } from './runtime.js'
+import { loadServiceSettings, serviceSettingsPath, storeServiceSettings, type KnowledgeServiceSettings } from './service-settings.js'
 import { registerKnowledgeTools } from './tools.js'
 import { registerKnowledgeWeb } from './web.js'
 
@@ -53,13 +53,14 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   })
   const persistedServicePath = serviceSettingsPath(resolved.connectionPath)
   let publicApiEnabled = resolved.exposeApi
+  let clientSettings: KnowledgeServiceSettings = { publicApiEnabled }
   try {
     const storedService = loadServiceSettings(persistedServicePath)
-    if (storedService !== undefined) publicApiEnabled = storedService.publicApiEnabled
+    if (storedService !== undefined) { clientSettings = storedService; publicApiEnabled = storedService.publicApiEnabled }
   } catch (error) {
     runtime.logger.warn(`dsh-knowledge: ignored invalid service settings: ${error instanceof Error ? error.message : String(error)}`)
   }
-  if (resolved.backend === 'remote') publicApiEnabled = false
+  if (resolved.backend === 'remote') { publicApiEnabled = false; clientSettings = { ...clientSettings, publicApiEnabled: false } }
   const baseConnection = connectionSettingsBase(resolved)
   let initialConnection = baseConnection
   try {
@@ -79,8 +80,15 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   const provider: KnowledgeProvider = providerRouter.provider
   let activeConnection = initialConnection
 
-  const coordinator = new ExtractionCoordinator(runtime, provider, resolved)
-  const writebackStatuses = new Map<string, string>()
+  const coordinator = new ExtractionCoordinator(runtime, provider, resolved, () => (
+    clientSettings.writebackProvider && clientSettings.writebackModel
+      ? { provider: clientSettings.writebackProvider, model: clientSettings.writebackModel }
+      : undefined
+  ))
+  type WritebackStatus = { status: 'running' | 'completed' | 'failed'; summary: string; error?: string; retryable: boolean }
+  const writebackStatuses = new Map<string, WritebackStatus>()
+  const writebackSources = new Map<string, { agent: AgentLike; turn: number }>()
+  let runWriteback: (agent: AgentLike, turn: number, signal: AbortSignal) => Promise<WritebackStatus>
   const handleCodec = new KnowledgeHandleCodec(randomBytes(32))
   const managementEmbedToken = randomBytes(32).toString('base64url')
   registerKnowledgeRecall(runtime, provider, resolved, handleCodec)
@@ -131,7 +139,13 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
 
   const registerHttpSurfaces = (httpRuntime: RuntimeContextLike): void => {
     let disposePublicApi: (() => void) | undefined
-    const publicApiView = () => ({ publicApiEnabled, publicApiPrefix: resolved.apiPrefix })
+    const publicApiView = () => ({
+      publicApiEnabled,
+      publicApiPrefix: resolved.apiPrefix,
+      ...clientSettings.writebackProvider && clientSettings.writebackModel
+        ? { writebackProvider: clientSettings.writebackProvider, writebackModel: clientSettings.writebackModel }
+        : {},
+    })
     const applyPublicApiRoute = (enabled: boolean): void => {
       disposePublicApi?.()
       disposePublicApi = undefined
@@ -140,21 +154,34 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
         disposePublicApi = registerKnowledgeApi(httpRuntime, managementProvider, resolved.apiPrefix)
       }
     }
-    const updatePublicApi = async (enabled: boolean): Promise<ReturnType<typeof publicApiView>> => {
-      if (enabled === publicApiEnabled) return publicApiView()
+    const updateClientSettings = async (patch: { publicApiEnabled?: boolean; writebackProvider?: string | null; writebackModel?: string | null }): Promise<ReturnType<typeof publicApiView>> => {
+      const enabled = patch.publicApiEnabled ?? publicApiEnabled
       if (enabled && activeConnection.backend !== 'local') throw connectionError(409, '请先把知识库来源切换为本地，再开启远程 API。')
       if (persistedServicePath === undefined) throw connectionError(409, '当前插件没有配置持久化路径，无法保存远程 API 状态。')
-      const previous = publicApiEnabled
-      applyPublicApiRoute(enabled)
+      const clearRoute = patch.writebackProvider === null || patch.writebackModel === null
+      const provider = typeof patch.writebackProvider === 'string' ? patch.writebackProvider.trim() : clientSettings.writebackProvider
+      const model = typeof patch.writebackModel === 'string' ? patch.writebackModel.trim() : clientSettings.writebackModel
+      if (!clearRoute && ((provider === undefined) !== (model === undefined))) throw connectionError(400, '本机回写模型需要同时选择提供方和模型。')
+      if (!clearRoute && provider && model) {
+        try { await runtime.llm.resolveModelInfo(provider, model) }
+        catch (error) { throw connectionError(400, `当前客户端无法使用 ${provider} / ${model}：${error instanceof Error ? error.message : String(error)}`) }
+      }
+      const previous = clientSettings
+      const next: KnowledgeServiceSettings = {
+        publicApiEnabled: enabled,
+        ...!clearRoute && provider && model ? { writebackProvider: provider, writebackModel: model } : {},
+      }
+      if (enabled !== publicApiEnabled) applyPublicApiRoute(enabled)
       publicApiEnabled = enabled
+      clientSettings = next
       try {
-        await storeServiceSettings(persistedServicePath, { publicApiEnabled })
+        await storeServiceSettings(persistedServicePath, next)
       } catch (error) {
-        publicApiEnabled = previous
-        applyPublicApiRoute(previous)
+        clientSettings = previous
+        if (publicApiEnabled !== previous.publicApiEnabled) applyPublicApiRoute(previous.publicApiEnabled)
+        publicApiEnabled = previous.publicApiEnabled
         throw error
       }
-      runtime.logger.info(`dsh-knowledge: public API ${enabled ? 'enabled' : 'disabled'} at ${resolved.apiPrefix}`)
       return publicApiView()
     }
 
@@ -168,11 +195,14 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
       disposeManagementApi = undefined
       if (!resolved.exposeWeb) return
       if (activeConnection.backend === 'remote') {
-        disposeManagementApi = registerRemoteManagementProxy(httpRuntime, LOCAL_MANAGEMENT_API_PREFIX, () => activeConnection)
+        disposeManagementApi = registerRemoteManagementProxy(httpRuntime, LOCAL_MANAGEMENT_API_PREFIX, () => activeConnection, {
+          current: publicApiView,
+          update: updateClientSettings,
+        })
       } else if (managementProvider !== undefined) {
         disposeManagementApi = registerKnowledgeApi(httpRuntime, managementProvider, LOCAL_MANAGEMENT_API_PREFIX, {
           authMode: 'same-origin',
-          service: { current: publicApiView, update: updatePublicApi },
+          service: { current: publicApiView, update: updateClientSettings },
         })
       }
     }
@@ -209,21 +239,45 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
     const disposeWritebackStatus = httpRuntime.webServer?.register({
       kind: 'exact',
       path: '/knowledge-control/v1/writeback-status',
-      handler(req, res) {
-        if (req.method !== 'GET') {
-          res.writeHead(405, { allow: 'GET' }).end()
+      async handler(req, res) {
+        if (req.method !== 'GET' && req.method !== 'POST') {
+          res.writeHead(405, { allow: 'GET, POST' }).end()
           return
         }
         const url = new URL(req.url ?? '/', 'http://localhost')
         const key = `${url.searchParams.get('sessionId') ?? ''}:${url.searchParams.get('turn') ?? ''}`
-        const summary = writebackStatuses.get(key)
-        res.writeHead(summary === undefined ? 404 : 200, {
+        let state = writebackStatuses.get(key)
+        if (req.method === 'POST') {
+          if (req.headers['x-dsh-knowledge-client'] !== 'conversation-web') {
+            res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' }).end(JSON.stringify({ error: 'missing knowledge client header' }))
+            return
+          }
+          const source = writebackSources.get(key)
+          if (state?.status !== 'failed' || !state.retryable || source === undefined) {
+            res.writeHead(409, { 'content-type': 'application/json; charset=utf-8' }).end(JSON.stringify({ error: 'writeback is not retryable' }))
+            return
+          }
+          await provider.resetExtraction(key)
+          state = await runWriteback(source.agent, source.turn, new AbortController().signal)
+        }
+        res.writeHead(state === undefined ? 404 : 200, {
           'content-type': 'application/json; charset=utf-8',
           'cache-control': 'no-store',
-        }).end(JSON.stringify(summary === undefined ? { status: 'missing' } : { status: 'completed', summary }))
+        }).end(JSON.stringify(state === undefined ? { status: 'missing' } : state))
       },
     })
     if (disposeWritebackStatus !== undefined) httpRuntime.effect(() => disposeWritebackStatus, 'dsh-knowledge.writeback-status')
+    const disposeModelCatalog = httpRuntime.webServer?.register({
+      kind: 'exact', path: '/knowledge-control/v1/models',
+      async handler(req, res) {
+        if (req.method !== 'GET') { res.writeHead(405, { allow: 'GET' }).end(); return }
+        const providers = await Promise.all(runtime.llm.listProviders().map(async provider => ({
+          ...provider, models: await runtime.llm.listModels(provider.id).catch(() => []),
+        })))
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end(JSON.stringify({ providers }))
+      },
+    })
+    if (disposeModelCatalog !== undefined) httpRuntime.effect(() => disposeModelCatalog, 'dsh-knowledge.model-catalog')
   }
 
   if (runtime.inject !== undefined) {
@@ -235,29 +289,50 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   }
 
   if (resolved.extractionEnabled) {
-    runtime.on('agent/turn-stopping', async ({ agent, turn, signal }) => {
-      let summary: string
+    runWriteback = async (agent: AgentLike, turn: number, signal: AbortSignal): Promise<WritebackStatus> => {
+      const key = `${agent.session.id}:${turn}`
+      writebackStatuses.set(key, { status: 'running', summary: '知识库回写 · 正在重试', retryable: false })
+      let state: WritebackStatus
       try {
         const result = await coordinator.run(agent.session, turn, signal)
-        if (result.status === 'duplicate') return
-        if (result.status === 'unmounted') summary = '知识库回写 · 未挂载可写知识库'
+        let summary: string
+        if (result.status === 'duplicate') {
+          const job = await provider.extractionJob(key, signal)
+          if (job?.status === 'failed') throw new Error(job.lastError ?? '知识库回写失败')
+          summary = '知识库回写 · 已处理'
+        } else if (result.status === 'unmounted') summary = '知识库回写 · 未挂载可写知识库'
         else if (result.status === 'skipped') summary = '知识库回写 · 当前回答无可提取内容'
         else if (result.candidateCount === 0) summary = '知识库回写 · 无需收录'
         else summary = `知识库回写 · ${result.bases.map(base => {
           const parts = [base.directCount > 0 ? `直写 ${base.directCount}` : '', base.auditCount > 0 ? `待审 ${base.auditCount}` : ''].filter(Boolean)
           return `${base.name}：${parts.join('、')}`
         }).join('；')}`
+        state = { status: 'completed', summary, retryable: false }
+        writebackSources.delete(key)
       } catch (error) {
-        if (signal.aborted) return
+        if (signal.aborted) throw error
         const message = error instanceof Error ? error.message : String(error)
         runtime.logger.warn(`dsh-knowledge: synchronous writeback failed: ${message}`)
-        summary = message.includes('max-tokens')
+        const job = await provider.extractionJob(key).catch(() => undefined)
+        const retryable = job?.status === 'failed'
+        const summary = message.includes('max-tokens')
           ? '知识库回写 · 失败：提取结果超过模型输出上限'
-          : '知识库回写 · 失败，可稍后重试'
+          : '知识库回写 · 失败'
+        state = { status: 'failed', summary, error: message, retryable }
+        if (retryable) writebackSources.set(key, { agent: snapshotAgent(agent), turn })
+        else writebackSources.delete(key)
       }
-      writebackStatuses.set(`${agent.session.id}:${turn}`, summary)
-      if (writebackStatuses.size > 1000) writebackStatuses.delete(writebackStatuses.keys().next().value as string)
-      runtime.logger.info(`dsh-knowledge: ${summary}`)
+      writebackStatuses.set(key, state)
+      if (writebackStatuses.size > 1000) {
+        const oldest = writebackStatuses.keys().next().value as string
+        writebackStatuses.delete(oldest)
+        writebackSources.delete(oldest)
+      }
+      runtime.logger.info(`dsh-knowledge: ${state.summary}`)
+      return state
+    }
+    runtime.on('agent/turn-stopping', async ({ agent, turn, signal }) => {
+      await runWriteback(agent, turn, signal).catch(() => {})
     })
   }
 
@@ -268,6 +343,16 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   }, 'dsh-knowledge.close')
 
   runtime.logger.info(`dsh-knowledge: ${provider.mode} provider ready`)
+}
+
+function snapshotAgent(agent: AgentLike): AgentLike {
+  return {
+    session: {
+      id: agent.session.id,
+      header: { ...agent.session.header },
+      events: [...agent.session.events],
+    },
+  }
 }
 
 function publicConnectionError(error: unknown): Error {

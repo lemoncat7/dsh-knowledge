@@ -49,13 +49,14 @@ type SqlRow = Record<string, unknown>
 
 const ENTRY_COLUMNS = `
   id, knowledge_base_id, title, body, type, tags_json, scope_kind, scope_id, confidence,
-  status, version, source_json, created_at, updated_at
+  status, document_state, finalized_at, finalization_note, version, source_json, created_at, updated_at
 `
 
 const JOINED_ENTRY_COLUMNS = `
   e.id AS id, e.knowledge_base_id AS knowledge_base_id, e.title AS title, e.body AS body, e.type AS type,
   e.tags_json AS tags_json, e.scope_kind AS scope_kind, e.scope_id AS scope_id,
-  e.confidence AS confidence, e.status AS status, e.version AS version,
+  e.confidence AS confidence, e.status AS status, e.document_state AS document_state,
+  e.finalized_at AS finalized_at, e.finalization_note AS finalization_note, e.version AS version,
   e.source_json AS source_json, e.created_at AS created_at, e.updated_at AS updated_at
 `
 
@@ -77,7 +78,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   private migrate(): void {
     let version = Number((this.db.prepare('PRAGMA user_version').get() as SqlRow).user_version ?? 0)
-    if (version > 6) throw new Error(`knowledge database schema ${version} is newer than this plugin supports`)
+    if (version > 9) throw new Error(`knowledge database schema ${version} is newer than this plugin supports`)
     if (version === 0) this.db.exec(`
       BEGIN IMMEDIATE;
       CREATE TABLE knowledge_entries (
@@ -237,6 +238,37 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     `)
     if (version <= 4) version = 5
     if (version === 5) this.db.exec('PRAGMA user_version = 6;')
+    if (version <= 5) version = 6
+    if (version === 6) this.db.exec(`
+      BEGIN IMMEDIATE;
+      ALTER TABLE knowledge_entries ADD COLUMN document_state TEXT NOT NULL DEFAULT 'open'
+        CHECK(document_state IN ('open','resolved','complete'));
+      ALTER TABLE knowledge_entries ADD COLUMN finalized_at TEXT;
+      ALTER TABLE knowledge_entries ADD COLUMN finalization_note TEXT;
+      ALTER TABLE knowledge_documents ADD COLUMN document_state TEXT NOT NULL DEFAULT 'open'
+        CHECK(document_state IN ('open','resolved','complete'));
+      ALTER TABLE knowledge_documents ADD COLUMN finalized_at TEXT;
+      ALTER TABLE knowledge_documents ADD COLUMN finalization_note TEXT;
+      PRAGMA user_version = 7;
+      COMMIT;
+    `)
+    if (version <= 6) version = 7
+    if (version === 7) this.db.exec(`
+      BEGIN IMMEDIATE;
+      ALTER TABLE knowledge_bases ADD COLUMN writeback_policy TEXT NOT NULL DEFAULT 'conservative'
+        CHECK(writeback_policy IN ('conservative','proactive'));
+      UPDATE knowledge_bases SET writeback_policy=(SELECT writeback_policy FROM knowledge_settings WHERE id=1);
+      PRAGMA user_version = 8;
+      COMMIT;
+    `)
+    if (version <= 7) version = 8
+    if (version === 8) this.db.exec(`
+      BEGIN IMMEDIATE;
+      ALTER TABLE knowledge_settings ADD COLUMN writeback_provider TEXT;
+      ALTER TABLE knowledge_settings ADD COLUMN writeback_model TEXT;
+      PRAGMA user_version = 9;
+      COMMIT;
+    `)
     // Alpha v2 used a migration note as the default base's routing description.
     // Clear only that exact placeholder so existing user-authored descriptions stay untouched.
     this.db.prepare("UPDATE knowledge_bases SET description='' WHERE id=? AND description=?")
@@ -249,9 +281,12 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   async getSettings(): Promise<KnowledgeSettings> {
     this.assertOpen()
-    const row = this.db.prepare('SELECT writeback_policy,updated_at FROM knowledge_settings WHERE id=1').get() as SqlRow
+    const row = this.db.prepare('SELECT writeback_policy,writeback_provider,writeback_model,updated_at FROM knowledge_settings WHERE id=1').get() as SqlRow
+    const provider = row.writeback_provider == null ? undefined : String(row.writeback_provider)
+    const model = row.writeback_model == null ? undefined : String(row.writeback_model)
     return {
       writebackPolicy: String(row.writeback_policy) as KnowledgeSettings['writebackPolicy'],
+      ...provider === undefined || model === undefined ? {} : { writebackProvider: provider, writebackModel: model },
       updatedAt: String(row.updated_at),
     }
   }
@@ -260,9 +295,18 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     this.assertOpen()
     const patch = normalizeKnowledgeSettings(input)
     const updatedAt = nowIso()
-    this.db.prepare('UPDATE knowledge_settings SET writeback_policy=?,updated_at=? WHERE id=1')
-      .run(patch.writebackPolicy, updatedAt)
-    return { ...patch, updatedAt }
+    const current = await this.getSettings()
+    const clearRoute = patch.writebackProvider === null || patch.writebackModel === null
+    const next = {
+      writebackPolicy: patch.writebackPolicy ?? current.writebackPolicy,
+      ...clearRoute ? {} : patch.writebackProvider && patch.writebackModel
+        ? { writebackProvider: patch.writebackProvider, writebackModel: patch.writebackModel }
+        : current.writebackProvider && current.writebackModel ? { writebackProvider: current.writebackProvider, writebackModel: current.writebackModel } : {},
+      updatedAt,
+    }
+    this.db.prepare('UPDATE knowledge_settings SET writeback_policy=?,writeback_provider=?,writeback_model=?,updated_at=? WHERE id=1')
+      .run(next.writebackPolicy, next.writebackProvider ?? null, next.writebackModel ?? null, updatedAt)
+    return next
   }
 
   async listKnowledgeBases(): Promise<KnowledgeBase[]> {
@@ -285,11 +329,11 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     const base: KnowledgeBase = { ...draft, id: newId(), status: 'active', createdAt: timestamp, updatedAt: timestamp }
     this.db.prepare(`
       INSERT INTO knowledge_bases(
-        id,name,description,default_tags_json,extraction_instructions,writeback_provider,writeback_model,status,created_at,updated_at
-      ) VALUES(?,?,?,?,?,?,?,'active',?,?)
+        id,name,description,default_tags_json,extraction_instructions,writeback_policy,writeback_provider,writeback_model,status,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,'active',?,?)
     `).run(
       base.id, base.name, base.description, JSON.stringify(base.defaultTags), base.extractionInstructions,
-      base.writebackProvider ?? null, base.writebackModel ?? null, timestamp, timestamp,
+      base.writebackPolicy, base.writebackProvider ?? null, base.writebackModel ?? null, timestamp, timestamp,
     )
     await this.syncKnowledgeDocuments(base.id)
     return base
@@ -304,11 +348,11 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     const updated: KnowledgeBase = { ...current, ...draft, updatedAt: nowIso() }
     this.db.prepare(`
       UPDATE knowledge_bases SET
-        name=?,description=?,default_tags_json=?,extraction_instructions=?,writeback_provider=?,writeback_model=?,updated_at=?
+        name=?,description=?,default_tags_json=?,extraction_instructions=?,writeback_policy=?,writeback_provider=?,writeback_model=?,updated_at=?
       WHERE id=?
     `).run(
       updated.name, updated.description, JSON.stringify(updated.defaultTags), updated.extractionInstructions,
-      updated.writebackProvider ?? null, updated.writebackModel ?? null, updated.updatedAt, id,
+      updated.writebackPolicy, updated.writebackProvider ?? null, updated.writebackModel ?? null, updated.updatedAt, id,
     )
     await this.syncKnowledgeDocuments(id)
     return updated
@@ -326,6 +370,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       description: patch.description ?? current.description,
       defaultTags: patch.defaultTags ?? current.defaultTags,
       extractionInstructions: patch.extractionInstructions ?? current.extractionInstructions,
+      writebackPolicy: patch.writebackPolicy ?? current.writebackPolicy,
       ...clearRoute || provider === undefined || model === undefined ? {} : { writebackProvider: provider, writebackModel: model },
     })
   }
@@ -671,11 +716,15 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     }
     const id = newId()
     const timestamp = nowIso()
-    const entry: KnowledgeEntry = { ...draft, id, status: 'active', version: 1, createdAt: timestamp, updatedAt: timestamp }
+    const entry: KnowledgeEntry = {
+      ...draft, id, status: 'active', documentState: 'open', version: 1,
+      createdAt: timestamp, updatedAt: timestamp,
+    }
     this.db.prepare(`
       INSERT INTO knowledge_entries (
-        id,knowledge_base_id,title,body,type,tags_json,scope_kind,scope_id,confidence,status,version,content_hash,source_json,created_at,updated_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        id,knowledge_base_id,title,body,type,tags_json,scope_kind,scope_id,confidence,status,
+        document_state,finalized_at,finalization_note,version,content_hash,source_json,created_at,updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,'open',NULL,NULL,?,?,?,?,?)
     `).run(
       id, draft.knowledgeBaseId, draft.title, draft.body, draft.type, JSON.stringify(draft.tags), draft.scope.kind,
       draft.scope.kind === 'project' ? draft.scope.id : null, draft.confidence, 'active', 1,
@@ -696,10 +745,74 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     return entry
   }
 
+  async finalize(id: string, state: 'resolved' | 'complete', note?: string): Promise<KnowledgeEntry> {
+    this.assertOpen()
+    await this.documentsReady
+    const entry = this.transaction(() => {
+      const row = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM knowledge_entries WHERE id=?`).get(id) as SqlRow | undefined
+      if (row === undefined) throw notFound('knowledge entry', id)
+      const current = rowToEntry(row)
+      if (current.status !== 'active') throw conflict('only active knowledge documents can be finalized')
+      const finalizationNote = normalizeFinalizationNote(note)
+      if (current.documentState === state && current.finalizationNote === finalizationNote) return current
+      if (current.documentState !== 'open') throw finalizedConflict(current)
+      const timestamp = nowIso()
+      const updated: KnowledgeEntry = {
+        ...current,
+        documentState: state,
+        finalizedAt: timestamp,
+        ...finalizationNote === undefined ? {} : { finalizationNote },
+        version: current.version + 1,
+        updatedAt: timestamp,
+      }
+      this.db.prepare(`
+        UPDATE knowledge_entries
+        SET document_state=?,finalized_at=?,finalization_note=?,version=?,updated_at=?
+        WHERE id=?
+      `).run(state, timestamp, finalizationNote ?? null, updated.version, timestamp, id)
+      this.writeVersion(updated, 'update')
+      this.upsertFts(updated)
+      return updated
+    })
+    await this.syncKnowledgeDocuments(entry.knowledgeBaseId)
+    return entry
+  }
+
+  async reopen(id: string): Promise<KnowledgeEntry> {
+    this.assertOpen()
+    await this.documentsReady
+    const entry = this.transaction(() => {
+      const row = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM knowledge_entries WHERE id=?`).get(id) as SqlRow | undefined
+      if (row === undefined) throw notFound('knowledge entry', id)
+      const current = rowToEntry(row)
+      if (current.status !== 'active') throw conflict('only active knowledge documents can be reopened')
+      if (current.documentState === 'open') return current
+      const timestamp = nowIso()
+      const { finalizedAt: _finalizedAt, finalizationNote: _finalizationNote, ...reopened } = current
+      const updated: KnowledgeEntry = {
+        ...reopened,
+        documentState: 'open',
+        version: current.version + 1,
+        updatedAt: timestamp,
+      }
+      this.db.prepare(`
+        UPDATE knowledge_entries
+        SET document_state='open',finalized_at=NULL,finalization_note=NULL,version=?,updated_at=?
+        WHERE id=?
+      `).run(updated.version, timestamp, id)
+      this.writeVersion(updated, 'update')
+      this.upsertFts(updated)
+      return updated
+    })
+    await this.syncKnowledgeDocuments(entry.knowledgeBaseId)
+    return entry
+  }
+
   private updateEntry(id: string, input: KnowledgeDraft, changeKind: 'update' | 'restore'): KnowledgeEntry {
     const currentRow = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM knowledge_entries WHERE id = ?`).get(id) as SqlRow | undefined
     if (currentRow === undefined) throw notFound('knowledge entry', id)
     const current = rowToEntry(currentRow)
+    if (current.documentState !== 'open') throw finalizedConflict(current)
     const draft = normalizeDraft(input)
     if (this.db.prepare("SELECT id FROM knowledge_bases WHERE id=? AND status='active'").get(draft.knowledgeBaseId) === undefined) {
       throw notFound('active knowledge base', draft.knowledgeBaseId)
@@ -709,6 +822,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       ...draft,
       id,
       status: 'active',
+      documentState: current.documentState,
       version: current.version + 1,
       createdAt: current.createdAt,
       updatedAt: timestamp,
@@ -760,7 +874,10 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   async propose(input: CandidateProposal, sourceKey?: string): Promise<KnowledgeCandidate> {
     this.assertOpen()
-    return this.insertCandidate(normalizeProposal(input), sourceKey)
+    const proposal = normalizeProposal(input)
+    const finalized = this.finalizedMatch(proposal)
+    if (finalized !== undefined) throw finalizedConflict(finalized)
+    return this.insertCandidate(proposal, sourceKey)
   }
 
   async writeDirect(input: CandidateProposal, sourceKey?: string): Promise<DirectWriteResult> {
@@ -770,6 +887,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     const result = this.transaction((): DirectWriteResult => {
       const resolution = this.resolveDirectProposal(normalizeProposal(input))
       if (resolution.outcome === 'duplicate') return { outcome: 'duplicate', ...resolution.entry === undefined ? {} : { entry: resolution.entry } }
+      if (resolution.outcome === 'finalized') return { outcome: 'finalized', entry: resolution.entry }
       const candidate = this.insertCandidate(resolution.proposal, sourceKey)
       if (candidate.status !== 'pending') return { outcome: 'duplicate', candidate }
       if (resolution.outcome === 'conflict') return { outcome: 'conflict', candidate }
@@ -823,6 +941,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     if (proposal.action === 'conflict') return { outcome: 'conflict', proposal }
     if (proposal.action === 'update') {
       const target = this.activeEntry(proposal.targetId as string)
+      if (target.documentState !== 'open') return { outcome: 'finalized', entry: target }
       if (target.knowledgeBaseId !== proposal.draft.knowledgeBaseId) {
         throw conflict('direct-write update cannot move knowledge between knowledge bases')
       }
@@ -843,6 +962,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     const referenceMatch = entries.find(entry => sharesCanonicalTopicReference(entry, proposal.draft))
     const target = bodyMatch ?? titleMatch ?? referenceMatch
     if (target === undefined) return { outcome: 'created', proposal }
+    if (target.documentState !== 'open') return { outcome: 'finalized', entry: target }
     if (potentiallyConflicts(target, proposal.draft)) {
       return {
         outcome: 'conflict',
@@ -855,6 +975,19 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       outcome: 'merged',
       proposal: { ...proposal, action: 'update', targetId: target.id, draft },
     }
+  }
+
+  private finalizedMatch(proposal: CandidateProposal): KnowledgeEntry | undefined {
+    if (proposal.action !== 'create') {
+      const target = this.activeEntry(proposal.targetId as string)
+      return target.documentState === 'open' ? undefined : target
+    }
+    const entries = this.activeEntriesForDraft(proposal.draft)
+    return entries.find(entry => entry.documentState !== 'open' && (
+      normalizedBody(entry.body) === normalizedBody(proposal.draft.body)
+      || normalizedTitle(entry.title) === normalizedTitle(proposal.draft.title)
+      || sharesCanonicalTopicReference(entry, proposal.draft)
+    ))
   }
 
   private activeEntry(id: string): KnowledgeEntry {
@@ -890,6 +1023,9 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       let draft = decision.draft === undefined ? candidate.draft : normalizeDraft(decision.draft)
       if (decision.decision === 'approve') {
         if (candidate.action === 'conflict') {
+          if (decision.resolution !== 'merge') {
+            throw conflict('conflict candidate requires an explicit merge resolution')
+          }
           if (candidate.targetId === undefined) throw new Error('candidate target is missing')
           const targetRow = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM knowledge_entries WHERE id = ?`).get(candidate.targetId) as SqlRow | undefined
           if (targetRow === undefined) throw notFound('candidate target', candidate.targetId)
@@ -906,8 +1042,21 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
             reason: candidate.reason,
           })
           if (resolution.outcome === 'conflict') {
-            throw conflict('knowledge changed during review and now requires conflict resolution')
+            const proposal = resolution.proposal
+            this.db.prepare(`
+              UPDATE knowledge_candidates
+              SET action='conflict', target_id=?, draft_json=?, reason=?
+              WHERE id=? AND status='pending'
+            `).run(proposal.targetId ?? null, JSON.stringify(proposal.draft), proposal.reason, id)
+            return {
+              ...candidate,
+              action: 'conflict',
+              ...proposal.targetId === undefined ? {} : { targetId: proposal.targetId },
+              draft: proposal.draft,
+              reason: proposal.reason,
+            }
           }
+          if (resolution.outcome === 'finalized') throw finalizedConflict(resolution.entry)
           if (resolution.outcome !== 'duplicate') {
             if (resolution.proposal.action === 'create') this.insertEntry(resolution.proposal.draft)
             else this.updateEntry(resolution.proposal.targetId as string, resolution.proposal.draft, 'update')
@@ -948,6 +1097,12 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     this.assertOpen()
     this.db.prepare(`UPDATE extraction_jobs SET status='failed', last_error=?, updated_at=? WHERE source_key=?`)
       .run(error.slice(0, 4000), nowIso(), sourceKey)
+  }
+
+  async resetExtraction(sourceKey: string): Promise<void> {
+    this.assertOpen()
+    this.db.prepare(`UPDATE extraction_jobs SET status='failed', attempts=0, candidate_count=0, last_error=NULL, updated_at=? WHERE source_key=?`)
+      .run(nowIso(), sourceKey)
   }
 
   async extractionJob(sourceKey: string): Promise<ExtractionJobRecord | undefined> {
@@ -1030,6 +1185,9 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       confidence: entry.confidence,
       ...entry.source === undefined ? {} : { source: entry.source },
       status: entry.status,
+      documentState: entry.documentState,
+      ...entry.finalizedAt === undefined ? {} : { finalizedAt: entry.finalizedAt },
+      ...entry.finalizationNote === undefined ? {} : { finalizationNote: entry.finalizationNote },
     }
     this.db.prepare(`INSERT INTO knowledge_versions(id,knowledge_id,version,snapshot_json,change_kind,created_at) VALUES(?,?,?,?,?,?)`)
       .run(newId(), entry.id, entry.version, JSON.stringify(snapshot), changeKind, nowIso())
@@ -1070,6 +1228,9 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
           scope: entry.scope,
           confidence: entry.confidence,
           status: entry.status,
+          documentState: entry.documentState,
+          ...entry.finalizedAt === undefined ? {} : { finalizedAt: entry.finalizedAt },
+          ...entry.finalizationNote === undefined ? {} : { finalizationNote: entry.finalizationNote },
         },
         title: entry.title,
         body: entry.body,
@@ -1094,19 +1255,26 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     for (const document of desired.values()) {
       this.db.prepare(`
         INSERT INTO knowledge_documents(
-          id,knowledge_base_id,rel_path,title,content,entry_count,content_hash,created_at,updated_at
-        ) VALUES(?,?,?,?,?,?,?,?,?)
+          id,knowledge_base_id,rel_path,title,content,entry_count,content_hash,
+          document_state,finalized_at,finalization_note,created_at,updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET
           knowledge_base_id=excluded.knowledge_base_id,rel_path=excluded.rel_path,
           title=excluded.title,content=excluded.content,entry_count=excluded.entry_count,
-          content_hash=excluded.content_hash,updated_at=excluded.updated_at
+          content_hash=excluded.content_hash,document_state=excluded.document_state,
+          finalized_at=excluded.finalized_at,finalization_note=excluded.finalization_note,
+          updated_at=excluded.updated_at
         WHERE knowledge_documents.content_hash<>excluded.content_hash
            OR knowledge_documents.rel_path<>excluded.rel_path
            OR knowledge_documents.title<>excluded.title
            OR knowledge_documents.entry_count<>excluded.entry_count
+           OR knowledge_documents.document_state<>excluded.document_state
+           OR knowledge_documents.finalized_at IS NOT excluded.finalized_at
+           OR knowledge_documents.finalization_note IS NOT excluded.finalization_note
       `).run(
         document.entry.id, knowledgeBaseId, document.relPath,
         document.entry.title, document.content, 1, document.contentHash,
+        document.entry.documentState, document.entry.finalizedAt ?? null, document.entry.finalizationNote ?? null,
         document.entry.createdAt, document.entry.updatedAt,
       )
     }
@@ -1134,6 +1302,9 @@ function rowToEntry(row: SqlRow): KnowledgeEntry {
       : { kind: 'project', id: String(row.scope_id) },
     confidence: Number(row.confidence),
     status: String(row.status) as KnowledgeStatus,
+    documentState: row.document_state == null ? 'open' : String(row.document_state) as KnowledgeEntry['documentState'],
+    ...row.finalized_at == null ? {} : { finalizedAt: String(row.finalized_at) },
+    ...row.finalization_note == null ? {} : { finalizationNote: String(row.finalization_note) },
     version: Number(row.version),
     ...source === undefined ? {} : { source },
     createdAt: String(row.created_at),
@@ -1150,6 +1321,9 @@ function rowToDocument(row: SqlRow): KnowledgeDocument {
     content: String(row.content),
     entryCount: Number(row.entry_count),
     contentHash: String(row.content_hash),
+    documentState: row.document_state == null ? 'open' : String(row.document_state) as KnowledgeDocument['documentState'],
+    ...row.finalized_at == null ? {} : { finalizedAt: String(row.finalized_at) },
+    ...row.finalization_note == null ? {} : { finalizationNote: String(row.finalization_note) },
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   }
@@ -1158,6 +1332,7 @@ function rowToDocument(row: SqlRow): KnowledgeDocument {
 function rowToVersion(row: SqlRow): KnowledgeVersion {
   const snapshot = JSON.parse(String(row.snapshot_json)) as KnowledgeVersion['snapshot']
   if (snapshot.knowledgeBaseId === undefined) snapshot.knowledgeBaseId = DEFAULT_KNOWLEDGE_BASE_ID
+  if (snapshot.documentState === undefined) snapshot.documentState = 'open'
   return {
     id: String(row.id),
     knowledgeId: String(row.knowledge_id),
@@ -1191,6 +1366,7 @@ function rowToCandidate(row: SqlRow): KnowledgeCandidate {
 
 type DirectProposalResolution =
   | { outcome: 'duplicate'; entry?: KnowledgeEntry }
+  | { outcome: 'finalized'; entry: KnowledgeEntry }
   | { outcome: 'created' | 'merged' | 'conflict'; proposal: CandidateProposal }
 
 function normalizeProposal(input: CandidateProposal): CandidateProposal {
@@ -1234,6 +1410,7 @@ function potentiallyConflicts(current: KnowledgeEntry, incoming: KnowledgeDraft)
   const currentBody = normalizedBody(current.body)
   const incomingBody = normalizedBody(incoming.body)
   if (currentBody === incomingBody || currentBody.includes(incomingBody) || incomingBody.includes(currentBody)) return false
+  if (addsDistinctMarkdownSections(current.body, incoming.body)) return false
   const overlap = termOverlap(currentBody, incomingBody)
   if (overlap < 0.35) return false
   const currentPolarity = polarity(currentBody)
@@ -1243,6 +1420,19 @@ function potentiallyConflicts(current: KnowledgeEntry, incoming: KnowledgeDraft)
   const incomingValues = factualValues(incomingBody)
   return currentValues.length > 0 && incomingValues.length > 0
     && !currentValues.some(value => incomingValues.includes(value))
+}
+
+function addsDistinctMarkdownSections(current: string, incoming: string): boolean {
+  const currentHeadings = markdownHeadings(current)
+  const incomingHeadings = markdownHeadings(incoming)
+  if (currentHeadings.size === 0 || incomingHeadings.size === 0) return false
+  return [...incomingHeadings].every(heading => !currentHeadings.has(heading))
+}
+
+function markdownHeadings(value: string): Set<string> {
+  return new Set([...value.matchAll(/^#{1,6}\s+(.+)$/gmu)]
+    .map(match => normalizedTitle(match[1] ?? ''))
+    .filter(Boolean))
 }
 
 function normalizedTitle(value: string): string {
@@ -1312,6 +1502,7 @@ function rowToKnowledgeBase(row: SqlRow): KnowledgeBase {
     description: String(row.description),
     defaultTags: JSON.parse(String(row.default_tags_json)) as string[],
     extractionInstructions: String(row.extraction_instructions),
+    writebackPolicy: String(row.writeback_policy) as KnowledgeBase['writebackPolicy'],
     ...writebackProvider === undefined || writebackModel === undefined ? {} : { writebackProvider, writebackModel },
     status: String(row.status) as KnowledgeBase['status'],
     createdAt: String(row.created_at),
@@ -1424,4 +1615,16 @@ function notFound(kind: string, id: string): Error {
 
 function conflict(message: string): Error {
   return Object.assign(new Error(message), { code: 'CONFLICT' })
+}
+
+function finalizedConflict(entry: Pick<KnowledgeEntry, 'id' | 'title' | 'documentState'>): Error {
+  const label = entry.documentState === 'resolved' ? 'resolved' : 'collection complete'
+  return conflict(`knowledge document "${entry.title}" (${entry.id}) is finalized as ${label}; reopen it before making changes`)
+}
+
+function normalizeFinalizationNote(value?: string): string | undefined {
+  const note = value?.trim()
+  if (!note) return undefined
+  if (note.length > 1000) throw new Error('finalization note must contain at most 1000 characters')
+  return note
 }

@@ -4,6 +4,7 @@ import {
   isKnowledgeType,
   normalizeTags,
   type KnowledgeScope,
+  type KnowledgeDocumentState,
   type KnowledgeStatus,
   type KnowledgeType,
 } from '../domain.js'
@@ -17,6 +18,9 @@ export interface MarkdownDocumentMetadata {
   scope: KnowledgeScope
   confidence: number
   status: KnowledgeStatus
+  documentState: KnowledgeDocumentState
+  finalizedAt?: string
+  finalizationNote?: string
 }
 
 export interface ParsedMarkdownDocument {
@@ -45,6 +49,9 @@ export function parseKnowledgeMarkdown(markdown: string): ParsedMarkdownDocument
     ? raw.confidence
     : 0.8
   const status = raw.status === 'archived' ? 'archived' : 'active'
+  const documentState = raw.documentState === 'resolved' || raw.documentState === 'complete' ? raw.documentState : 'open'
+  const finalizedAt = typeof raw.finalizedAt === 'string' && raw.finalizedAt.trim() ? raw.finalizedAt.trim() : undefined
+  const finalizationNote = typeof raw.finalizationNote === 'string' && raw.finalizationNote.trim() ? raw.finalizationNote.trim() : undefined
   const bodyWithHeading = normalized.slice(end + `\n${FRONT_MATTER_BOUNDARY}\n`.length).trim()
   const heading = bodyWithHeading.match(/^#\s+(.+)$/mu)
   if (heading === null) throw new Error('knowledge document must contain a level-one title')
@@ -54,7 +61,11 @@ export function parseKnowledgeMarkdown(markdown: string): ParsedMarkdownDocument
   const body = (headingEnd < 0 ? '' : bodyWithHeading.slice(headingEnd + 1)).trim()
   if (body.length === 0) throw new Error('knowledge document body cannot be empty')
   return {
-    metadata: { id, type: raw.type, tags, scope, confidence, status },
+    metadata: {
+      id, type: raw.type, tags, scope, confidence, status, documentState,
+      ...finalizedAt === undefined ? {} : { finalizedAt },
+      ...finalizationNote === undefined ? {} : { finalizationNote },
+    },
     title,
     body,
     markdown: normalized.endsWith('\n') ? normalized : `${normalized}\n`,
@@ -75,6 +86,9 @@ export function renderKnowledgeMarkdown(input: {
     scope: input.metadata.scope,
     confidence: Number(input.metadata.confidence.toFixed(3)),
     status: input.metadata.status,
+    documentState: input.metadata.documentState,
+    ...input.metadata.finalizedAt === undefined ? {} : { finalizedAt: input.metadata.finalizedAt },
+    ...input.metadata.finalizationNote === undefined ? {} : { finalizationNote: input.metadata.finalizationNote },
   }, { lineWidth: 0 }).trim()
   return `${FRONT_MATTER_BOUNDARY}\n${frontMatter}\n${FRONT_MATTER_BOUNDARY}\n\n# ${input.title.trim()}\n\n${input.body.trim()}\n`
 }

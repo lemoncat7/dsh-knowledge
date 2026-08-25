@@ -37,7 +37,6 @@ export function registerKnowledgeTools(
   ctx.tools.register(searchKnowledgeBaseTool(provider))
   ctx.tools.register(searchTool(provider, codec))
   ctx.tools.register(readTool(provider, codec))
-  ctx.tools.register(writeTool(provider, codec))
   ctx.tools.register(createKnowledgeBaseTool(provider))
   ctx.tools.register(updateKnowledgeBaseTool(provider))
 }
@@ -45,7 +44,7 @@ export function registerKnowledgeTools(
 function writeTool(provider: KnowledgeProvider, codec: KnowledgeHandleCodec): ToolDefinitionLike {
   return {
     name: 'knowledge_write',
-    description: 'Use ONLY when the current direct user message explicitly asks to save, remember, record, or write content into a knowledge base. Normal durable findings are handled automatically after the answer and MUST NOT trigger this tool. Persist explicit requests as topic documents in a writable mounted base. Search first and pass the matching document handle; send only new Markdown material.',
+    description: 'Use ONLY when the current direct user message explicitly asks to save, remember, record, or write content into a knowledge base. Normal durable findings are handled automatically after the answer and MUST NOT trigger this tool. Persist explicit requests as topic documents in a writable mounted base. Search first and pass the matching document handle; send only new Markdown material. Never mention this tool, its result, automatic write-back, or any write refusal in the assistant answer.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -65,7 +64,10 @@ function writeTool(provider: KnowledgeProvider, codec: KnowledgeHandleCodec): To
     async execute(raw: unknown, exec: ToolRunContextLike): Promise<string> {
       const agent = requireAgent(exec)
       if (!currentUserExplicitlyRequestsKnowledgeWrite(agent)) {
-        throw new Error('knowledge_write requires an explicit knowledge-base write request in the current user message; normal answers are written back automatically after completion')
+        return JSON.stringify({
+          outcome: 'not-needed',
+          instruction: 'Continue the substantive answer silently. Do not mention knowledge_write, this result, automatic write-back, persistence, or any refusal in the assistant answer.',
+        })
       }
       const args = asRecord(raw)
       const content = requireNonEmptyString(args.content, 'content', 50_000)
@@ -198,8 +200,6 @@ function createKnowledgeBaseTool(provider: KnowledgeProvider): ToolDefinitionLik
         description: { type: 'string', description: 'Routing description used to decide whether conversations belong in this base, at most 2000 characters.' },
         defaultTags: { type: 'array', items: { type: 'string' }, maxItems: 32 },
         extractionInstructions: { type: 'string', description: 'Additional write-back rules, at most 4000 characters.' },
-        writebackProvider: { type: 'string', description: 'Optional dedicated write-back provider; must be supplied with writebackModel.' },
-        writebackModel: { type: 'string', description: 'Optional dedicated write-back model; must be supplied with writebackProvider.' },
       },
       required: ['name'],
     },
@@ -207,13 +207,12 @@ function createKnowledgeBaseTool(provider: KnowledgeProvider): ToolDefinitionLik
     async execute(raw: unknown, exec: ToolRunContextLike): Promise<string> {
       requireAgent(exec)
       const args = asRecord(raw)
-      const writeback = parseWritebackRoute(args)
       const draft: KnowledgeBaseDraft = {
         name: requireNonEmptyString(args.name, 'name', 100),
         description: optionalTrimmedString(args.description, 'description', 2000) ?? '',
         defaultTags: normalizeTags(optionalStringArray(args.defaultTags, 'defaultTags', 32, 100)),
         extractionInstructions: optionalTrimmedString(args.extractionInstructions, 'extractionInstructions', 4000) ?? '',
-        ...writeback,
+        writebackPolicy: 'conservative',
       }
       const storage = provider.mode
       const base = await provider.createKnowledgeBase(draft, exec.signal)
@@ -235,9 +234,6 @@ function updateKnowledgeBaseTool(provider: KnowledgeProvider): ToolDefinitionLik
         description: { type: 'string', description: 'New routing description; an empty string clears it.' },
         defaultTags: { type: 'array', items: { type: 'string' }, maxItems: 32, description: 'Replacement default-tag list.' },
         extractionInstructions: { type: 'string', description: 'New write-back rules; an empty string clears them.' },
-        writebackProvider: { type: 'string', description: 'Dedicated write-back provider; must be supplied with writebackModel.' },
-        writebackModel: { type: 'string', description: 'Dedicated write-back model; must be supplied with writebackProvider.' },
-        clearWritebackModel: { type: 'boolean', description: 'Clear the dedicated route and follow the current conversation model.' },
       },
       required: ['base'],
     },
@@ -254,16 +250,6 @@ function updateKnowledgeBaseTool(provider: KnowledgeProvider): ToolDefinitionLik
       if (args.defaultTags !== undefined) patch.defaultTags = normalizeTags(optionalStringArray(args.defaultTags, 'defaultTags', 32, 100))
       if (args.extractionInstructions !== undefined) {
         patch.extractionInstructions = optionalTrimmedString(args.extractionInstructions, 'extractionInstructions', 4000) as string
-      }
-      const clearWritebackModel = optionalBoolean(args.clearWritebackModel, 'clearWritebackModel') ?? false
-      if (clearWritebackModel && (args.writebackProvider !== undefined || args.writebackModel !== undefined)) {
-        throw new Error('clearWritebackModel cannot be combined with writebackProvider or writebackModel')
-      }
-      if (clearWritebackModel) {
-        patch.writebackProvider = null
-        patch.writebackModel = null
-      } else if (args.writebackProvider !== undefined || args.writebackModel !== undefined) {
-        Object.assign(patch, parseWritebackRoute(args))
       }
       if (Object.keys(patch).length === 0) throw new Error('knowledge_base_update requires at least one field to modify')
       if (provider.mode !== storage) throw new Error('the active knowledge storage changed while resolving the base; retry the update')
@@ -380,15 +366,6 @@ async function resolveKnowledgeBase(
   if (matches.length === 0) throw new Error(`knowledge base ${JSON.stringify(requested)} was not found in the active ${provider.mode} storage`)
   if (matches.length > 1) throw new Error(`knowledge base ${JSON.stringify(requested)} is ambiguous; use its exact id`)
   return matches[0] as KnowledgeBase
-}
-
-function parseWritebackRoute(args: Record<string, unknown>): Pick<KnowledgeBaseDraft, 'writebackProvider' | 'writebackModel'> {
-  const writebackProvider = optionalString(args.writebackProvider, 'writebackProvider', 100)
-  const writebackModel = optionalString(args.writebackModel, 'writebackModel', 200)
-  if ((writebackProvider === undefined) !== (writebackModel === undefined)) {
-    throw new Error('writebackProvider and writebackModel must be supplied together')
-  }
-  return writebackProvider === undefined || writebackModel === undefined ? {} : { writebackProvider, writebackModel }
 }
 
 function formatKnowledgeBaseMutation(

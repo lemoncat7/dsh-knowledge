@@ -6,8 +6,9 @@ import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import { activatePluginWorkspace, observePluginWorkspace } from '@lemoncat7/dsh-plugin-ui'
 import {
-  IconDataOutline16,
+  IconChevronLeftOutline14, IconDataOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import cssText from './client.css'
 import { KNOWLEDGE_SETTINGS_NAMESPACE } from './constants.js'
@@ -51,6 +52,7 @@ export const inject = ['slots', 'theme']
 export function apply(ctx: ClientContext): void {
   ctx.effect(installStyles, 'dsh-knowledge: client styles')
   const workspace = createKnowledgeWorkspaceController(ctx)
+  ctx.effect(() => observePluginWorkspace(PLUGIN_ID, workspace.close), 'dsh-knowledge: exclusive workspace')
   ctx.effect(() => () => { workspace.close() }, 'dsh-knowledge: workspace lifecycle')
   ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
     name: 'sidebar.footer.action',
@@ -70,19 +72,36 @@ export function apply(ctx: ClientContext): void {
 }
 
 function KnowledgeWritebackStatus({ sessionId, turn }: { sessionId: string; turn: number }) {
-  const [summary, setSummary] = useState<string>()
+  type Status = { status: 'running' | 'completed' | 'failed'; summary: string; error?: string; retryable: boolean }
+  const [state, setState] = useState<Status>()
+  const [retrying, setRetrying] = useState(false)
   useEffect(() => {
     const controller = new AbortController()
     void fetch(`/knowledge-control/v1/writeback-status?sessionId=${encodeURIComponent(sessionId)}&turn=${turn}`, {
       headers: { accept: 'application/json' }, signal: controller.signal,
-    }).then(async response => response.ok ? response.json() as Promise<{ summary?: string }> : undefined)
-      .then(value => { if (value?.summary) setSummary(value.summary) })
+    }).then(async response => response.ok ? response.json() as Promise<Status> : undefined)
+      .then(value => { if (value?.summary) setState(value) })
       .catch(() => {})
     return () => { controller.abort() }
   }, [sessionId, turn])
-  if (summary === undefined) return null
+  if (state === undefined) return null
+  const retry = async (): Promise<void> => {
+    setRetrying(true)
+    try {
+      const response = await fetch(`/knowledge-control/v1/writeback-status?sessionId=${encodeURIComponent(sessionId)}&turn=${turn}`, {
+        method: 'POST', headers: { accept: 'application/json', 'x-dsh-knowledge-client': 'conversation-web' },
+      })
+      if (!response.ok) throw new Error(`retry failed with HTTP ${response.status}`)
+      setState(await response.json() as Status)
+    } catch (error) {
+      setState(previous => previous === undefined ? previous : {
+        ...previous, error: error instanceof Error ? error.message : String(error), retryable: true,
+      })
+    } finally { setRetrying(false) }
+  }
   return <div className="dsh-knowledge-writeback-status">
-    <span>上下文注入</span><strong>dsh-knowledge</strong><span>{summary}</span>
+    <span>上下文注入</span><strong>dsh-knowledge</strong><span title={state.error}>{state.summary}</span>
+    {state.status === 'failed' && state.retryable && <button type="button" disabled={retrying} onClick={() => { void retry() }}>{retrying ? '重试中…' : '重试'}</button>}
   </div>
 }
 
@@ -97,12 +116,13 @@ function createKnowledgeWorkspaceController(client: ClientContext): KnowledgeWor
     dispose()
     notify()
   }
-  return {
+  const controller: KnowledgeWorkspaceController = {
     isOpen: () => disposeWorkspace !== undefined,
     toggle: () => {
       if (disposeWorkspace !== undefined) return close()
+      activatePluginWorkspace(PLUGIN_ID)
       const dispose = client.slots.register({ name: 'conversation', priority: -1 }, props => (
-        <KnowledgeWorkspace {...props} client={client} />
+        <KnowledgeWorkspace {...props} client={client} workspace={controller} />
       ))
       disposeWorkspace = dispose
       notify()
@@ -113,6 +133,7 @@ function createKnowledgeWorkspaceController(client: ClientContext): KnowledgeWor
       return () => { listeners.delete(listener) }
     },
   }
+  return controller
 }
 
 function KnowledgeConnectionCard() {
@@ -206,11 +227,8 @@ function KnowledgeConnectionCard() {
   return (
     <li className={`dsh-knowledge-settings-card${open ? ' dsh-knowledge-settings-card--open' : ''}`}>
       <button type="button" className="dsh-knowledge-settings-header" aria-expanded={open} onClick={() => { setOpen(value => !value) }}>
-        <span>
-          <strong>知识库连接</strong>
-          <small>选择本机知识库，或连接一台中央 DSH 知识库</small>
-        </span>
-        <span className="dsh-knowledge-settings-summary">{loadState === 'loading' ? '读取中' : loadState === 'error' ? '连接入口' : current?.backend === 'remote' ? '远程' : '本地'} · {open ? '收起' : '设置'}</span>
+        <span><strong>知识库连接</strong><small>选择本机知识库，或连接一台中央 DSH 知识库</small></span>
+        <span className="dsh-knowledge-settings-summary">{loadState === 'loading' ? '读取中' : loadState === 'error' ? '连接入口' : current?.backend === 'remote' ? '远程' : '本地'}<i aria-hidden="true" /></span>
       </button>
       {open && <div className="dsh-knowledge-settings-body">
         {loadState === 'loading' ? <p className="dsh-knowledge-settings-note" role="status">正在读取连接配置…</p>
@@ -333,7 +351,8 @@ function KnowledgeWorkspace({
   sessionId,
   useSessions,
   client,
-}: ConversationSlotProps & { client: ClientContext }) {
+  workspace,
+}: ConversationSlotProps & { client: ClientContext; workspace: KnowledgeWorkspaceController }) {
   const [panelState, setPanelState] = useState<'loading' | 'ready' | 'unavailable' | 'error'>('loading')
   const [managementPath, setManagementPath] = useState<string>()
   const [panelError, setPanelError] = useState('')
@@ -405,11 +424,12 @@ function KnowledgeWorkspace({
   }, [client, scheduleTheme, sendTheme])
 
   return (
-    <section className="dsh-knowledge-workspace" aria-labelledby="dsh-knowledge-workspace-title">
+    <section className="dsh-knowledge-workspace" data-xiaohei-surface="plugin-workspace" aria-labelledby="dsh-knowledge-workspace-title">
       <header className="dsh-knowledge-workspace-header">
         <div>
-          <h2 id="dsh-knowledge-workspace-title">知识库</h2>
-          <p>文档、审核、挂载与访问管理</p>
+          <button type="button" data-xiaohei-workspace-close onClick={workspace.close} aria-label="返回会话" title="返回会话"><IconChevronLeftOutline14 size={15} /></button>
+          <IconDataOutline16 size={18} />
+          <span><h2 id="dsh-knowledge-workspace-title">知识库</h2><p>文档、审核、挂载与访问管理</p></span>
         </div>
       </header>
       {panelState === 'ready' && knowledgeUrl !== undefined

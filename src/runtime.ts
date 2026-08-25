@@ -90,6 +90,9 @@ export interface GenerateOptionsLike {
 
 export interface LlmLike {
   stream(options: GenerateOptionsLike): AsyncIterable<StreamChunkLike>
+  listProviders(): Array<{ id: string; name: string }>
+  listModels(provider: string): Promise<Array<{ provider: string; id: string; name: string; description?: string }>>
+  resolveModelInfo(provider: string, model: string, signal?: AbortSignal): Promise<{ provider: string; id: string; name: string }>
 }
 
 export interface WebServerLike {
