@@ -72,6 +72,52 @@ test('local provider preserves versions and searches approved scoped knowledge',
   })
 })
 
+test('separate local provider instances serialize their shared Markdown projection', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-knowledge-shared-projection-'))
+  const path = join(root, 'knowledge.sqlite')
+  const first = new LocalKnowledgeProvider(path)
+  const second = new LocalKnowledgeProvider(path)
+  t.after(async () => {
+    await Promise.all([first.close(), second.close()])
+    await rm(root, { recursive: true, force: true })
+  })
+
+  const [left, right] = await Promise.all([
+    first.create({ ...globalDraft, title: 'Shared projection left', body: 'The left provider writes this document.' }),
+    second.create({ ...globalDraft, title: 'Shared projection right', body: 'The right provider writes this document.' }),
+  ])
+  const documents = await first.listDocuments('default')
+  assert.deepEqual(new Set(documents.map(document => document.id)), new Set([left.id, right.id]))
+  assert.match((await second.getDocument(left.id))?.content || '', /left provider/)
+  assert.match((await first.getDocument(right.id))?.content || '', /right provider/)
+})
+
+test('archived documents cannot be silently restored by editing or candidate approval', async (t) => {
+  const provider = await fixture(t)
+  const entry = await provider.create({
+    ...globalDraft,
+    title: 'Archived deployment policy',
+  })
+  const candidate = await provider.propose({
+    action: 'conflict',
+    targetId: entry.id,
+    draft: { ...entry, body: 'Use a different archived deployment policy.' },
+    reason: 'Requires review.',
+  }, 'archived-review:1')
+  await provider.archive(entry.id)
+
+  await assert.rejects(
+    () => provider.update(entry.id, { ...entry, body: 'Editing must not restore this document.' }),
+    /is archived and cannot be edited/,
+  )
+  await assert.rejects(
+    () => provider.review(candidate.id, { decision: 'approve', resolution: 'merge' }),
+    /active knowledge entry/,
+  )
+  assert.equal((await provider.get(entry.id))?.status, 'archived')
+  assert.equal((await provider.listCandidates('pending', 10))[0]?.id, candidate.id)
+})
+
 test('direct writes merge compatible knowledge, skip duplicates, and hold conflicts for review', async (t) => {
   const provider = await fixture(t)
   const existing = await provider.create({
@@ -562,10 +608,18 @@ test('candidate approval is transactional and extraction claims are idempotent',
   assert.equal((await provider.extractionJob('session-retry:1'))?.attempts, 3)
   await provider.failExtraction('session-retry:1', 'permanent failure')
   assert.equal(await provider.claimExtraction('session-retry:1'), false)
+  assert.equal(await provider.claimExtraction('session-crashed:1'), true)
+  const recoveryDb = new DatabaseSync(join(provider.fixtureRoot, 'knowledge.sqlite'))
+  recoveryDb.prepare('UPDATE extraction_jobs SET updated_at=? WHERE source_key=?')
+    .run('2000-01-01T00:00:00.000Z', 'session-crashed:1')
+  recoveryDb.close()
+  assert.equal(await provider.claimExtraction('session-crashed:1'), true)
+  assert.equal((await provider.extractionJob('session-crashed:1'))?.attempts, 2)
+  await provider.completeExtraction('session-crashed:1', 0)
   const stats = await provider.stats()
   assert.equal(stats.entries.active, 1)
   assert.equal(stats.candidates.approved, 1)
-  assert.equal(stats.extractionJobs.completed, 1)
+  assert.equal(stats.extractionJobs.completed, 2)
 })
 
 test('API tokens are hashed, permissioned, and revocable', async (t) => {

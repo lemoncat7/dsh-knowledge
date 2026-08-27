@@ -114,7 +114,10 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
   assert.equal(pending.length, 6)
   assert.equal(session.events.at(-1).type, 'assistant/message')
   const writebackNotice = staleNotice
-  assert.deepEqual(extractionRequests.map(request => [request.provider, request.model]), [['mock', 'extractor']])
+  assert.deepEqual(extractionRequests.map(request => [request.provider, request.model]), [
+    ['mock', 'extractor'],
+    ['kimi', 'kimi-k2.7-code'],
+  ])
   const extractionRequest = extractionRequests.find(request => request.provider === 'mock')
   const extractionPayload = JSON.parse(extractionRequest.messages[0].content[0].text)
   assert.equal(extractionPayload.destinations[0].routingDescription, 'Only reusable DSH plugin installation and operation knowledge qualifies.')

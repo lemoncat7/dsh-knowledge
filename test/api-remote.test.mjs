@@ -60,13 +60,22 @@ test('remote provider interoperates with the authenticated local API', async (t)
   const base = await remote.createKnowledgeBase({
     name: 'Shared project knowledge', description: 'Mounted by remote clients.',
     defaultTags: ['shared'], extractionInstructions: 'Keep cross-client decisions.',
+    writebackProvider: 'kimi', writebackModel: 'kimi-k2.7-code',
   })
+  assert.deepEqual(
+    [base.writebackProvider, base.writebackModel],
+    ['kimi', 'kimi-k2.7-code'],
+  )
   const patched = await remote.patchKnowledgeBase(base.id, {
     description: 'Only conversations about the shared project qualify.',
     defaultTags: ['shared', 'project'],
+    writebackProvider: null,
+    writebackModel: null,
   })
   assert.equal(patched.description, 'Only conversations about the shared project qualify.')
   assert.deepEqual(patched.defaultTags, ['project', 'shared'])
+  assert.equal(patched.writebackProvider, undefined)
+  assert.equal(patched.writebackModel, undefined)
   await remote.upsertMount({
     targetKind: 'project', targetId: '/workspace/demo', knowledgeBaseId: base.id,
     enabled: true, recallEnabled: true, writeMode: 'audit', includeTags: ['shared'], excludeTags: [], extractionInstructions: '',

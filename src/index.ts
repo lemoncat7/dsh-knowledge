@@ -1,7 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { randomBytes } from 'node:crypto'
-import { LOCAL_MANAGEMENT_API_PREFIX, registerKnowledgeApi } from './api.js'
+import { assertKnowledgeBrowserRequest, LOCAL_MANAGEMENT_API_PREFIX, registerKnowledgeApi } from './api.js'
 import {
   connectionSettingsBase,
   createConnectionProvider,
@@ -110,19 +110,38 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
       if (resolved.connectionPath === undefined) throw connectionError(409, '当前插件没有配置持久化路径，无法保存连接。')
       const candidate = createConnectionProvider(resolved, next, publicApiEnabled)
       let persisted = false
+      let installed = false
+      let managementRouteChanged = false
+      const previous = activeConnection
+      const restoreManagementApi = (): void => {
+        activeConnection = previous
+        try { refreshManagementApi() } catch (rollbackError) {
+          runtime.logger.error(`dsh-knowledge: failed to restore management API route: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`)
+        }
+      }
       try {
         if (next.backend === 'remote') await candidate.stats()
         await storeConnection(resolved.connectionPath, next)
         persisted = true
-        await providerRouter.replace(candidate)
         activeConnection = next
-        refreshManagementApi()
+        try {
+          refreshManagementApi()
+          managementRouteChanged = true
+        } catch (error) {
+          restoreManagementApi()
+          throw error
+        }
+        await providerRouter.replace(candidate)
+        installed = true
         runtime.logger.info(`dsh-knowledge: verified and switched to ${next.backend} provider`)
         return activeConnection
       } catch (error) {
+        if (installed) return next
         await candidate.close().catch(() => {})
+        activeConnection = previous
+        if (managementRouteChanged) restoreManagementApi()
         if (persisted) {
-          await storeConnection(resolved.connectionPath, activeConnection).catch(rollbackError => {
+          await storeConnection(resolved.connectionPath, previous).catch(rollbackError => {
             runtime.logger.error(`dsh-knowledge: failed to restore connection settings: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`)
           })
         }
@@ -240,41 +259,56 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
       kind: 'exact',
       path: '/knowledge-control/v1/writeback-status',
       async handler(req, res) {
-        if (req.method !== 'GET' && req.method !== 'POST') {
-          res.writeHead(405, { allow: 'GET, POST' }).end()
-          return
-        }
-        const url = new URL(req.url ?? '/', 'http://localhost')
-        const key = `${url.searchParams.get('sessionId') ?? ''}:${url.searchParams.get('turn') ?? ''}`
-        let state = writebackStatuses.get(key)
-        if (req.method === 'POST') {
-          if (req.headers['x-dsh-knowledge-client'] !== 'conversation-web') {
-            res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' }).end(JSON.stringify({ error: 'missing knowledge client header' }))
+        try {
+          if (req.method !== 'GET' && req.method !== 'POST') {
+            res.writeHead(405, { allow: 'GET, POST' }).end()
             return
           }
-          const source = writebackSources.get(key)
-          if (state?.status !== 'failed' || !state.retryable || source === undefined) {
-            res.writeHead(409, { 'content-type': 'application/json; charset=utf-8' }).end(JSON.stringify({ error: 'writeback is not retryable' }))
-            return
+          assertKnowledgeBrowserRequest(req, 'conversation-web')
+          const url = new URL(req.url ?? '/', 'http://localhost')
+          const sessionId = url.searchParams.get('sessionId')?.trim()
+          const turn = Number(url.searchParams.get('turn'))
+          if (!sessionId || !Number.isInteger(turn) || turn < 0) throw connectionError(400, 'sessionId and a non-negative integer turn are required')
+          const key = `${sessionId}:${turn}`
+          let state = writebackStatuses.get(key)
+          if (req.method === 'POST') {
+            const source = writebackSources.get(key)
+            if (state?.status !== 'failed' || !state.retryable || source === undefined) {
+              throw connectionError(409, 'writeback is not retryable')
+            }
+            writebackStatuses.set(key, { status: 'running', summary: '知识库回写 · 正在重试', retryable: false })
+            try {
+              await provider.resetExtraction(key)
+              state = await runWriteback(source.agent, source.turn, new AbortController().signal)
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error)
+              state = { status: 'failed', summary: '知识库回写 · 重试失败', error: message, retryable: true }
+              writebackStatuses.set(key, state)
+            }
           }
-          await provider.resetExtraction(key)
-          state = await runWriteback(source.agent, source.turn, new AbortController().signal)
+          res.writeHead(state === undefined ? 404 : 200, {
+            'content-type': 'application/json; charset=utf-8',
+            'cache-control': 'no-store',
+          }).end(JSON.stringify(state === undefined ? { status: 'missing' } : state))
+        } catch (error) {
+          sendControlError(res, error)
         }
-        res.writeHead(state === undefined ? 404 : 200, {
-          'content-type': 'application/json; charset=utf-8',
-          'cache-control': 'no-store',
-        }).end(JSON.stringify(state === undefined ? { status: 'missing' } : state))
       },
     })
     if (disposeWritebackStatus !== undefined) httpRuntime.effect(() => disposeWritebackStatus, 'dsh-knowledge.writeback-status')
     const disposeModelCatalog = httpRuntime.webServer?.register({
       kind: 'exact', path: '/knowledge-control/v1/models',
       async handler(req, res) {
-        if (req.method !== 'GET') { res.writeHead(405, { allow: 'GET' }).end(); return }
-        const providers = await Promise.all(runtime.llm.listProviders().map(async provider => ({
-          ...provider, models: await runtime.llm.listModels(provider.id).catch(() => []),
-        })))
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end(JSON.stringify({ providers }))
+        try {
+          if (req.method !== 'GET') { res.writeHead(405, { allow: 'GET' }).end(); return }
+          assertKnowledgeBrowserRequest(req, 'management-web')
+          const providers = await Promise.all(runtime.llm.listProviders().map(async provider => ({
+            ...provider, models: await runtime.llm.listModels(provider.id).catch(() => []),
+          })))
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end(JSON.stringify({ providers }))
+        } catch (error) {
+          sendControlError(res, error)
+        }
       },
     })
     if (disposeModelCatalog !== undefined) httpRuntime.effect(() => disposeModelCatalog, 'dsh-knowledge.model-catalog')
@@ -375,4 +409,15 @@ function publicConnectionError(error: unknown): Error {
 
 function connectionError(status: number, message: string): Error {
   return Object.assign(new Error(message), { status })
+}
+
+function sendControlError(res: { writeHead(status: number, headers?: Record<string, string>): { end(body?: string): void } }, error: unknown): void {
+  const status = error instanceof Error && typeof (error as Error & { status?: unknown }).status === 'number'
+    ? (error as Error & { status: number }).status
+    : 500
+  const message = status >= 500 ? 'internal knowledge control error' : error instanceof Error ? error.message : String(error)
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+  }).end(JSON.stringify({ error: message }))
 }

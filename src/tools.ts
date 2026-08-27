@@ -200,6 +200,9 @@ function createKnowledgeBaseTool(provider: KnowledgeProvider): ToolDefinitionLik
         description: { type: 'string', description: 'Routing description used to decide whether conversations belong in this base, at most 2000 characters.' },
         defaultTags: { type: 'array', items: { type: 'string' }, maxItems: 32 },
         extractionInstructions: { type: 'string', description: 'Additional write-back rules, at most 4000 characters.' },
+        writebackPolicy: { type: 'string', enum: ['conservative', 'proactive'], description: 'Write-back strictness; defaults to conservative.' },
+        writebackProvider: { type: 'string', description: 'Optional dedicated write-back provider. Must be supplied together with writebackModel.' },
+        writebackModel: { type: 'string', description: 'Optional dedicated write-back model. Must be supplied together with writebackProvider.' },
       },
       required: ['name'],
     },
@@ -207,12 +210,18 @@ function createKnowledgeBaseTool(provider: KnowledgeProvider): ToolDefinitionLik
     async execute(raw: unknown, exec: ToolRunContextLike): Promise<string> {
       requireAgent(exec)
       const args = asRecord(raw)
+      const writebackProvider = optionalString(args.writebackProvider, 'writebackProvider', 100)
+      const writebackModel = optionalString(args.writebackModel, 'writebackModel', 200)
+      if ((writebackProvider === undefined) !== (writebackModel === undefined)) {
+        throw new Error('writebackProvider and writebackModel must be configured together')
+      }
       const draft: KnowledgeBaseDraft = {
         name: requireNonEmptyString(args.name, 'name', 100),
         description: optionalTrimmedString(args.description, 'description', 2000) ?? '',
         defaultTags: normalizeTags(optionalStringArray(args.defaultTags, 'defaultTags', 32, 100)),
         extractionInstructions: optionalTrimmedString(args.extractionInstructions, 'extractionInstructions', 4000) ?? '',
-        writebackPolicy: 'conservative',
+        writebackPolicy: parseWritebackPolicy(args.writebackPolicy) ?? 'conservative',
+        ...writebackProvider === undefined || writebackModel === undefined ? {} : { writebackProvider, writebackModel },
       }
       const storage = provider.mode
       const base = await provider.createKnowledgeBase(draft, exec.signal)
@@ -234,6 +243,10 @@ function updateKnowledgeBaseTool(provider: KnowledgeProvider): ToolDefinitionLik
         description: { type: 'string', description: 'New routing description; an empty string clears it.' },
         defaultTags: { type: 'array', items: { type: 'string' }, maxItems: 32, description: 'Replacement default-tag list.' },
         extractionInstructions: { type: 'string', description: 'New write-back rules; an empty string clears them.' },
+        writebackPolicy: { type: 'string', enum: ['conservative', 'proactive'], description: 'Replacement write-back strictness.' },
+        writebackProvider: { type: 'string', description: 'Replacement dedicated provider. Must be supplied together with writebackModel.' },
+        writebackModel: { type: 'string', description: 'Replacement dedicated model. Must be supplied together with writebackProvider.' },
+        useCurrentSessionModel: { type: 'boolean', description: 'Set true to clear the dedicated model and follow each current conversation model.' },
       },
       required: ['base'],
     },
@@ -250,6 +263,26 @@ function updateKnowledgeBaseTool(provider: KnowledgeProvider): ToolDefinitionLik
       if (args.defaultTags !== undefined) patch.defaultTags = normalizeTags(optionalStringArray(args.defaultTags, 'defaultTags', 32, 100))
       if (args.extractionInstructions !== undefined) {
         patch.extractionInstructions = optionalTrimmedString(args.extractionInstructions, 'extractionInstructions', 4000) as string
+      }
+      const writebackPolicy = parseWritebackPolicy(args.writebackPolicy)
+      if (writebackPolicy !== undefined) patch.writebackPolicy = writebackPolicy
+      const writebackProvider = optionalString(args.writebackProvider, 'writebackProvider', 100)
+      const writebackModel = optionalString(args.writebackModel, 'writebackModel', 200)
+      if ((writebackProvider === undefined) !== (writebackModel === undefined)) {
+        throw new Error('writebackProvider and writebackModel must be configured together')
+      }
+      if (args.useCurrentSessionModel !== undefined && typeof args.useCurrentSessionModel !== 'boolean') {
+        throw new Error('useCurrentSessionModel must be a boolean')
+      }
+      if (args.useCurrentSessionModel === true && writebackProvider !== undefined) {
+        throw new Error('useCurrentSessionModel cannot be combined with a dedicated write-back model')
+      }
+      if (args.useCurrentSessionModel === true) {
+        patch.writebackProvider = null
+        patch.writebackModel = null
+      } else if (writebackProvider !== undefined && writebackModel !== undefined) {
+        patch.writebackProvider = writebackProvider
+        patch.writebackModel = writebackModel
       }
       if (Object.keys(patch).length === 0) throw new Error('knowledge_base_update requires at least one field to modify')
       if (provider.mode !== storage) throw new Error('the active knowledge storage changed while resolving the base; retry the update')
@@ -344,6 +377,14 @@ function parseWriteScope(value: unknown, projectId?: string): KnowledgeDraft['sc
 
 function parseWriteType(value: unknown): KnowledgeDraft['type'] {
   if (!isKnowledgeType(value)) throw new Error('type is required for new knowledge and must be preference, fact, decision, procedure, or lesson')
+  return value
+}
+
+function parseWritebackPolicy(value: unknown): KnowledgeBaseDraft['writebackPolicy'] | undefined {
+  if (value === undefined) return undefined
+  if (value !== 'conservative' && value !== 'proactive') {
+    throw new Error('writebackPolicy must be conservative or proactive')
+  }
   return value
 }
 

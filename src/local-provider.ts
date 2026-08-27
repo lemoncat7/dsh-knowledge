@@ -44,6 +44,7 @@ import type { KnowledgeProvider } from './provider.js'
 import { renderKnowledgeMarkdown } from './documents/markdown.js'
 import { knowledgeDocumentPath } from './documents/path.js'
 import { KnowledgeDocumentStore } from './documents/store.js'
+import { enqueueDocumentProjection } from './documents/projection-queue.js'
 import { mergeKnowledgeBodies } from './knowledge-merge.js'
 
 type SqlRow = Record<string, unknown>
@@ -61,6 +62,8 @@ const JOINED_ENTRY_COLUMNS = `
   e.source_json AS source_json, e.created_at AS created_at, e.updated_at AS updated_at
 `
 
+const EXTRACTION_LEASE_MS = 15 * 60 * 1000
+
 export class LocalKnowledgeProvider implements KnowledgeProvider {
   readonly mode = 'local' as const
   private readonly db: DatabaseSync
@@ -74,7 +77,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     this.db = new DatabaseSync(path)
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
     this.migrate()
-    this.documentsReady = this.syncAllDocuments()
+    this.documentsReady = this.enqueueDocumentSync(() => this.syncAllDocuments())
   }
 
   private migrate(): void {
@@ -336,7 +339,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       base.id, base.name, base.description, JSON.stringify(base.defaultTags), base.extractionInstructions,
       base.writebackPolicy, base.writebackProvider ?? null, base.writebackModel ?? null, timestamp, timestamp,
     )
-    await this.syncKnowledgeDocuments(base.id)
+    await this.syncKnowledgeDocumentsQueued(base.id)
     return base
   }
 
@@ -346,7 +349,13 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     const current = await this.getKnowledgeBase(id)
     if (current === undefined) throw notFound('knowledge base', id)
     const draft = normalizeKnowledgeBaseDraft(input)
-    const updated: KnowledgeBase = { ...current, ...draft, updatedAt: nowIso() }
+    const updated: KnowledgeBase = {
+      id: current.id,
+      status: current.status,
+      createdAt: current.createdAt,
+      ...draft,
+      updatedAt: nowIso(),
+    }
     this.db.prepare(`
       UPDATE knowledge_bases SET
         name=?,description=?,default_tags_json=?,extraction_instructions=?,writeback_policy=?,writeback_provider=?,writeback_model=?,updated_at=?
@@ -355,7 +364,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       updated.name, updated.description, JSON.stringify(updated.defaultTags), updated.extractionInstructions,
       updated.writebackPolicy, updated.writebackProvider ?? null, updated.writebackModel ?? null, updated.updatedAt, id,
     )
-    await this.syncKnowledgeDocuments(id)
+    await this.syncKnowledgeDocumentsQueued(id)
     return updated
   }
 
@@ -383,8 +392,10 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     if (current === undefined) throw notFound('knowledge base', id)
     if (current.status === 'archived') return current
     const updated: KnowledgeBase = { ...current, status: 'archived', updatedAt: nowIso() }
-    this.db.prepare("UPDATE knowledge_bases SET status='archived',updated_at=? WHERE id=?").run(updated.updatedAt, id)
-    this.db.prepare('UPDATE knowledge_mounts SET enabled=0,updated_at=? WHERE knowledge_base_id=?').run(updated.updatedAt, id)
+    this.transaction(() => {
+      this.db.prepare("UPDATE knowledge_bases SET status='archived',updated_at=? WHERE id=?").run(updated.updatedAt, id)
+      this.db.prepare('UPDATE knowledge_mounts SET enabled=0,updated_at=? WHERE knowledge_base_id=?').run(updated.updatedAt, id)
+    })
     return updated
   }
 
@@ -403,25 +414,32 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     await this.documentsReady
     const base = await this.getKnowledgeBase(id)
     if (id === DEFAULT_KNOWLEDGE_BASE_ID) throw conflict('the default knowledge base cannot be deleted')
-    this.transaction(() => {
-      const row = this.db.prepare('SELECT status FROM knowledge_bases WHERE id=?').get(id) as SqlRow | undefined
-      if (row === undefined) throw notFound('knowledge base', id)
-      if (row.status !== 'archived') throw conflict('knowledge base must be archived before deletion')
-      this.db.prepare(`
-        DELETE FROM knowledge_candidates
-        WHERE json_extract(draft_json, '$.knowledgeBaseId')=?
-           OR target_id IN (SELECT id FROM knowledge_entries WHERE knowledge_base_id=?)
-      `).run(id, id)
-      this.db.prepare(`
-        DELETE FROM knowledge_fts
-        WHERE knowledge_id IN (SELECT id FROM knowledge_entries WHERE knowledge_base_id=?)
-      `).run(id)
-      this.db.prepare('DELETE FROM knowledge_entries WHERE knowledge_base_id=?').run(id)
-      this.db.prepare('DELETE FROM knowledge_mounts WHERE knowledge_base_id=?').run(id)
-      this.db.prepare('DELETE FROM knowledge_documents WHERE knowledge_base_id=?').run(id)
-      this.db.prepare('DELETE FROM knowledge_bases WHERE id=?').run(id)
-    })
-    if (base !== undefined) await this.documentStore.deleteBase(this.documentStore.baseDirectory(base))
+    if (base === undefined) throw notFound('knowledge base', id)
+    if (base.status !== 'archived') throw conflict('knowledge base must be archived before deletion')
+    await this.enqueueDocumentSync(() => this.documentStore.deleteBase(this.documentStore.baseDirectory(base)))
+    try {
+      this.transaction(() => {
+        const row = this.db.prepare('SELECT status FROM knowledge_bases WHERE id=?').get(id) as SqlRow | undefined
+        if (row === undefined) throw notFound('knowledge base', id)
+        if (row.status !== 'archived') throw conflict('knowledge base must be archived before deletion')
+        this.db.prepare(`
+          DELETE FROM knowledge_candidates
+          WHERE json_extract(draft_json, '$.knowledgeBaseId')=?
+             OR target_id IN (SELECT id FROM knowledge_entries WHERE knowledge_base_id=?)
+        `).run(id, id)
+        this.db.prepare(`
+          DELETE FROM knowledge_fts
+          WHERE knowledge_id IN (SELECT id FROM knowledge_entries WHERE knowledge_base_id=?)
+        `).run(id)
+        this.db.prepare('DELETE FROM knowledge_entries WHERE knowledge_base_id=?').run(id)
+        this.db.prepare('DELETE FROM knowledge_mounts WHERE knowledge_base_id=?').run(id)
+        this.db.prepare('DELETE FROM knowledge_documents WHERE knowledge_base_id=?').run(id)
+        this.db.prepare('DELETE FROM knowledge_bases WHERE id=?').run(id)
+      })
+    } catch (error) {
+      await this.syncKnowledgeDocumentsQueued(id).catch(() => {})
+      throw error
+    }
   }
 
   async listDocuments(knowledgeBaseId?: string, query?: string): Promise<KnowledgeDocument[]> {
@@ -636,7 +654,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     return rows.map(row => {
       const entry = rowToEntry(row)
       return { entry, score: relevanceScore(entry, text) }
-    })
+    }).sort((left, right) => right.score - left.score || right.entry.updatedAt.localeCompare(left.entry.updatedAt))
   }
 
   private searchByTerms(
@@ -706,7 +724,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     this.assertOpen()
     await this.documentsReady
     const entry = this.transaction(() => this.insertEntry(draft))
-    await this.syncKnowledgeDocuments(entry.knowledgeBaseId)
+    await this.syncKnowledgeDocumentsQueued(entry.knowledgeBaseId)
     return entry
   }
 
@@ -741,8 +759,8 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     await this.documentsReady
     const current = await this.get(id)
     const entry = this.transaction(() => this.updateEntry(id, draft, 'update'))
-    if (current !== undefined && current.knowledgeBaseId !== entry.knowledgeBaseId) await this.syncKnowledgeDocuments(current.knowledgeBaseId)
-    await this.syncKnowledgeDocuments(entry.knowledgeBaseId)
+    if (current !== undefined && current.knowledgeBaseId !== entry.knowledgeBaseId) await this.syncKnowledgeDocumentsQueued(current.knowledgeBaseId)
+    await this.syncKnowledgeDocumentsQueued(entry.knowledgeBaseId)
     return entry
   }
 
@@ -775,7 +793,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       this.upsertFts(updated)
       return updated
     })
-    await this.syncKnowledgeDocuments(entry.knowledgeBaseId)
+    await this.syncKnowledgeDocumentsQueued(entry.knowledgeBaseId)
     return entry
   }
 
@@ -805,7 +823,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       this.upsertFts(updated)
       return updated
     })
-    await this.syncKnowledgeDocuments(entry.knowledgeBaseId)
+    await this.syncKnowledgeDocumentsQueued(entry.knowledgeBaseId)
     return entry
   }
 
@@ -813,6 +831,9 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     const currentRow = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM knowledge_entries WHERE id = ?`).get(id) as SqlRow | undefined
     if (currentRow === undefined) throw notFound('knowledge entry', id)
     const current = rowToEntry(currentRow)
+    if (current.status !== 'active' && changeKind !== 'restore') {
+      throw conflict(`knowledge document "${current.title}" is archived and cannot be edited`)
+    }
     if (current.documentState !== 'open') throw finalizedConflict(current)
     const draft = normalizeDraft(input)
     if (this.db.prepare("SELECT id FROM knowledge_bases WHERE id=? AND status='active'").get(draft.knowledgeBaseId) === undefined) {
@@ -857,7 +878,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       this.db.prepare('DELETE FROM knowledge_fts WHERE knowledge_id = ?').run(id)
       return updated
     })
-    await this.syncKnowledgeDocuments(entry.knowledgeBaseId)
+    await this.syncKnowledgeDocumentsQueued(entry.knowledgeBaseId)
     return entry
   }
 
@@ -870,7 +891,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       const result = this.db.prepare('DELETE FROM knowledge_entries WHERE id = ?').run(id)
       if (result.changes === 0) throw notFound('knowledge entry', id)
     })
-    if (current !== undefined) await this.syncKnowledgeDocuments(current.knowledgeBaseId)
+    if (current !== undefined) await this.syncKnowledgeDocumentsQueued(current.knowledgeBaseId)
   }
 
   async propose(input: CandidateProposal, sourceKey?: string): Promise<KnowledgeCandidate> {
@@ -914,7 +935,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
         entry,
       }
     })
-    if (touchedBaseId !== undefined) await this.syncKnowledgeDocuments(touchedBaseId)
+    if (touchedBaseId !== undefined) await this.syncKnowledgeDocumentsQueued(touchedBaseId)
     return result
   }
 
@@ -1028,9 +1049,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
             throw conflict('conflict candidate requires an explicit merge resolution')
           }
           if (candidate.targetId === undefined) throw new Error('candidate target is missing')
-          const targetRow = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM knowledge_entries WHERE id = ?`).get(candidate.targetId) as SqlRow | undefined
-          if (targetRow === undefined) throw notFound('candidate target', candidate.targetId)
-          const target = rowToEntry(targetRow)
+          const target = this.activeEntry(candidate.targetId)
           if (draft.knowledgeBaseId !== target.knowledgeBaseId) {
             throw conflict('candidate approval cannot move a document between knowledge bases')
           }
@@ -1071,33 +1090,50 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
         .run(status, reviewedAt, note ?? null, id)
       return { ...candidate, status, reviewedAt, ...note === undefined ? {} : { reviewNote: note } }
     })
-    if (decision.decision === 'approve') await this.syncKnowledgeDocuments(reviewed.draft.knowledgeBaseId)
+    if (decision.decision === 'approve') await this.syncKnowledgeDocumentsQueued(reviewed.draft.knowledgeBaseId)
     return reviewed
   }
 
   async claimExtraction(sourceKey: string): Promise<boolean> {
     this.assertOpen()
+    const claimedAt = nowIso()
+    const staleBefore = new Date(Date.now() - EXTRACTION_LEASE_MS).toISOString()
     const result = this.db.prepare(`
       INSERT INTO extraction_jobs(source_key,status,attempts,candidate_count,updated_at)
       VALUES(?,'running',1,0,?)
       ON CONFLICT(source_key) DO UPDATE SET
         status='running', attempts=extraction_jobs.attempts+1, candidate_count=0,
         last_error=NULL, updated_at=excluded.updated_at
-      WHERE extraction_jobs.status='failed' AND extraction_jobs.attempts < 3
-    `).run(sourceKey, nowIso())
+      WHERE extraction_jobs.attempts < 3 AND (
+        extraction_jobs.status='failed'
+        OR (extraction_jobs.status='running' AND extraction_jobs.updated_at < ?)
+      )
+    `).run(sourceKey, claimedAt, staleBefore)
     return result.changes === 1
   }
 
   async completeExtraction(sourceKey: string, candidateCount: number): Promise<void> {
     this.assertOpen()
-    this.db.prepare(`UPDATE extraction_jobs SET status='completed', candidate_count=?, last_error=NULL, updated_at=? WHERE source_key=?`)
-      .run(candidateCount, nowIso(), sourceKey)
+    const result = this.db.prepare(`
+      UPDATE extraction_jobs SET status='completed', candidate_count=?, last_error=NULL, updated_at=?
+      WHERE source_key=? AND status='running'
+    `).run(candidateCount, nowIso(), sourceKey)
+    if (result.changes === 0) {
+      const current = await this.extractionJob(sourceKey)
+      if (current?.status !== 'completed') throw conflict(`extraction job "${sourceKey}" is not running`)
+    }
   }
 
   async failExtraction(sourceKey: string, error: string): Promise<void> {
     this.assertOpen()
-    this.db.prepare(`UPDATE extraction_jobs SET status='failed', last_error=?, updated_at=? WHERE source_key=?`)
-      .run(error.slice(0, 4000), nowIso(), sourceKey)
+    const result = this.db.prepare(`
+      UPDATE extraction_jobs SET status='failed', last_error=?, updated_at=?
+      WHERE source_key=? AND status='running'
+    `).run(error.slice(0, 4000), nowIso(), sourceKey)
+    if (result.changes === 0) {
+      const current = await this.extractionJob(sourceKey)
+      if (current?.status !== 'failed') throw conflict(`extraction job "${sourceKey}" is not running`)
+    }
   }
 
   async resetExtraction(sourceKey: string): Promise<void> {
@@ -1128,7 +1164,11 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     const row = this.db.prepare('SELECT * FROM api_tokens WHERE token_hash = ? AND revoked_at IS NULL')
       .get(tokenHash(token)) as SqlRow | undefined
     if (row === undefined) return undefined
-    const usedAt = nowIso()
+    const previous = row.last_used_at == null ? undefined : String(row.last_used_at)
+    const now = Date.now()
+    const shouldRefresh = previous === undefined || !Number.isFinite(Date.parse(previous)) || now - Date.parse(previous) >= 60_000
+    if (!shouldRefresh) return rowToToken(row)
+    const usedAt = new Date(now).toISOString()
     this.db.prepare('UPDATE api_tokens SET last_used_at = ? WHERE id = ?').run(usedAt, String(row.id))
     return rowToToken({ ...row, last_used_at: usedAt })
   }
@@ -1206,6 +1246,14 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     await this.documentStore.initialize()
     const bases = this.db.prepare('SELECT id FROM knowledge_bases').all() as SqlRow[]
     for (const base of bases) await this.syncKnowledgeDocuments(String(base.id))
+  }
+
+  private enqueueDocumentSync<T>(operation: () => Promise<T>): Promise<T> {
+    return enqueueDocumentProjection(this.documentStore.root, operation)
+  }
+
+  private syncKnowledgeDocumentsQueued(knowledgeBaseId: string): Promise<void> {
+    return this.enqueueDocumentSync(() => this.syncKnowledgeDocuments(knowledgeBaseId))
   }
 
   private async syncKnowledgeDocuments(knowledgeBaseId: string): Promise<void> {

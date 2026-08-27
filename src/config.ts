@@ -1,4 +1,5 @@
 import Schema from '@deepseek-ai/schemastery'
+import { normalizeRemoteKnowledgeUrl } from './remote-url.js'
 
 export interface Config {
   backend: 'local' | 'remote'
@@ -86,11 +87,7 @@ export function resolveConfig(config: Config): ResolvedConfig {
     if (resolved.remoteUrl === undefined || resolved.remoteToken === undefined) {
       throw new Error('remote knowledge backend requires remoteUrl and remoteToken')
     }
-    const url = new URL(resolved.remoteUrl)
-    const loopback = url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1'
-    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
-      throw new Error('remote knowledge backend requires HTTPS (HTTP is allowed only for loopback testing)')
-    }
+    normalizeRemoteKnowledgeUrl(resolved.remoteUrl)
     if (resolved.remoteToken.trim().length < 24) throw new Error('remoteToken must contain at least 24 characters')
     if (resolved.exposeApi) throw new Error('remote knowledge backend cannot expose the local API')
   }

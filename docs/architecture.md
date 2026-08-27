@@ -48,7 +48,7 @@ The browser integration is compiled against the exact official client packages u
 
 ## Data model and consistency
 
-SQLite is authoritative in local mode. Schema version 6 contains:
+SQLite is authoritative in local mode. Schema version 9 contains:
 
 - `knowledge_bases`: independently named destinations with default tags and extraction instructions.
 - `knowledge_mounts`: project/session policy overlays for recall, write mode and tag constraints.
@@ -72,10 +72,10 @@ An active content hash unique index blocks byte-equivalent duplicate knowledge. 
 2. Project mounts are resolved and then overlaid by explicit session mounts; a disabled session mount blocks inheritance.
 3. Without a writable mount, no extraction model call or job claim occurs.
 4. The relevant direct user input and final non-empty assistant message are copied into an immutable job snapshot.
-5. `extraction_jobs` atomically claims `sessionId:turn`; replaying the event cannot duplicate work.
+5. `extraction_jobs` atomically claims `sessionId:turn`; replaying the event cannot duplicate work. A running claim is a 15-minute lease, so an interrupted process can recover the turn without leaving it permanently stuck; proposal hashes and a three-attempt ceiling keep recovery bounded and idempotent.
 6. The authoritative writeback policy is loaded and writable mounts are grouped by their configured extraction model route.
 7. Each route group searches its mounted bases for related existing documents, globally ranks the results and caps the comparison set.
-8. One bounded model call decides destination relevance and extracts strict document-mutation JSON together. It returns a stable `documentTitle`, optional `sectionTitle`, Markdown body and an existing `targetId` whenever relevant. This avoids a second routing-model call and prevents an overly conservative first gate from discarding valid destination-specific knowledge.
+8. One bounded model call decides destination relevance and extracts strict document-mutation JSON together. It returns a stable `documentTitle`, optional `sectionTitle`, Markdown body and an existing `targetId` whenever relevant. This avoids a second routing-model call and prevents an overly conservative first gate from discarding valid destination-specific knowledge. Model selection is explicit and deterministic: a client-local override wins first, then a knowledge-base-specific route, then the completed assistant turn's actual model, and finally the legacy static extraction route.
 9. Runtime validation rejects unknown destinations, non-durable retention, types, targets, arbitrary project IDs and malformed output. It then coalesces same-base, same-scope and same-title mutations into one document proposal, merging sections, tags and provenance. Ambiguous proposals that point at different existing documents become conflicts instead of silently choosing a target.
 10. Audit mounts keep valid proposals pending. Direct mounts automatically write high-confidence non-conflicting candidates; lower-confidence and conflicting candidates go to audit instead. Both direct write and audit approval reconcile against current documents again, atomically skipping duplicates, merging compatible same-topic content with a new version, and protecting possible contradictions from overwrite.
 11. Per-base direct and pending counts are written to the service log and exposed through the completed-turn UI extension. The plugin never appends a synthetic `user/message`, so write-back cannot change model context, the conversation tail, or branching semantics.

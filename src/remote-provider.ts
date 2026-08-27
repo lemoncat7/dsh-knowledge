@@ -26,6 +26,9 @@ import type {
   SearchRequest,
 } from './domain.js'
 import type { KnowledgeProvider } from './provider.js'
+import { normalizeRemoteKnowledgeUrl } from './remote-url.js'
+
+const MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 
 export interface RemoteProviderOptions {
   url: string
@@ -38,7 +41,7 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
   private readonly baseUrl: URL
 
   constructor(private readonly options: RemoteProviderOptions) {
-    this.baseUrl = new URL(options.url.endsWith('/') ? options.url : `${options.url}/`)
+    this.baseUrl = normalizeRemoteKnowledgeUrl(options.url)
   }
 
   async getSettings(signal?: AbortSignal): Promise<KnowledgeSettings> {
@@ -255,7 +258,7 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     } catch (error) {
       throw new RemoteProviderError(`knowledge server request failed: ${error instanceof Error ? error.message : String(error)}`, 0)
     }
-    const text = await response.text()
+    const text = await readBoundedResponse(response, MAX_RESPONSE_BYTES)
     const payload = text.length === 0 ? undefined : safeJson(text)
     if (!response.ok) {
       const detail = remoteErrorDetail(payload, text)
@@ -265,6 +268,34 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
       throw new RemoteProviderError(message, response.status)
     }
     return payload as T
+  }
+}
+
+async function readBoundedResponse(response: Response, maximumBytes: number): Promise<string> {
+  const declared = Number(response.headers.get('content-length') ?? 0)
+  if (Number.isFinite(declared) && declared > maximumBytes) {
+    await response.body?.cancel().catch(() => {})
+    throw new RemoteProviderError('knowledge server response is too large', 502)
+  }
+  if (response.body === null) return ''
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let size = 0
+  let text = ''
+  try {
+    while (true) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      size += chunk.value.byteLength
+      if (size > maximumBytes) {
+        await reader.cancel().catch(() => {})
+        throw new RemoteProviderError('knowledge server response is too large', 502)
+      }
+      text += decoder.decode(chunk.value, { stream: true })
+    }
+    return text + decoder.decode()
+  } finally {
+    reader.releaseLock()
   }
 }
 

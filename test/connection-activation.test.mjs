@@ -100,6 +100,10 @@ test('plugin verifies, persists, hot-switches, and restores remote connections',
         }
         const { patch } = await readJsonRequest(req)
         centralBases[index] = { ...centralBases[index], ...patch, updatedAt: new Date().toISOString() }
+        if (patch.writebackProvider === null || patch.writebackModel === null) {
+          delete centralBases[index].writebackProvider
+          delete centralBases[index].writebackModel
+        }
         res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(centralBases[index]))
         return
       }
@@ -161,23 +165,30 @@ test('plugin verifies, persists, hot-switches, and restores remote connections',
     name: 'Central tool base',
     description: 'Created through the currently active remote provider.',
     defaultTags: ['central'],
+    writebackPolicy: 'proactive',
+    writebackProvider: 'kimi',
+    writebackModel: 'kimi-k2.7-code',
   }, toolExec))
   assert.equal(created.storage, 'remote')
   assert.equal(created.operation, 'created')
   assert.equal(created.mountsChanged, false)
   assert.equal(created.knowledgeBase.id, 'remote-1')
+  assert.equal(created.knowledgeBase.writebackPolicy, 'proactive')
+  assert.deepEqual([created.knowledgeBase.writebackProvider, created.knowledgeBase.writebackModel], ['kimi', 'kimi-k2.7-code'])
 
   const updated = JSON.parse(await first.tools.get('knowledge_base_update').execute({
     base: 'Central tool base',
     name: 'Updated central tool base',
     description: 'Updated only on the central service.',
     defaultTags: ['remote', 'managed'],
+    useCurrentSessionModel: true,
   }, toolExec))
   assert.equal(updated.storage, 'remote')
   assert.equal(updated.operation, 'updated')
   assert.equal(updated.mountsChanged, false)
   assert.equal(updated.knowledgeBase.name, 'Updated central tool base')
   assert.deepEqual(updated.knowledgeBase.defaultTags, ['managed', 'remote'])
+  assert.equal(updated.knowledgeBase.writebackProvider, undefined)
   assert.deepEqual(centralRequests.slice(-3), [
     ['POST', '/knowledge-api/v1/knowledge-bases'],
     ['GET', '/knowledge-api/v1/knowledge-bases'],

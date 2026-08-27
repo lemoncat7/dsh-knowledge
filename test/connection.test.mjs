@@ -15,6 +15,12 @@ test('connection settings require HTTPS and a client token without exposing cent
   assert.throws(() => validateConnectionSettings({
     backend: 'remote', remoteUrl: 'https://knowledge.example.com/api', remoteToken: 'short', remoteTimeoutMs: 10000,
   }, false), /24 characters/)
+  assert.throws(() => validateConnectionSettings({
+    backend: 'remote', remoteUrl: 'https://user:secret@knowledge.example.com/api', remoteToken: 'x'.repeat(32), remoteTimeoutMs: 10000,
+  }, false), /must not contain credentials/)
+  assert.throws(() => validateConnectionSettings({
+    backend: 'remote', remoteUrl: 'https://knowledge.example.com/api?tenant=one', remoteToken: 'x'.repeat(32), remoteTimeoutMs: 10000,
+  }, false), /query string or fragment/)
   assert.doesNotThrow(() => validateConnectionSettings({
     backend: 'remote', remoteUrl: 'https://knowledge.example.com/api', remoteToken: 'x'.repeat(32), remoteTimeoutMs: 10000,
   }, false))

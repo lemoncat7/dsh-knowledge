@@ -1,18 +1,15 @@
-import { randomUUID } from 'node:crypto'
 import {
   mkdir,
-  open,
   readFile,
   readdir,
   realpath,
-  rename,
   rm,
   stat,
   unlink,
-  writeFile,
 } from 'node:fs/promises'
-import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
+import { basename, extname, join, relative, resolve, sep } from 'node:path'
 import type { KnowledgeBase } from '../domain.js'
+import { atomicWriteFile, isWindowsReplaceError, supportsDirectorySync } from '../atomic-file.js'
 import {
   markdownHash,
   parseKnowledgeMarkdown,
@@ -31,13 +28,25 @@ export interface StoredKnowledgeDocument extends ParsedMarkdownDocument {
 /** File-system boundary for managed knowledge directories. */
 export class KnowledgeDocumentStore {
   readonly root: string
+  private initialization: Promise<void> | undefined
 
   constructor(root: string) {
     this.root = resolve(root)
   }
 
   async initialize(): Promise<void> {
+    if (this.initialization === undefined) {
+      this.initialization = this.initializeRoot().catch(error => {
+        this.initialization = undefined
+        throw error
+      })
+    }
+    await this.initialization
+  }
+
+  private async initializeRoot(): Promise<void> {
     await mkdir(this.root, { recursive: true })
+    await removeStaleTemporaryFiles(this.root, Date.now() - 60 * 60 * 1000)
   }
 
   baseDirectory(base: Pick<KnowledgeBase, 'id' | 'name'>): string {
@@ -66,8 +75,12 @@ export class KnowledgeDocumentStore {
   }
 
   async deleteBase(directory: string): Promise<void> {
-    await this.assertManagedDirectory(directory)
-    await rm(directory, { recursive: true, force: false })
+    let managed: string
+    try { managed = await this.assertManagedDirectory(directory) } catch (error) {
+      if (isNodeError(error, 'ENOENT')) return
+      throw error
+    }
+    await rm(managed, { recursive: true, force: false })
   }
 
   async listDocuments(directory: string): Promise<StoredKnowledgeDocument[]> {
@@ -189,66 +202,17 @@ export class KnowledgeDocumentStore {
 }
 
 async function atomicWrite(target: string, content: string, replace: boolean): Promise<void> {
-  await mkdir(dirname(target), { recursive: true })
-  const temporary = join(dirname(target), `.${basename(target)}.${randomUUID()}.tmp`)
   try {
-    await writeFile(temporary, content, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
-    await syncFile(temporary)
-    if (!replace) {
-      try {
-        const targetHandle = await open(target, 'wx', 0o600)
-        await targetHandle.close()
-      } catch (error) {
-        if (isNodeError(error, 'EEXIST')) throw conflict(`knowledge document ${basename(target)} already exists`)
-        throw error
-      }
-      await unlink(target)
-    }
-    await replaceWithTemporary(temporary, target, replace)
-    await syncParentDirectory(target)
-  } finally {
-    await unlink(temporary).catch(error => {
-      if (!isNodeError(error, 'ENOENT')) throw error
-    })
-  }
-}
-
-async function replaceWithTemporary(temporary: string, target: string, replace: boolean): Promise<void> {
-  try {
-    await rename(temporary, target)
+    await atomicWriteFile(target, content, { replace })
   } catch (error) {
-    if (!isWindowsReplaceError(error, replace, process.platform)) throw error
-    await unlink(target).catch(unlinkError => {
-      if (!isNodeError(unlinkError, 'ENOENT')) throw unlinkError
-    })
-    await rename(temporary, target)
+    if (!replace && isConflict(error)) {
+      throw conflict(`knowledge document ${basename(target)} already exists`)
+    }
+    throw error
   }
 }
 
-export function isWindowsReplaceError(error: unknown, replace: boolean, platform: NodeJS.Platform): boolean {
-  return replace
-    && platform === 'win32'
-    && (isNodeError(error, 'EPERM') || isNodeError(error, 'EEXIST'))
-}
-
-async function syncFile(path: string): Promise<void> {
-  // Windows requires a writable handle for FlushFileBuffers, which backs
-  // FileHandle.sync(). POSIX accepts this mode as well.
-  const handle = await open(path, 'r+')
-  try { await handle.sync() } finally { await handle.close() }
-}
-
-async function syncParentDirectory(target: string): Promise<void> {
-  // Windows does not expose directory handles that Node can fsync. The file
-  // itself has already been flushed before the atomic rename.
-  if (!supportsDirectorySync(process.platform)) return
-  const handle = await open(dirname(target), 'r')
-  try { await handle.sync() } finally { await handle.close() }
-}
-
-export function supportsDirectorySync(platform: NodeJS.Platform): boolean {
-  return platform !== 'win32'
-}
+export { isWindowsReplaceError, supportsDirectorySync }
 
 async function collectMarkdownFiles(root: string): Promise<string[]> {
   const entries = await readdir(root, { withFileTypes: true })
@@ -261,6 +225,25 @@ async function collectMarkdownFiles(root: string): Promise<string[]> {
     else if (entry.isFile() && extname(entry.name).toLowerCase() === '.md') output.push(path)
   }
   return output
+}
+
+async function removeStaleTemporaryFiles(root: string, olderThan: number): Promise<void> {
+  const entries = await readdir(root, { withFileTypes: true })
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) continue
+    const path = join(root, entry.name)
+    if (entry.isDirectory()) {
+      await removeStaleTemporaryFiles(path, olderThan)
+      continue
+    }
+    if (!entry.isFile() || !/^\..+\.[0-9a-f-]{36}\.tmp$/iu.test(entry.name)) continue
+    const metadata = await stat(path)
+    if (metadata.mtimeMs < olderThan) {
+      await unlink(path).catch(error => {
+        if (!isNodeError(error, 'ENOENT')) throw error
+      })
+    }
+  }
 }
 
 function normalizeRelativePath(value: string): string {
@@ -294,4 +277,8 @@ function conflict(message: string): Error {
 
 function isNodeError(error: unknown, code: string): boolean {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === code
+}
+
+function isConflict(error: unknown): boolean {
+  return error instanceof Error && (error as Error & { code?: string }).code === 'CONFLICT'
 }

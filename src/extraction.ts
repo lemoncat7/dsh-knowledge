@@ -159,7 +159,10 @@ function groupMountsByRoute(
 ): ExtractionRouteGroup[] {
   const groups = new Map<string, ExtractionRouteGroup>()
   for (const mount of mounts) {
-    const route = clientRoute ?? snapshot.route ?? (config.extractionProvider !== undefined && config.extractionModel !== undefined
+    const baseRoute = mount.base.writebackProvider !== undefined && mount.base.writebackModel !== undefined
+      ? { provider: mount.base.writebackProvider, model: mount.base.writebackModel }
+      : undefined
+    const route = clientRoute ?? baseRoute ?? snapshot.route ?? (config.extractionProvider !== undefined && config.extractionModel !== undefined
       ? { provider: config.extractionProvider, model: config.extractionModel }
       : undefined)
     if (route === undefined) throw new Error(`no extraction model route is available for knowledge base "${mount.base.name}"`)

@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
+import { atomicWriteFile } from './atomic-file.js'
 
 export interface KnowledgeServiceSettings {
   publicApiEnabled: boolean
@@ -34,11 +34,5 @@ export function loadServiceSettings(path: string | undefined): KnowledgeServiceS
 
 export async function storeServiceSettings(path: string, settings: KnowledgeServiceSettings): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-  const temporary = `${path}.${randomUUID()}.tmp`
-  try {
-    await writeFile(temporary, `${JSON.stringify(settings, null, 2)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
-    await rename(temporary, path)
-  } finally {
-    await rm(temporary, { force: true }).catch(() => {})
-  }
+  await atomicWriteFile(path, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 })
 }

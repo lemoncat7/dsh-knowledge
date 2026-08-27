@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createServer } from 'node:http'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -18,6 +19,8 @@ test('real Cordis context dynamically mounts API and Web routes', async (t) => {
   class FakeLlm extends Service {
     constructor(inner) { super(inner, 'llm') }
     async *stream() {}
+    listProviders() { return [{ id: 'mock', name: 'Mock' }] }
+    async listModels() { return [{ id: 'model', name: 'Model' }] }
   }
   class FakeWebServer extends Service {
     constructor(inner) { super(inner, 'webServer') }
@@ -52,4 +55,28 @@ test('real Cordis context dynamically mounts API and Web routes', async (t) => {
     ['exact', '/knowledge-control/v1/writeback-status'],
     ['exact', '/knowledge-control/v1/models'],
   ])
+
+  const server = createServer((req, res) => {
+    const pathname = new URL(req.url, 'http://localhost').pathname
+    const route = routes.find(candidate => candidate.kind === 'exact' && candidate.path === pathname)
+    if (route === undefined) return res.writeHead(404).end()
+    void route.handler(req, res)
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise(resolve => server.close(resolve)))
+  const port = server.address().port
+  const endpoint = path => `http://127.0.0.1:${port}${path}`
+  assert.equal((await fetch(endpoint('/knowledge-control/v1/models'))).status, 401)
+  assert.equal((await fetch(endpoint('/knowledge-control/v1/models'), {
+    headers: { 'x-dsh-knowledge-client': 'management-web', 'sec-fetch-site': 'cross-site' },
+  })).status, 403)
+  const catalog = await fetch(endpoint('/knowledge-control/v1/models'), {
+    headers: { 'x-dsh-knowledge-client': 'management-web' },
+  })
+  assert.equal(catalog.status, 200)
+  assert.deepEqual((await catalog.json()).providers[0].models, [{ id: 'model', name: 'Model' }])
+  assert.equal((await fetch(endpoint('/knowledge-control/v1/writeback-status?sessionId=s&turn=1'))).status, 401)
+  assert.equal((await fetch(endpoint('/knowledge-control/v1/writeback-status?sessionId=s&turn=1'), {
+    headers: { 'x-dsh-knowledge-client': 'conversation-web' },
+  })).status, 404)
 })

@@ -78,7 +78,7 @@ function KnowledgeWritebackStatus({ sessionId, turn }: { sessionId: string; turn
   useEffect(() => {
     const controller = new AbortController()
     void fetch(`/knowledge-control/v1/writeback-status?sessionId=${encodeURIComponent(sessionId)}&turn=${turn}`, {
-      headers: { accept: 'application/json' }, signal: controller.signal,
+      headers: { accept: 'application/json', 'x-dsh-knowledge-client': 'conversation-web' }, signal: controller.signal,
     }).then(async response => response.ok ? response.json() as Promise<Status> : undefined)
       .then(value => { if (value?.summary) setState(value) })
       .catch(() => {})

@@ -82,6 +82,10 @@ const state = {
 }
 
 let scrollRestoreFrame = 0
+let navigationController = null
+let navigationRequest = 0
+let navigationSave = Promise.resolve(true)
+let libraryDetailRequest = 0
 
 function installHostThemeBridge() {
   if (window.parent === window) return Promise.resolve()
@@ -242,9 +246,12 @@ function badge(label, variant = '') {
 }
 
 function showToast(message, kind = '') {
-  const toast = element('div', { class: `toast ${kind}`.trim(), role: kind === 'error' ? 'alert' : 'status' }, message)
+  const toast = element('div', { class: `toast ${kind}`.trim(), role: kind === 'error' ? 'alert' : 'status' },
+    element('span', {}, message),
+    kind === 'error' ? actionButton('关闭', () => toast.remove(), 'ghost small toast-close', { 'aria-label': '关闭错误提示' }) : null,
+  )
   toastRegion.append(toast)
-  window.setTimeout(() => toast.remove(), 4200)
+  if (kind !== 'error') window.setTimeout(() => toast.remove(), 4200)
 }
 
 async function api(path, options = {}) {
@@ -342,6 +349,12 @@ function signOut() {
 }
 
 async function navigate(view) {
+  const request = ++navigationRequest
+  navigationSave = navigationSave.then(() => saveBeforeLeavingDocument(), () => saveBeforeLeavingDocument())
+  if (!await navigationSave || request !== navigationRequest) return
+  navigationController?.abort()
+  const controller = new AbortController()
+  navigationController = controller
   const previousView = state.view
   if (view === 'bases' && previousView !== 'bases' && state.knowledgeBaseView === 'detail') {
     state.knowledgeBaseView = 'libraries'
@@ -352,35 +365,51 @@ async function navigate(view) {
   state.error = ''
   renderShell()
   try {
-    if (view === 'overview') await loadOverview()
-    if (view === 'bases') await loadKnowledgeBasesPage()
-    if (view === 'entries') await loadDocuments()
-    if (view === 'candidates') await loadCandidates()
-    if (view === 'tokens') await loadTokens()
+    if (view === 'overview') await loadOverview(controller.signal)
+    if (view === 'bases') await loadKnowledgeBasesPage(controller.signal)
+    if (view === 'entries') await loadDocuments(controller.signal)
+    if (view === 'candidates') await loadCandidates(controller.signal)
+    if (view === 'tokens') await loadTokens(controller.signal)
   } catch (error) {
+    if (controller.signal.aborted) return
     if (error.status === 401 && AUTH_MODE === 'bearer') return signOut()
     state.error = friendlyError(error)
   } finally {
+    if (navigationController !== controller) return
     state.loading = false
     renderShell()
   }
 }
 
-async function refreshStats() {
-  state.stats = await api('stats')
+async function saveBeforeLeavingDocument() {
+  const workspace = activeDocumentWorkspace()
+  const editor = workspace?.view.editor
+  if (!workspace || !editor?.dirty) return true
+  const emptyDraft = editor.isNew && !editor.title.trim() && !editor.body.trim()
+  if (emptyDraft) {
+    workspace.view.editor = null
+    workspace.view.documentId = ''
+    return true
+  }
+  return saveDocumentEditor(workspace)
 }
 
-async function ensureKnowledgeBases(force = false) {
-  if (force || state.knowledgeBases.length === 0) state.knowledgeBases = await api('knowledge-bases')
+async function refreshStats(signal) {
+  state.stats = await api('stats', { signal })
+}
+
+async function ensureKnowledgeBases(force = false, signal) {
+  if (force || state.knowledgeBases.length === 0) state.knowledgeBases = await api('knowledge-bases', { signal })
   return state.knowledgeBases
 }
 
-async function loadKnowledgeBasesPage() {
-  const requests = [api('knowledge-bases'), api('mounts'), api('settings'), api('service')]
+async function loadKnowledgeBasesPage(signal) {
+  const options = { signal }
+  const requests = [api('knowledge-bases', options), api('mounts', options), api('settings', options), api('service', options)]
   if (state.mountContext.sessionId) {
     const params = new URLSearchParams({ sessionId: state.mountContext.sessionId })
     if (state.mountContext.projectId) params.set('projectId', state.mountContext.projectId)
-    requests.push(api(`mounts/resolve?${params}`))
+    requests.push(api(`mounts/resolve?${params}`, options))
   }
   const [bases, mounts, settings, service, resolved = []] = await Promise.all(requests)
   state.knowledgeBases = bases
@@ -388,15 +417,16 @@ async function loadKnowledgeBasesPage() {
   state.settings = settings
   state.service = service
   state.resolvedMounts = resolved
-  await refreshStats()
+  await refreshStats(signal)
 }
 
-async function loadOverview() {
+async function loadOverview(signal) {
+  const options = { signal }
   const [stats, recent, pending, bases] = await Promise.all([
-    api('stats'),
-    api('entries?status=active&limit=6'),
-    api('candidates?status=pending&limit=5'),
-    api('knowledge-bases'),
+    api('stats', options),
+    api('entries?status=active&limit=6', options),
+    api('candidates?status=pending&limit=5', options),
+    api('knowledge-bases', options),
   ])
   state.stats = stats
   state.knowledgeBases = bases
@@ -427,12 +457,13 @@ async function loadEntries(cursor = '') {
   if (!state.stats) await refreshStats()
 }
 
-async function loadDocuments() {
-  const requests = [api('knowledge-bases'), api('documents')]
+async function loadDocuments(signal) {
+  const options = { signal }
+  const requests = [api('knowledge-bases', options), api('documents', options)]
   if (state.mountContext.sessionId) {
     const params = new URLSearchParams({ sessionId: state.mountContext.sessionId })
     if (state.mountContext.projectId) params.set('projectId', state.mountContext.projectId)
-    requests.push(api(`mounts/resolve?${params}`))
+    requests.push(api(`mounts/resolve?${params}`, options))
   }
   const [bases, documents, resolved = []] = await Promise.all(requests)
   state.knowledgeBases = bases
@@ -448,9 +479,9 @@ async function loadDocuments() {
       : documentKnowledgeBases(bases)[0]?.id || ''
   }
   selectDefaultDocument(workspace)
-  if (view.documentId) await loadDocumentEditor(workspace, view.documentId)
+  if (view.documentId) await loadDocumentEditor(workspace, view.documentId, signal)
   else view.editor = null
-  if (!state.stats) await refreshStats()
+  if (!state.stats) await refreshStats(signal)
 }
 
 function documentKnowledgeBases(bases = state.knowledgeBases) {
@@ -496,14 +527,19 @@ function documentWorkspaceReadOnly(workspace) {
 }
 
 async function reloadDocumentWorkspace(workspace) {
+  const libraryBaseId = workspace.kind === 'library' ? state.libraryDetail.knowledgeBaseId : ''
   const documents = workspace.kind === 'library'
-    ? await api(`documents?knowledgeBaseId=${encodeURIComponent(state.libraryDetail.knowledgeBaseId)}`)
+    ? await api(`documents?knowledgeBaseId=${encodeURIComponent(libraryBaseId)}`)
     : await api('documents')
-  if (workspace.kind === 'library') setDocumentWorkspaceDocuments(workspace, documents)
+  if (workspace.kind === 'library') {
+    if (state.libraryDetail.knowledgeBaseId !== libraryBaseId) return false
+    setDocumentWorkspaceDocuments(workspace, documents)
+  }
   else {
     const visibleBaseIds = new Set(documentKnowledgeBases().map(base => base.id))
     setDocumentWorkspaceDocuments(workspace, documents.filter(document => visibleBaseIds.has(document.knowledgeBaseId)))
   }
+  return true
 }
 
 function selectDefaultDocument(workspace) {
@@ -515,8 +551,11 @@ function selectDefaultDocument(workspace) {
   if (view.knowledgeBaseId) view.expandedBases.add(view.knowledgeBaseId)
 }
 
-async function loadDocumentEditor(workspace, id) {
-  const entry = await api(`entries/${encodeURIComponent(id)}`)
+async function loadDocumentEditor(workspace, id, signal) {
+  const revision = (workspace.view.loadRevision || 0) + 1
+  workspace.view.loadRevision = revision
+  const entry = await api(`entries/${encodeURIComponent(id)}`, { signal })
+  if (workspace.view.loadRevision !== revision || workspace.view.documentId !== id) return false
   workspace.view.mode = 'preview'
   workspace.view.editor = {
     ...entry,
@@ -525,6 +564,7 @@ async function loadDocumentEditor(workspace, id) {
     isNew: false,
     saveState: '已保存',
   }
+  return true
 }
 
 function createBlankDocument(workspace, baseId) {
@@ -557,8 +597,7 @@ async function selectDocument(workspace, id) {
   if (editor?.dirty && !emptyDraft && !await saveDocumentEditor(workspace)) return
   workspace.view.documentId = id
   workspace.view.treeOpen = false
-  await loadDocumentEditor(workspace, id)
-  renderShell()
+  if (await loadDocumentEditor(workspace, id)) renderShell()
 }
 
 function editorDraft(editor) {
@@ -615,26 +654,29 @@ function updateEditorSaveState(label) {
   if (node) node.textContent = label
 }
 
-async function loadCandidates() {
+async function loadCandidates(signal) {
   const [candidates] = await Promise.all([
-    api(`candidates?status=${state.candidateStatus}&limit=100`),
-    ensureKnowledgeBases(),
+    api(`candidates?status=${state.candidateStatus}&limit=100`, { signal }),
+    ensureKnowledgeBases(false, signal),
   ])
   state.candidates = candidates
   const targetIds = [...new Set(candidates.map(candidate => candidate.targetId).filter(Boolean))]
   const targets = await Promise.all(targetIds.map(async id => {
-    try { return [id, await api(`entries/${encodeURIComponent(id)}`)] }
-    catch { return [id, null] }
+    try { return [id, await api(`entries/${encodeURIComponent(id)}`, { signal })] }
+    catch (error) {
+      if (signal?.aborted) throw error
+      return [id, null]
+    }
   }))
   state.candidateTargets = new Map(targets)
-  if (!state.stats) await refreshStats()
+  if (!state.stats) await refreshStats(signal)
 }
 
-async function loadTokens() {
-  const [tokens, service] = await Promise.all([api('tokens'), api('service')])
+async function loadTokens(signal) {
+  const [tokens, service] = await Promise.all([api('tokens', { signal }), api('service', { signal })])
   state.tokens = tokens
   state.service = service
-  if (!state.stats) await refreshStats()
+  if (!state.stats) await refreshStats(signal)
 }
 
 function renderShell() {
@@ -660,7 +702,10 @@ function renderShell() {
     element('main', { class: 'main' },
       element('header', { class: 'topbar' },
         element('div', { class: 'topbar-title' },
-          actionButton('☰', () => { state.menuOpen = !state.menuOpen; renderShell() }, 'ghost mobile-menu', { 'aria-label': '打开导航菜单' }),
+          actionButton('☰', () => { state.menuOpen = !state.menuOpen; renderShell() }, 'ghost mobile-menu', {
+            'aria-label': state.menuOpen ? '关闭导航菜单' : '打开导航菜单',
+            'aria-expanded': String(state.menuOpen),
+          }),
           paneToggleButton('main', !state.documentView.sidebarHidden, () => setSidebarHidden(!state.documentView.sidebarHidden), '主导航栏'),
           activeDocumentWorkspace() ? paneToggleButton('library', activeDocumentWorkspace().view.treeOpen, () => {
             const workspace = activeDocumentWorkspace()
@@ -901,6 +946,7 @@ function renderKnowledgeBases() {
 
 async function openKnowledgeBaseDocuments(base) {
   captureScrollPosition()
+  const request = ++libraryDetailRequest
   const detail = state.libraryDetail
   const changingBase = detail.knowledgeBaseId !== base.id
   detail.knowledgeBaseId = base.id
@@ -916,13 +962,15 @@ async function openKnowledgeBaseDocuments(base) {
   renderShell()
   const workspace = libraryDocumentWorkspace()
   try {
-    await reloadDocumentWorkspace(workspace)
+    if (!await reloadDocumentWorkspace(workspace) || request !== libraryDetailRequest) return
     selectDefaultDocument(workspace)
     if (workspace.view.documentId) await loadDocumentEditor(workspace, workspace.view.documentId)
     else workspace.view.editor = null
   } catch (error) {
+    if (request !== libraryDetailRequest) return
     detail.error = friendlyError(error)
   } finally {
+    if (request !== libraryDetailRequest) return
     state.loading = false
     renderShell()
     window.requestAnimationFrame(() => document.querySelector('.library-detail-back')?.focus())
@@ -934,6 +982,7 @@ async function closeKnowledgeBaseDetail() {
   const editor = workspace.view.editor
   const emptyDraft = editor?.isNew && !editor.title.trim() && !editor.body.trim()
   if (editor?.dirty && !emptyDraft && !await saveDocumentEditor(workspace)) return
+  libraryDetailRequest += 1
   const baseId = state.libraryDetail.knowledgeBaseId
   state.knowledgeBaseView = 'libraries'
   state.libraryDetail.error = ''
@@ -998,6 +1047,16 @@ function contextPill(label, value) {
   return element('div', { class: 'context-pill' }, element('strong', {}, label), element('span', { title: value }, value))
 }
 
+function writebackRouteLabel(base) {
+  if (state.service.writebackProvider && state.service.writebackModel) {
+    return `本机覆盖 · ${state.service.writebackProvider} / ${state.service.writebackModel}`
+  }
+  if (base?.writebackProvider && base?.writebackModel) {
+    return `知识库专用 · ${base.writebackProvider} / ${base.writebackModel}`
+  }
+  return '跟随当前会话模型'
+}
+
 function renderKnowledgeBaseCard(base) {
   const archived = base.status === 'archived'
   const visibleTags = base.defaultTags.slice(0, 4)
@@ -1017,7 +1076,7 @@ function renderKnowledgeBaseCard(base) {
     hiddenTagCount ? element('span', { class: 'tag' }, `+${hiddenTagCount}`) : null),
     element('div', { class: 'base-card-meta' },
       element('span', {}, element('strong', {}, '回写策略'), base.writebackPolicy === 'proactive' ? '主动' : '严谨'),
-      element('span', {}, element('strong', {}, '回写模型'), state.service.writebackProvider && state.service.writebackModel ? `本机 · ${state.service.writebackProvider} / ${state.service.writebackModel}` : '跟随当前会话'),
+      element('span', {}, element('strong', {}, '回写模型'), writebackRouteLabel(base)),
       base.extractionInstructions ? element('span', {}, element('strong', {}, '提取规则'), '已设置') : null,
     ),
     element('div', { class: 'base-card-actions' },
@@ -1133,9 +1192,7 @@ function renderMountListRow(base, view, targetKind, targetId) {
       renderShell()
     },
   })
-  const modelLabel = state.service.writebackProvider && state.service.writebackModel
-    ? `本机 · ${state.service.writebackProvider} / ${state.service.writebackModel}`
-    : '跟随当前会话模型'
+  const modelLabel = writebackRouteLabel(base)
   return element('article', { class: `mount-list-row${selected ? ' is-selected' : ''}`, role: 'listitem' },
     element('label', { class: 'mount-select' }, checkbox, element('span', { class: 'visually-hidden' }, `选择 ${base.name}`)),
     element('div', { class: 'mount-list-main' },
@@ -1657,7 +1714,8 @@ function parseTags(value) {
   return [...new Set(value.split(/[,，]/).map(tag => tag.trim().toLowerCase()).filter(Boolean))]
 }
 
-function openKnowledgeBaseEditor(base) {
+async function openKnowledgeBaseEditor(base) {
+  await loadModelCatalog()
   const source = base || { name: '', description: '', defaultTags: [], extractionInstructions: '', writebackPolicy: 'conservative' }
   const form = element('form', { class: 'form-grid' })
   const name = formField('名称', 'input', source.name, { required: true, maxlength: 100, placeholder: '例如：项目规范' })
@@ -1668,9 +1726,26 @@ function openKnowledgeBaseEditor(base) {
     { value: 'conservative', label: '严谨（高置信度直写）' },
     { value: 'proactive', label: '主动（更积极沉淀）' },
   ], source.writebackPolicy || 'conservative')
+  const dedicatedModel = element('input', {
+    type: 'checkbox',
+    checked: Boolean(source.writebackProvider && source.writebackModel),
+  })
+  const route = modelRouteFields(source.writebackProvider || '', source.writebackModel || '')
+  const routeToggle = element('label', { class: 'check-option span-2' }, dedicatedModel,
+    element('span', {},
+      element('strong', {}, '这个知识库使用专用回写模型'),
+      element('small', {}, '未设置时先使用本机覆盖；本机也未设置时跟随当前会话模型。'),
+    ))
+  const syncRouteAvailability = () => {
+    route.provider.input.disabled = route.model.input.disabled = !dedicatedModel.checked
+    route.provider.input.required = route.model.input.required = dedicatedModel.checked
+  }
+  dedicatedModel.addEventListener('change', syncRouteAvailability)
+  syncRouteAvailability()
   for (const field of [name, description, tags, instructions]) field.wrapper.classList.add('span-2')
   form.append(
     name.wrapper, description.wrapper, tags.wrapper, instructions.wrapper, policy.wrapper,
+    routeToggle, route.provider.wrapper, route.model.wrapper,
   )
   openSheet({
     title: base ? '编辑知识库' : '创建知识库',
@@ -1685,6 +1760,10 @@ function openKnowledgeBaseEditor(base) {
         defaultTags: parseTags(tags.input.value),
         extractionInstructions: instructions.input.value.trim(),
         writebackPolicy: policy.input.value,
+        ...(dedicatedModel.checked ? {
+          writebackProvider: route.provider.input.value,
+          writebackModel: route.model.input.value,
+        } : {}),
       }
       if (base) await api(`knowledge-bases/${encodeURIComponent(base.id)}`, { method: 'PUT', body: { draft } })
       else await api('knowledge-bases', { method: 'POST', body: { draft } })
@@ -2002,7 +2081,9 @@ function selectField(label, options, value) {
 async function loadModelCatalog() {
   if (state.modelCatalog !== null) return state.modelCatalog
   try {
-    const response = await fetch('/knowledge-control/v1/models', { headers: { accept: 'application/json' } })
+    const response = await fetch('/knowledge-control/v1/models', {
+      headers: { accept: 'application/json', 'x-dsh-knowledge-client': 'management-web' },
+    })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const payload = await response.json()
     state.modelCatalog = Array.isArray(payload.providers) ? payload.providers : []
@@ -2158,14 +2239,19 @@ function openModal({ title, description = '', body, primaryLabel, primaryVariant
   const backdrop = element('div', { class: `dialog-backdrop${isSheet ? ' sheet-backdrop' : ''}` })
   const dialog = element('section', { class: `dialog${isSheet ? ' sheet' : ''} ${primaryLabel ? '' : 'narrow'}`.trim(), role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'dialog-title' })
   let busy = false
-  const close = () => {
+  let formDirty = false
+  const close = (explicit = false) => {
     if (busy) return
+    if (!explicit && formDirty) {
+      showToast('表单有未保存的修改，请先保存，或使用“取消”放弃修改。', 'error')
+      return
+    }
     document.removeEventListener('keydown', onKeyDown)
     backdrop.remove()
     if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus()
   }
-  const closeButton = actionButton('×', close, 'ghost', { 'aria-label': '关闭对话框' })
-  const cancel = actionButton(cancelLabel, close)
+  const closeButton = actionButton('×', () => close(), 'ghost', { 'aria-label': '关闭对话框' })
+  const cancel = actionButton(cancelLabel, () => close(true))
   const primary = primaryLabel ? actionButton(primaryLabel, async () => {
     if (busy) return
     busy = true
@@ -2176,7 +2262,7 @@ function openModal({ title, description = '', body, primaryLabel, primaryVariant
     try {
       const shouldClose = await onPrimary()
       busy = false
-      if (shouldClose !== false) close()
+      if (shouldClose !== false) close(true)
       else { primary.disabled = false; cancel.disabled = false; primary.textContent = original }
     } catch (error) {
       busy = false
@@ -2197,6 +2283,10 @@ function openModal({ title, description = '', body, primaryLabel, primaryVariant
   )
   backdrop.append(dialog)
   backdrop.addEventListener('mousedown', (event) => { if (event.target === backdrop) close() })
+  if (body.matches?.('form') || body.querySelector?.('form')) {
+    body.addEventListener('input', () => { formDirty = true })
+    body.addEventListener('change', () => { formDirty = true })
+  }
   document.body.append(backdrop)
   document.addEventListener('keydown', onKeyDown)
   window.setTimeout(() => (dialog.querySelector('input, textarea, select, button') || dialog).focus(), 0)
@@ -2226,5 +2316,12 @@ function friendlyError(error) {
   if (error.name === 'AbortError') return '请求已取消。'
   return error.message || '操作失败，请稍后重试。'
 }
+
+window.addEventListener('beforeunload', event => {
+  const editor = activeDocumentWorkspace()?.view.editor
+  if (!editor?.dirty) return
+  event.preventDefault()
+  event.returnValue = ''
+})
 
 void installHostThemeBridge().then(() => boot())

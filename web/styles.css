@@ -1075,7 +1075,9 @@ html,
 .secret-value code { min-width: 0; flex: 1; overflow-wrap: anywhere; border-radius: 7px; padding: 8px; background: var(--surface); color: var(--text); }
 
 .toast-region { position: fixed; right: 20px; bottom: 20px; z-index: 200; display: grid; gap: 8px; pointer-events: none; }
-.toast { max-width: 360px; border: 1px solid var(--border-strong); border-radius: 11px; padding: 11px 14px; background: var(--surface-raised); color: var(--text); box-shadow: var(--shadow); animation: toast-in .18s ease-out; }
+.toast { max-width: 420px; display: flex; align-items: flex-start; gap: 10px; border: 1px solid var(--border-strong); border-radius: 11px; padding: 11px 12px 11px 14px; background: var(--surface-raised); color: var(--text); box-shadow: var(--shadow); animation: toast-in .18s ease-out; pointer-events: auto; }
+.toast > span { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.toast-close { flex: none; min-height: 28px; }
 .toast.error { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); color: var(--danger); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(7px); } }
 
@@ -1176,6 +1178,11 @@ html,
   .candidate-header, .candidate-footer { align-items: flex-start; flex-direction: column; }
   .candidate-footer { gap: 9px; }
   .candidate-actions { width: 100%; justify-content: flex-start; }
+  .button, .tab, .nav-button, .note-tree-base, .note-tree-document, .note-tree-new { min-height: 44px; }
+  .note-add-button, .pane-toggle-button, .mobile-menu { width: 44px; min-width: 44px; min-height: 44px; }
+  .note-mode-switch button { min-height: 38px; }
+  .toast-region { right: 12px; bottom: 12px; left: 12px; }
+  .toast { max-width: none; }
 }
 
 @media (max-width: 520px) {

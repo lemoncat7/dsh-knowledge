@@ -1,11 +1,12 @@
 import { readFileSync } from 'node:fs'
-import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { atomicWriteFile } from './atomic-file.js'
 import type { ResolvedConfig } from './config.js'
 import { LocalKnowledgeProvider } from './local-provider.js'
 import type { KnowledgeProvider } from './provider.js'
 import { RemoteKnowledgeProvider } from './remote-provider.js'
+import { normalizeRemoteKnowledgeUrl } from './remote-url.js'
 
 export interface KnowledgeConnectionSettings {
   backend: 'local' | 'remote'
@@ -39,11 +40,7 @@ export function validateConnectionSettings(
   if (settings.remoteUrl === undefined || settings.remoteToken === undefined) {
     throw new Error('remote knowledge backend requires a server URL and client token')
   }
-  const url = new URL(settings.remoteUrl)
-  const loopback = url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1'
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
-    throw new Error('remote knowledge backend requires HTTPS (HTTP is allowed only for loopback testing)')
-  }
+  normalizeRemoteKnowledgeUrl(settings.remoteUrl)
   if (settings.remoteToken.trim().length < 24) throw new Error('remote client token must contain at least 24 characters')
 }
 
@@ -94,13 +91,7 @@ export function loadStoredConnection(path: string | undefined): KnowledgeConnect
 
 export async function storeConnection(path: string, settings: KnowledgeConnectionSettings): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-  const temporary = `${path}.${randomUUID()}.tmp`
-  try {
-    await writeFile(temporary, `${JSON.stringify(settings, null, 2)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
-    await rename(temporary, path)
-  } finally {
-    await rm(temporary, { force: true }).catch(() => {})
-  }
+  await atomicWriteFile(path, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 })
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

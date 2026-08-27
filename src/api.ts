@@ -48,7 +48,12 @@ async function dispatch(
 ): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://knowledge.local')
   const relative = url.pathname.slice(prefix.length).replace(/^\/+|\/+$/g, '')
-  const segments = relative.length === 0 ? [] : relative.split('/').map(decodeURIComponent)
+  let segments: string[]
+  try {
+    segments = relative.length === 0 ? [] : relative.split('/').map(decodeURIComponent)
+  } catch {
+    throw httpError(400, 'knowledge API path contains invalid encoding')
+  }
   const method = req.method ?? 'GET'
 
   if (method === 'GET' && segments[0] === 'health') {
@@ -352,12 +357,16 @@ async function dispatch(
 function parseKnowledgeBaseDraft(value: unknown): KnowledgeBaseDraft {
   if (!isRecord(value)) throw httpError(400, 'knowledge base draft is invalid')
   try {
+    const writebackProvider = optionalNullableStringProperty(value, 'writebackProvider')
+    const writebackModel = optionalNullableStringProperty(value, 'writebackModel')
     return normalizeKnowledgeBaseDraft({
       name: typeof value.name === 'string' ? value.name : '',
       description: typeof value.description === 'string' ? value.description : '',
       defaultTags: Array.isArray(value.defaultTags) ? value.defaultTags.filter((tag): tag is string => typeof tag === 'string') : [],
       extractionInstructions: typeof value.extractionInstructions === 'string' ? value.extractionInstructions : '',
       writebackPolicy: value.writebackPolicy === 'proactive' ? 'proactive' : 'conservative',
+      ...writebackProvider === undefined || writebackProvider === null ? {} : { writebackProvider },
+      ...writebackModel === undefined || writebackModel === null ? {} : { writebackModel },
     })
   } catch (error) {
     throw httpError(400, error instanceof Error ? error.message : 'knowledge base draft is invalid')
@@ -388,6 +397,12 @@ function parseKnowledgeBasePatch(value: unknown): KnowledgeBasePatch {
   if (Object.hasOwn(value, 'writebackPolicy')) {
     if (value.writebackPolicy !== 'conservative' && value.writebackPolicy !== 'proactive') throw httpError(400, 'knowledge base patch writebackPolicy is invalid')
     patch.writebackPolicy = value.writebackPolicy
+  }
+  if (Object.hasOwn(value, 'writebackProvider')) {
+    patch.writebackProvider = optionalNullableStringProperty(value, 'writebackProvider') as string | null
+  }
+  if (Object.hasOwn(value, 'writebackModel')) {
+    patch.writebackModel = optionalNullableStringProperty(value, 'writebackModel') as string | null
   }
   if (Object.keys(patch).length === 0) throw httpError(400, 'knowledge base patch must contain at least one editable field')
   return patch
@@ -424,27 +439,31 @@ function authenticateBearer(provider: LocalKnowledgeProvider, req: IncomingMessa
 }
 
 function authenticateSameOrigin(req: IncomingMessage): ApiTokenRecord {
-  if (req.headers['x-dsh-knowledge-client'] !== 'management-web') {
-    throw httpError(401, 'knowledge management client header is required')
-  }
-  const fetchSite = req.headers['sec-fetch-site']
-  if (fetchSite !== undefined && fetchSite !== 'same-origin' && fetchSite !== 'none') {
-    throw httpError(403, 'cross-site knowledge management request was rejected')
-  }
-  const origin = req.headers.origin
-  if (origin !== undefined) {
-    let originHost: string
-    try { originHost = new URL(origin).host } catch { throw httpError(403, 'knowledge management request origin is invalid') }
-    const expectedHost = firstHeader(req.headers['x-forwarded-host']) ?? req.headers.host
-    if (expectedHost === undefined || originHost.toLowerCase() !== expectedHost.toLowerCase()) {
-      throw httpError(403, 'cross-origin knowledge management request was rejected')
-    }
-  }
+  assertKnowledgeBrowserRequest(req, 'management-web')
   return {
     id: 'same-origin-management',
     name: 'DSH management console',
     permissions: ['admin'],
     createdAt: new Date(0).toISOString(),
+  }
+}
+
+export function assertKnowledgeBrowserRequest(req: IncomingMessage, client: 'management-web' | 'conversation-web'): void {
+  if (req.headers['x-dsh-knowledge-client'] !== client) {
+    throw httpError(401, 'knowledge client header is required')
+  }
+  const fetchSite = req.headers['sec-fetch-site']
+  if (fetchSite !== undefined && fetchSite !== 'same-origin' && fetchSite !== 'none') {
+    throw httpError(403, 'cross-site knowledge request was rejected')
+  }
+  const origin = req.headers.origin
+  if (origin !== undefined) {
+    let originHost: string
+    try { originHost = new URL(origin).host } catch { throw httpError(403, 'knowledge request origin is invalid') }
+    const expectedHost = firstHeader(req.headers['x-forwarded-host']) ?? req.headers.host
+    if (expectedHost === undefined || originHost.toLowerCase() !== expectedHost.toLowerCase()) {
+      throw httpError(403, 'cross-origin knowledge request was rejected')
+    }
   }
 }
 
@@ -594,6 +613,17 @@ function httpError(status: number, message: string): Error {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+function optionalNullableStringProperty(
+  value: Record<string, unknown>,
+  key: string,
+): string | null | undefined {
+  if (!Object.hasOwn(value, key)) return undefined
+  const member = value[key]
+  if (member === null) return null
+  if (typeof member !== 'string') throw httpError(400, `${key} must be a string or null`)
+  return member
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
