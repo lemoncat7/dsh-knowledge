@@ -1444,12 +1444,9 @@ function renderCandidates() {
 
 function renderCandidateCard(candidate) {
   const pending = candidate.status === 'pending'
-  const conflictTarget = candidate.action === 'conflict' && candidate.targetId
-    ? state.candidateTargets.get(candidate.targetId)
-    : null
-  const targetDocument = candidate.action === 'create'
-    ? `新文档“${candidate.draft.title}”`
-    : `文档“${candidate.draft.title}”`
+  const target = candidate.targetId ? state.candidateTargets.get(candidate.targetId) : null
+  const targetAvailable = candidate.action === 'create' || Boolean(target)
+  const action = candidatePrimaryAction(candidate)
   return element('article', { class: 'candidate' },
     element('div', { class: 'candidate-header' },
       element('div', {},
@@ -1462,29 +1459,120 @@ function renderCandidateCard(candidate) {
       ),
       badge(STATUS_LABELS[candidate.status], candidate.status === 'approved' ? 'success' : candidate.status === 'rejected' ? 'danger' : 'warning'),
     ),
-    element('div', { class: `candidate-body${candidate.action === 'conflict' ? ' is-conflict' : ''}` },
-      candidate.action === 'conflict'
-        ? element('div', { class: 'candidate-comparison' },
-          element('section', {}, element('strong', {}, '当前知识'), element('pre', {}, conflictTarget?.body || '目标文档不可用，请刷新后重试。')),
-          element('section', {}, element('strong', {}, '候选内容'), element('pre', {}, candidate.draft.body)),
-        )
-        : element('p', { class: 'candidate-content' }, candidate.draft.body),
+    element('div', { class: 'candidate-body' },
+      renderCandidateDiff(candidate, target),
       element('div', { class: 'candidate-reason' },
-        element('strong', {}, '文档变更'),
-        element('span', { class: 'candidate-target' }, `${candidate.action === 'create' ? '创建' : '更新'}${targetDocument}`),
-        element('strong', {}, '模型判断依据'), candidate.reason || '未提供判断说明'),
+        element('section', {},
+          element('strong', {}, '写入位置'),
+          element('span', { class: 'candidate-target' }, candidate.action === 'create'
+            ? `创建“${candidate.draft.title}”`
+            : target ? `合并到“${target.title}”` : `目标 ${candidate.targetId || '不可用'}`),
+        ),
+        renderCandidateMetadataChanges(candidate, target),
+        element('section', {},
+          element('strong', {}, '模型判断依据'),
+          element('p', {}, candidate.reason || '未提供判断说明'),
+        ),
+        candidate.reviewNote ? element('section', {},
+          element('strong', {}, '审核备注'),
+          element('p', {}, candidate.reviewNote),
+        ) : null,
+      ),
     ),
     element('div', { class: 'candidate-footer' },
       element('small', {}, `${scopeLabel(candidate.draft.scope)} · 置信度 ${Math.round(candidate.draft.confidence * 100)}%${candidate.targetId ? ` · 目标 ${candidate.targetId}` : ''} · ${formatDate(candidate.createdAt)}`),
-      pending ? element('div', {},
+      pending ? element('div', { class: 'candidate-actions' },
         actionButton('拒绝', () => reviewCandidate(candidate, 'reject'), 'danger small'),
-        actionButton('编辑并通过', () => openEntryEditor(undefined, candidate), 'small'),
-        candidate.action === 'conflict'
-          ? actionButton('合并追加', () => reviewCandidate(candidate, 'approve', 'merge'), 'primary small')
-          : actionButton('通过', () => reviewCandidate(candidate, 'approve'), 'primary small'),
+        actionButton(action.editLabel, () => openEntryEditor(undefined, candidate), 'small', {
+          disabled: !targetAvailable,
+          title: targetAvailable ? action.editLabel : '目标文档不可用，无法安全编辑合并结果',
+        }),
+        actionButton(action.label, () => reviewCandidate(candidate, 'approve', action.resolution), 'primary small', {
+          disabled: !targetAvailable,
+          title: targetAvailable ? action.label : '目标文档不可用，刷新后再审核',
+        }),
       ) : null,
     ),
   )
+}
+
+function renderCandidateDiff(candidate, target) {
+  if (candidate.action !== 'create' && !target) {
+    return element('section', { class: 'candidate-change candidate-change-unavailable', role: 'alert' },
+      element('strong', {}, '无法生成变更预览'),
+      element('p', {}, '目标文档暂时不可用。为避免盲目覆盖，刷新并确认当前版本后再审核。'),
+    )
+  }
+  const review = window.DshKnowledgeReview.createReviewChange(candidate.action, target?.body || '', candidate.draft.body)
+  const title = candidate.action === 'create' ? '新文档内容' : candidate.action === 'conflict' ? '冲突合并预览' : '文档合并预览'
+  const targetLabel = candidate.action === 'create'
+    ? candidate.draft.title
+    : `${target.title} · 当前版本 ${target.version}`
+  return element('section', { class: `candidate-change is-${candidate.action}`, 'aria-label': title },
+    element('div', { class: 'candidate-change-heading' },
+      element('div', {}, element('strong', {}, title), element('small', {}, targetLabel)),
+      element('div', { class: 'diff-summary', 'aria-label': `新增 ${review.diff.additions} 行，删除 ${review.diff.deletions} 行，未变更 ${review.diff.unchanged} 行` },
+        element('span', { class: 'diff-stat additions' }, `+${review.diff.additions}`),
+        element('span', { class: 'diff-stat deletions' }, `-${review.diff.deletions}`),
+        element('span', { class: 'diff-stat unchanged' }, `${review.diff.unchanged} 未变`),
+      ),
+    ),
+    review.diff.simplified ? element('div', { class: 'diff-notice' }, '文档变更较大，已使用简化差异视图。合并内容不受影响。') : null,
+    element('div', { class: 'diff-viewer', role: 'table', 'aria-label': `${title}逐行差异` },
+      element('div', { class: 'diff-column-headings', role: 'row' },
+        element('span', { role: 'columnheader' }, '旧'),
+        element('span', { role: 'columnheader' }, '新'),
+        element('span', { 'aria-hidden': 'true' }),
+        element('span', { role: 'columnheader' }, '正文'),
+      ),
+      review.displayLines.length
+        ? review.displayLines.map(renderDiffLine)
+        : element('div', { class: 'diff-empty' }, '正文为空，没有可写入的差异。'),
+    ),
+  )
+}
+
+function renderDiffLine(line) {
+  if (line.kind === 'omitted') {
+    return element('div', { class: 'diff-line is-omitted', role: 'row', 'aria-label': `${line.count} 行未变更，已折叠` },
+      element('span', { class: 'diff-line-number', 'aria-hidden': 'true' }),
+      element('span', { class: 'diff-line-number', 'aria-hidden': 'true' }),
+      element('span', { class: 'diff-marker', 'aria-hidden': 'true' }, '…'),
+      element('span', { class: 'diff-omitted-copy' }, `${line.count} 行未变更`),
+    )
+  }
+  const marker = line.kind === 'add' ? '+' : line.kind === 'remove' ? '-' : ' '
+  const label = line.kind === 'add'
+    ? `新增第 ${line.newLine} 行`
+    : line.kind === 'remove' ? `删除原第 ${line.oldLine} 行` : `未变更行 ${line.oldLine}`
+  return element('div', { class: `diff-line is-${line.kind}`, role: 'row', 'aria-label': label },
+    element('span', { class: 'diff-line-number', role: 'cell' }, line.oldLine || ''),
+    element('span', { class: 'diff-line-number', role: 'cell' }, line.newLine || ''),
+    element('span', { class: 'diff-marker', role: 'cell', 'aria-hidden': 'true' }, marker),
+    element('code', { class: 'diff-code', role: 'cell' }, line.text || ' '),
+  )
+}
+
+function renderCandidateMetadataChanges(candidate, target) {
+  if (!target || candidate.action === 'create') return null
+  const changes = []
+  if (target.title !== candidate.draft.title) changes.push(`标题：${target.title} → ${candidate.draft.title}`)
+  const addedTags = candidate.draft.tags.filter(tag => !target.tags.includes(tag))
+  if (addedTags.length) changes.push(`新增标签：${addedTags.join('、')}`)
+  if (candidate.draft.confidence > target.confidence) {
+    changes.push(`置信度：${Math.round(target.confidence * 100)}% → ${Math.round(candidate.draft.confidence * 100)}%`)
+  }
+  if (!changes.length) return null
+  return element('section', { class: 'candidate-metadata' },
+    element('strong', {}, '属性变化'),
+    element('ul', {}, changes.map(change => element('li', {}, change))),
+  )
+}
+
+function candidatePrimaryAction(candidate) {
+  if (candidate.action === 'create') return { label: '写入新文档', editLabel: '编辑后写入' }
+  if (candidate.action === 'conflict') return { label: '确认合并', editLabel: '编辑合并内容', resolution: 'merge' }
+  return { label: '合并到文档', editLabel: '编辑后合并' }
 }
 
 function renderTokens() {
@@ -1830,7 +1918,11 @@ function confirmDeleteKnowledgeBase(base) {
 
 function openEntryEditor(entry, candidate) {
   const activeWorkspace = activeDocumentWorkspace()
-  const source = candidate?.draft || entry || {
+  const candidateTarget = candidate?.targetId ? state.candidateTargets.get(candidate.targetId) : null
+  const candidateReview = candidate && (candidate.action === 'create' || candidateTarget)
+    ? window.DshKnowledgeReview.createReviewChange(candidate.action, candidateTarget?.body || '', candidate.draft.body)
+    : null
+  const source = candidate ? { ...candidate.draft, body: candidateReview?.after || candidate.draft.body } : entry || {
     knowledgeBaseId: activeWorkspace?.view.knowledgeBaseId || undefined,
     title: '', body: '', type: 'fact', tags: [], scope: { kind: 'global' }, confidence: .8,
   }
@@ -1863,8 +1955,16 @@ function openEntryEditor(entry, candidate) {
   )
   body.wrapper.classList.add('span-2')
   tags.wrapper.classList.add('span-2')
-  const modeTitle = candidate ? '编辑并通过候选' : entry ? '编辑知识文档' : '新建知识文档'
-  const modal = openSheet({ title: modeTitle, description: candidate ? '保存后，这条候选会立即通过并写入知识库。' : '文档保存后会立即参与后续召回。', body: form, primaryLabel: candidate ? '通过并保存' : '保存文档', onPrimary: async () => {
+  const modeTitle = candidate
+    ? candidate.action === 'create' ? '编辑新文档' : '编辑合并内容'
+    : entry ? '编辑知识文档' : '新建知识文档'
+  const candidateDescription = candidate?.action === 'create'
+    ? '确认后将创建文档并立即参与后续召回。'
+    : '正文已载入完整合并预览；保存前可以处理重复内容或冲突。'
+  const primaryLabel = candidate
+    ? candidate.action === 'create' ? '写入新文档' : '保存并合并'
+    : '保存文档'
+  const modal = openSheet({ title: modeTitle, description: candidate ? candidateDescription : '文档保存后会立即参与后续召回。', body: form, primaryLabel, onPrimary: async () => {
     if (!form.reportValidity()) return false
     const draft = {
       knowledgeBaseId: knowledgeBase.input.value,
@@ -1879,7 +1979,7 @@ function openEntryEditor(entry, candidate) {
     })
     else if (entry) await api(`entries/${encodeURIComponent(entry.id)}`, { method: 'PUT', body: { draft } })
     else await api('entries', { method: 'POST', body: { draft } })
-    showToast(candidate ? '候选已通过并写入知识库。' : '知识已保存。')
+    showToast(candidate ? candidate.action === 'create' ? '新文档已写入。' : '候选内容已合并。' : '知识已保存。')
     state.stats = null
     await navigate(candidate ? 'candidates' : state.view)
     return true
@@ -1936,10 +2036,19 @@ function modelRouteFields(currentProvider, currentModel) {
 
 async function reviewCandidate(candidate, decision, resolution) {
   const approve = decision === 'approve'
+  const action = candidatePrimaryAction(candidate)
+  const title = approve ? `${action.label}？` : '拒绝这条候选？'
+  const message = !approve
+    ? '拒绝后会保留审核记录，但不会进入知识库。'
+    : candidate.action === 'create'
+      ? '确认后将创建新文档，并立即参与后续对话召回。'
+      : candidate.action === 'conflict'
+        ? '确认后将保留当前文档内容，并把候选内容合入同一文档。'
+        : '确认后将按预览结果合入目标文档；若审核期间文档发生变化，会转为冲突项。'
   openConfirm({
-    title: approve ? '通过这条候选？' : '拒绝这条候选？',
-    message: approve ? '通过后内容会立即写入知识库，并参与后续对话召回。' : '拒绝后会保留审核记录，但不会进入知识库。',
-    confirmLabel: approve ? '确认通过' : '确认拒绝', danger: !approve,
+    title,
+    message,
+    confirmLabel: approve ? action.label : '确认拒绝', danger: !approve,
     onConfirm: async () => {
       const reviewed = await api(`candidates/${encodeURIComponent(candidate.id)}/review`, {
         method: 'POST', body: { decision, ...(resolution ? { resolution } : {}) },
@@ -1950,7 +2059,7 @@ async function reviewCandidate(candidate, decision, resolution) {
         await navigate('candidates')
         return
       }
-      showToast(approve ? '候选已通过。' : '候选已拒绝。')
+      showToast(approve ? candidate.action === 'create' ? '新文档已写入。' : '候选内容已合并。' : '候选已拒绝。')
       state.stats = null
       await navigate('candidates')
     },

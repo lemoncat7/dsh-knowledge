@@ -37,3 +37,14 @@ await build({
   target: 'es2022',
   minify: true,
 })
+
+await build({
+  entryPoints: ['src/web-change-review.ts'],
+  outfile: 'web/change-review.js',
+  bundle: true,
+  format: 'iife',
+  globalName: 'DshKnowledgeReview',
+  platform: 'browser',
+  target: 'es2022',
+  minify: true,
+})

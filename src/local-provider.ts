@@ -44,6 +44,7 @@ import type { KnowledgeProvider } from './provider.js'
 import { renderKnowledgeMarkdown } from './documents/markdown.js'
 import { knowledgeDocumentPath } from './documents/path.js'
 import { KnowledgeDocumentStore } from './documents/store.js'
+import { mergeKnowledgeBodies } from './knowledge-merge.js'
 
 type SqlRow = Record<string, unknown>
 
@@ -1386,7 +1387,7 @@ function mergeKnowledgeDraft(current: KnowledgeEntry, incoming: KnowledgeDraft, 
   return normalizeDraft({
     knowledgeBaseId: current.knowledgeBaseId,
     title: preferIncomingTitle ? incoming.title : current.title,
-    body: mergeBodies(current.body, incoming.body),
+    body: mergeKnowledgeBodies(current.body, incoming.body),
     type: current.type,
     tags: [...current.tags, ...incoming.tags],
     scope: current.scope,
@@ -1395,14 +1396,6 @@ function mergeKnowledgeDraft(current: KnowledgeEntry, incoming: KnowledgeDraft, 
       ? current.source === undefined ? {} : { source: current.source }
       : { source: incoming.source },
   })
-}
-
-function mergeBodies(current: string, incoming: string): string {
-  const currentKey = normalizedBody(current)
-  const incomingKey = normalizedBody(incoming)
-  if (currentKey === incomingKey || currentKey.includes(incomingKey)) return current.trim()
-  if (incomingKey.includes(currentKey)) return incoming.trim()
-  return `${current.trim()}\n\n${incoming.trim()}`
 }
 
 function potentiallyConflicts(current: KnowledgeEntry, incoming: KnowledgeDraft): boolean {
