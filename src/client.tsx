@@ -6,7 +6,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { activatePluginWorkspace, observePluginWorkspace } from '@lemoncat7/dsh-plugin-ui'
+import { activatePluginWorkspace, observePluginWorkspace } from './workspace-ownership.js'
 import {
   IconChevronLeftOutline14, IconDataOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
