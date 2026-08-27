@@ -660,7 +660,16 @@ html,
   background: var(--surface);
   box-shadow: 0 14px 38px color-mix(in srgb, var(--text) 5%, transparent);
 }
-.note-tree-panel { min-width: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; border-right: 1px solid var(--border); background: color-mix(in srgb, var(--surface-soft) 55%, var(--surface)); }
+.note-tree-panel {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-soft) 55%, var(--surface));
+}
 .note-tree-scrim { display: none; }
 .note-tree-header { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 12px 8px 16px; }
 .note-tree-header h2 { margin: 0; font-size: 14px; letter-spacing: -.01em; }
@@ -670,7 +679,13 @@ html,
 .note-tree-search-wrap .search-symbol { left: 20px; }
 .note-tree-search { width: 100%; height: 34px; border: 1px solid transparent; border-radius: 8px; padding: 6px 10px 6px 34px; background: color-mix(in srgb, var(--surface) 72%, transparent); color: var(--text); outline: none; }
 .note-tree-search:focus { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: var(--surface); }
-.note-tree { min-height: 0; overflow: auto; padding: 3px 8px 12px; }
+.note-tree {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 3px 8px 12px;
+}
 .note-tree-group + .note-tree-group { margin-top: 3px; }
 .note-tree-base, .note-tree-document, .note-tree-new { width: 100%; display: flex; align-items: center; border: 0; background: transparent; color: var(--text-secondary); text-align: left; }
 .note-tree-base { min-height: 34px; gap: 7px; border-radius: 7px; padding: 5px 7px; font-weight: 620; }
@@ -717,8 +732,10 @@ html,
 .note-editor {
   min-width: 0;
   min-height: 0;
+  height: 100%;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
   background: var(--surface);
   container-name: note-editor;
   container-type: inline-size;
@@ -728,7 +745,18 @@ html,
 .note-empty-content h3 { margin: 16px 0 5px; font-size: 17px; }
 .note-empty-content p { margin: 0 0 18px; color: var(--text-tertiary); }
 .empty-document-mark { display: inline-block; width: 38px; height: 47px; border: 1.5px solid var(--border-strong); border-radius: 5px; background: linear-gradient(var(--border), var(--border)) 9px 13px / 19px 1px no-repeat, linear-gradient(var(--border), var(--border)) 9px 20px / 15px 1px no-repeat; }
-.note-editor-toolbar { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 14px; border-bottom: 1px solid var(--border); padding: 9px 14px 9px 20px; }
+.note-editor-toolbar {
+  position: relative;
+  z-index: 2;
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border-bottom: 1px solid var(--border);
+  padding: 9px 14px 9px 20px;
+  background: var(--surface);
+}
 .note-breadcrumb { min-width: 0; display: flex; align-items: center; gap: 7px; overflow: hidden; color: var(--text-tertiary); font-size: 11px; white-space: nowrap; }
 .note-breadcrumb strong { overflow: hidden; color: var(--text-secondary); font-weight: 560; text-overflow: ellipsis; }
 .note-editor-actions { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
@@ -737,7 +765,12 @@ html,
 .note-mode-switch button { min-width: 48px; min-height: 28px; border: 0; border-radius: 6px; padding: 4px 9px; background: transparent; color: var(--text-tertiary); font-size: 11px; font-weight: 600; }
 .note-mode-switch button:hover { color: var(--text); }
 .note-mode-switch button[aria-selected="true"] { background: var(--surface-raised); color: var(--text); box-shadow: 0 1px 3px color-mix(in srgb, var(--text) 10%, transparent); }
-.note-editor-scroll { min-height: 0; overflow: auto; container-type: inline-size; }
+.note-editor-scroll {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  container-type: inline-size;
+}
 .document-finalized-banner {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
