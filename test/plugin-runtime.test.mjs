@@ -456,6 +456,12 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
             scope: { kind: 'global' }, confidence: 0.99,
             retention: { durable: true, evidence: 'explicit' }, reason: 'Contradiction detected.',
           },
+          {
+            action: 'update', knowledgeBaseId: 'default', targetId, title: 'Existing policy',
+            body: '## Operational note\n\nKeep the compatible operational note with the existing policy.',
+            type: 'lesson', tags: ['operations'], scope: { kind: 'global' }, confidence: 0.95,
+            retention: { durable: true, evidence: 'explicit' }, reason: 'Adds compatible operational context.',
+          },
         ] }) }
         yield { type: 'finish', reason: { kind: 'stop' } }
       },
@@ -522,11 +528,14 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
   assert.deepEqual(streamRoutes, [['mock', 'extractor'], ['mock', 'extractor']])
   assert.deepEqual(streamReasoning, [undefined, 'low'])
   assert.deepEqual(streamPolicies, ['proactive', 'proactive'])
-  assert.equal((await observer.listCandidates('approved', 10)).length, 1)
+  assert.equal((await observer.listCandidates('approved', 10)).length, 2)
   const pending = await observer.listCandidates('pending', 10)
   assert.equal(pending.length, 2)
   assert.ok(pending.some(candidate => candidate.action === 'conflict'))
   assert.ok(pending.some(candidate => candidate.draft.source?.evidence === 'inferred'))
   assert.equal((await observer.list({ status: 'active', limit: 10 })).items.length, 2)
+  const updatedExisting = await observer.get(existing.id)
+  assert.equal(updatedExisting.type, 'decision')
+  assert.match(updatedExisting.body, /Operational note/)
   assert.equal(direct.events.at(-1).type, 'assistant/message')
 })

@@ -1399,7 +1399,6 @@ function mergeKnowledgeDraft(current: KnowledgeEntry, incoming: KnowledgeDraft, 
 }
 
 function potentiallyConflicts(current: KnowledgeEntry, incoming: KnowledgeDraft): boolean {
-  if (current.type !== incoming.type) return true
   const currentBody = normalizedBody(current.body)
   const incomingBody = normalizedBody(incoming.body)
   if (currentBody === incomingBody || currentBody.includes(incomingBody) || incomingBody.includes(currentBody)) return false

@@ -140,6 +140,31 @@ test('direct writes merge compatible knowledge, skip duplicates, and hold confli
   assert.equal((await provider.list({ status: 'active', limit: 10 })).items.length, 2)
 })
 
+test('document type drift does not turn a compatible append into a conflict', async (t) => {
+  const provider = await fixture(t)
+  const existing = await provider.create({
+    knowledgeBaseId: 'default', title: '安卓代理客户端偏好',
+    body: '## 偏好\n\n单一 SOCKS5 节点优先选择配置简单的客户端。',
+    type: 'preference', tags: ['安卓', '代理'], scope: { kind: 'global' }, confidence: 0.91,
+  })
+  const result = await provider.writeDirect({
+    action: 'update', targetId: existing.id,
+    draft: {
+      knowledgeBaseId: 'default', title: '安卓代理客户端偏好',
+      body: '## 排障\n\n手机不能使用 127.0.0.1 连接电脑上的代理服务。',
+      type: 'lesson', tags: ['排障'], scope: { kind: 'global' }, confidence: 0.92,
+    },
+    reason: '追加同一主题的排障经验。',
+  }, 'type-drift-append:1')
+
+  assert.equal(result.outcome, 'merged')
+  assert.equal(result.candidate?.action, 'update')
+  assert.equal(result.entry?.type, 'preference')
+  assert.match(result.entry?.body || '', /单一 SOCKS5/)
+  assert.match(result.entry?.body || '', /不能使用 127\.0\.0\.1/)
+  assert.equal((await provider.listCandidates('pending', 10)).length, 0)
+})
+
 test('direct writes merge the same GitHub repository despite different document titles', async (t) => {
   const provider = await fixture(t)
   const existing = await provider.create({
