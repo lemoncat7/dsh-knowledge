@@ -920,6 +920,39 @@ html,
 .notes-drop-overlay strong { font-size: 16px; }
 .notes-drop-overlay span { margin-top: 5px; color: var(--text-tertiary); font-size: 12px; }
 .notes-workspace[data-drop-active="true"] .notes-drop-overlay { opacity: 1; transform: scale(1); }
+.notes-transfer {
+  --notes-transfer-progress: 0;
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  z-index: 6;
+  width: min(370px, calc(100% - 36px));
+  display: grid;
+  gap: 8px;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 78%, transparent);
+  border-radius: 11px;
+  padding: 11px 12px 10px;
+  background: color-mix(in srgb, var(--dialog-surface) 96%, transparent);
+  box-shadow: 0 12px 34px color-mix(in srgb, var(--text) 11%, transparent), inset 0 1px color-mix(in srgb, white 45%, transparent);
+  color: var(--text);
+  animation: notes-transfer-enter .18s cubic-bezier(.2, .8, .2, 1) both;
+}
+.notes-transfer-heading { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.notes-transfer-mark { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
+.notes-transfer-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 640; }
+.notes-transfer-close { min-height: 23px; padding: 2px 5px; color: var(--text-tertiary); }
+.notes-transfer-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 11px; }
+.notes-transfer-track { position: relative; height: 3px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--text-tertiary) 14%, transparent); }
+.notes-transfer-fill { position: absolute; inset: 0; border-radius: inherit; background: var(--accent); transform: scaleX(var(--notes-transfer-progress)); transform-origin: left center; transition: transform .12s linear; }
+.notes-transfer-meta { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--text-tertiary); font-size: 9px; font-variant-numeric: tabular-nums; }
+.notes-transfer-count { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notes-transfer-percent { flex: none; }
+.notes-transfer[data-state="scanning"] .notes-transfer-fill { width: 34%; animation: notes-transfer-scan 1s cubic-bezier(.4, 0, .2, 1) infinite; }
+.notes-transfer[data-state="complete"] .notes-transfer-mark { background: var(--success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 12%, transparent); }
+.notes-transfer[data-state="error"] .notes-transfer-mark { background: var(--danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 12%, transparent); }
+.notes-transfer[data-state="error"] .notes-transfer-detail { color: var(--danger); white-space: normal; }
+@keyframes notes-transfer-enter { from { opacity: 0; transform: translateY(7px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes notes-transfer-scan { from { transform: translateX(-115%); } to { transform: translateX(295%); } }
 .note-picker { display: grid; gap: 12px; }
 .note-picker-results { max-height: min(58vh, 540px); overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
 .note-picker-row { width: 100%; min-width: 0; display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: center; gap: 10px; border: 0; border-bottom: 1px solid var(--border); padding: 10px 12px; background: transparent; color: var(--text); text-align: left; }

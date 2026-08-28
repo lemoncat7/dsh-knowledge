@@ -22,6 +22,7 @@ const WRITE_MODE_LABELS = { none: '仅召回', audit: '审核写入', direct: '�
 const EVIDENCE_LABELS = { explicit: '用户明确', verified: '结果已验证', inferred: '模型推断' }
 const DOCUMENT_STATE_LABELS = { open: '进行中', resolved: '已解决', complete: '已收集完成' }
 const DOCUMENT_LAYOUT_KEY = 'dsh-knowledge.document-layout'
+const NOTE_MAX_FILE_SIZE = 64 * 1024 * 1024
 const pageParams = new URLSearchParams(location.search)
 const mountContext = {
   sessionId: pageParams.get('sessionId')?.trim() || '',
@@ -83,6 +84,7 @@ const state = {
     children: new Map(), loadedFolders: new Set(), expandedFolders: new Set(),
     selectedId: '', selectedNode: null, currentFolderId: null, breadcrumbs: [],
     content: '', draft: '', dirty: false, assetUrl: '', query: '', searchResults: [],
+    transfer: null,
   },
   service: { publicApiEnabled: false, publicApiPrefix: '/knowledge-api/v1', remote: false },
   scrollPositions: new Map(),
@@ -102,6 +104,8 @@ let noteEditorLoader = null
 let markdownEditorMountRequest = 0
 let plainTextEditorHandle = null
 let plainTextEditorMountRequest = 0
+let noteTransferFrame = 0
+let noteTransferSequence = 0
 
 function installHostThemeBridge() {
   if (window.parent === window) return Promise.resolve()
@@ -319,6 +323,38 @@ async function binaryRequest(path, options = {}) {
     throw error
   }
   return payload
+}
+
+function binaryUploadRequest(path, body, options = {}) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest()
+    request.open(options.method || 'POST', `${API_BASE}/${path.replace(/^\/+/, '')}`)
+    request.responseType = 'text'
+    request.setRequestHeader('accept', 'application/json')
+    if (AUTH_MODE === 'same-origin') request.setRequestHeader('x-dsh-knowledge-client', 'management-web')
+    if (state.token) request.setRequestHeader('authorization', `Bearer ${state.token}`)
+    if (options.contentType) request.setRequestHeader('content-type', options.contentType)
+    request.upload.addEventListener('progress', event => {
+      if (event.lengthComputable) options.onProgress?.(event.loaded, event.total)
+    })
+    request.addEventListener('load', () => {
+      let payload
+      if (request.responseText) {
+        try { payload = JSON.parse(request.responseText) }
+        catch { return reject(new Error('服务返回了无法识别的数据')) }
+      }
+      if (request.status < 200 || request.status >= 300) {
+        const error = new Error(payload?.error || `请求失败（HTTP ${request.status}）`)
+        error.status = request.status
+        reject(error)
+        return
+      }
+      resolve(payload)
+    })
+    request.addEventListener('error', () => reject(new Error('上传连接中断，请检查网络后重试')))
+    request.addEventListener('abort', () => reject(new DOMException('上传已取消', 'AbortError')))
+    request.send(body)
+  })
 }
 
 async function responseError(response) {
@@ -1833,8 +1869,35 @@ function renderNotes() {
     element('div', { class: 'notes-drop-overlay', 'aria-hidden': 'true' },
       element('strong', {}, '放开以导入当前目录'),
       element('span', {}, '支持文件和完整目录，原有目录层级会被保留。')),
+    renderNoteTransfer(),
   )
   return element('section', { class: 'notes-page', 'aria-label': '笔记工作区' }, workspace)
+}
+
+function renderNoteTransfer() {
+  const transfer = state.notes.transfer
+  if (!transfer) return null
+  const dismissible = transfer.phase === 'complete' || transfer.phase === 'error'
+  return element('section', {
+    class: 'notes-transfer', 'data-note-transfer': transfer.id, 'data-state': transfer.phase,
+    role: transfer.phase === 'error' ? 'alert' : 'status', 'aria-live': 'polite',
+  },
+    element('div', { class: 'notes-transfer-heading' },
+      element('span', { class: 'notes-transfer-mark', 'aria-hidden': 'true' }),
+      element('strong', { class: 'notes-transfer-title' }, noteTransferTitle(transfer)),
+      dismissible ? actionButton('关闭', dismissNoteTransfer, 'ghost tiny notes-transfer-close', { 'aria-label': '关闭导入进度' }) : null,
+    ),
+    element('div', { class: 'notes-transfer-detail', title: transfer.currentName || '' }, noteTransferDetail(transfer)),
+    element('div', {
+      class: 'notes-transfer-track', role: 'progressbar',
+      'aria-label': '笔记导入进度', 'aria-valuemin': '0', 'aria-valuemax': '100',
+      'aria-valuenow': transfer.phase === 'scanning' ? undefined : String(noteTransferPercent(transfer)),
+    }, element('span', { class: 'notes-transfer-fill' })),
+    element('div', { class: 'notes-transfer-meta' },
+      element('span', { class: 'notes-transfer-count' }, noteTransferCount(transfer)),
+      element('span', { class: 'notes-transfer-percent' }, transfer.phase === 'scanning' ? '正在整理' : `${noteTransferPercent(transfer)}%`),
+    ),
+  )
 }
 
 function renderNoteTreeBranch(parentId, depth = 0) {
@@ -2378,20 +2441,22 @@ async function dropNoteNode(event, parentId) {
 }
 
 async function uploadNoteFiles(files, parentId) {
-  const available = files.filter(file => file.size <= 64 * 1024 * 1024)
-  if (!available.length) return showToast('没有可上传的文件，单文件上限为 64 MiB。', 'error')
-  let uploaded = 0
+  const summary = createNoteImportSummary()
+  const plans = files.flatMap(file => createNoteFilePlan(file, summary))
+  if (!plans.length) return showToast('没有可上传的文件，单文件上限为 64 MiB。', 'error')
+  const transfer = beginNoteTransfer('uploading')
+  if (!transfer) return
+  prepareNoteTransfer(transfer, summary)
   try {
-    for (const file of available) {
-      await uploadNoteFile(file, parentId)
-      uploaded += 1
-    }
+    await importNotePlans(plans, parentId, transfer)
     await loadNoteChildren(parentId, true)
     renderShell()
-    showToast(`已添加 ${uploaded} 个文件。`)
+    completeNoteTransfer(transfer)
+    showNoteImportResult(summary)
   } catch (error) {
-    if (uploaded) await loadNoteChildren(parentId, true).catch(() => {})
+    if (transfer.completedItems) await loadNoteChildren(parentId, true).catch(() => {})
     renderShell()
+    failNoteTransfer(transfer, error)
     showToast(friendlyError(error), 'error')
   }
 }
@@ -2399,21 +2464,47 @@ async function uploadNoteFiles(files, parentId) {
 async function importDroppedNotes(dataTransfer, parentId) {
   const payload = captureNoteDropPayload(dataTransfer)
   if (!payload.entries.length) return uploadNoteFiles(payload.files, parentId)
-
-  const result = { files: 0, folders: 0, skipped: 0 }
+  const transfer = beginNoteTransfer('scanning')
+  if (!transfer) return
+  const summary = createNoteImportSummary()
   try {
-    for (const entry of payload.entries) await importNoteEntry(entry, parentId, result)
+    const plans = []
+    for (const entry of payload.entries) {
+      const plan = await collectNoteEntry(entry, summary, transfer)
+      if (plan) plans.push(plan)
+    }
+    if (!plans.length) {
+      dismissNoteTransfer()
+      showToast('没有可上传的内容，单文件上限为 64 MiB。', 'error')
+      return
+    }
+    prepareNoteTransfer(transfer, summary)
+    await importNotePlans(plans, parentId, transfer)
     await loadNoteChildren(parentId, true)
     if (parentId) state.notes.expandedFolders.add(parentId)
     renderShell()
-    const added = [result.folders ? `${result.folders} 个目录` : '', result.files ? `${result.files} 个文件` : ''].filter(Boolean).join('、')
-    const skipped = result.skipped ? `，跳过 ${result.skipped} 个超过 64 MiB 的文件` : ''
-    showToast(`已添加${added ? ` ${added}` : ''}${skipped}。`)
+    completeNoteTransfer(transfer)
+    showNoteImportResult(summary)
   } catch (error) {
     await loadNoteChildren(parentId, true).catch(() => {})
     renderShell()
+    failNoteTransfer(transfer, error)
     showToast(friendlyError(error), 'error')
   }
+}
+
+function createNoteImportSummary() {
+  return { files: 0, folders: 0, skipped: 0, bytes: 0 }
+}
+
+function createNoteFilePlan(file, summary) {
+  if (file.size > NOTE_MAX_FILE_SIZE) {
+    summary.skipped += 1
+    return []
+  }
+  summary.files += 1
+  summary.bytes += file.size
+  return [{ kind: 'file', name: file.name, file }]
 }
 
 function captureNoteDropPayload(dataTransfer) {
@@ -2430,21 +2521,44 @@ function captureNoteDropPayload(dataTransfer) {
   return { entries, files }
 }
 
-async function importNoteEntry(entry, parentId, result) {
+async function collectNoteEntry(entry, summary, transfer) {
+  transfer.currentName = entry.name || ''
+  transfer.scannedItems += 1
+  scheduleNoteTransferSync()
   if (entry.isDirectory) {
-    const folder = await api('notes/folders', { method: 'POST', body: { name: entry.name, parentId } })
-    result.folders += 1
-    for (const child of await readNoteDirectoryEntries(entry)) await importNoteEntry(child, folder.id, result)
-    return
+    summary.folders += 1
+    const children = []
+    for (const child of await readNoteDirectoryEntries(entry)) {
+      const plan = await collectNoteEntry(child, summary, transfer)
+      if (plan) children.push(plan)
+    }
+    return { kind: 'folder', name: entry.name, children }
   }
-  if (!entry.isFile) return
+  if (!entry.isFile) return null
   const file = await readNoteFileEntry(entry)
-  if (file.size > 64 * 1024 * 1024) {
-    result.skipped += 1
-    return
+  return createNoteFilePlan(file, summary)[0] || null
+}
+
+async function importNotePlans(plans, parentId, transfer) {
+  for (const plan of plans) {
+    transfer.currentName = plan.name
+    scheduleNoteTransferSync()
+    if (plan.kind === 'folder') {
+      const folder = await api('notes/folders', { method: 'POST', body: { name: plan.name, parentId } })
+      transfer.completedItems += 1
+      scheduleNoteTransferSync()
+      await importNotePlans(plan.children, folder.id, transfer)
+      continue
+    }
+    const settledBytes = transfer.loadedBytes
+    await uploadNoteFile(plan.file, parentId, loaded => {
+      transfer.loadedBytes = settledBytes + Math.min(loaded, plan.file.size)
+      scheduleNoteTransferSync()
+    })
+    transfer.loadedBytes = settledBytes + plan.file.size
+    transfer.completedItems += 1
+    scheduleNoteTransferSync()
   }
-  await uploadNoteFile(file, parentId)
-  result.files += 1
 }
 
 async function readNoteDirectoryEntries(entry) {
@@ -2461,12 +2575,143 @@ function readNoteFileEntry(entry) {
   return new Promise((resolve, reject) => entry.file(resolve, reject))
 }
 
-async function uploadNoteFile(file, parentId) {
+async function uploadNoteFile(file, parentId, onProgress) {
   const params = new URLSearchParams({ name: file.name })
   if (parentId) params.set('parentId', parentId)
-  return binaryRequest(`notes/files?${params}`, {
-    method: 'POST', body: file, contentType: file.type || 'application/octet-stream',
+  return binaryUploadRequest(`notes/files?${params}`, file, {
+    method: 'POST', contentType: file.type || 'application/octet-stream', onProgress,
   })
+}
+
+function beginNoteTransfer(phase) {
+  if (state.notes.transfer && ['scanning', 'uploading'].includes(state.notes.transfer.phase)) {
+    showToast('已有导入任务正在进行，请稍候。', 'error')
+    return null
+  }
+  const transfer = {
+    id: String(++noteTransferSequence), phase, currentName: '', error: '',
+    scannedItems: 0, completedItems: 0, totalItems: 0,
+    loadedBytes: 0, totalBytes: 0, files: 0, folders: 0, skipped: 0,
+  }
+  state.notes.transfer = transfer
+  refreshNoteTransferPanel()
+  return transfer
+}
+
+function prepareNoteTransfer(transfer, summary) {
+  transfer.phase = 'uploading'
+  transfer.currentName = ''
+  transfer.totalItems = summary.files + summary.folders
+  transfer.totalBytes = summary.bytes
+  transfer.files = summary.files
+  transfer.folders = summary.folders
+  transfer.skipped = summary.skipped
+  scheduleNoteTransferSync()
+}
+
+function completeNoteTransfer(transfer) {
+  if (state.notes.transfer !== transfer) return
+  transfer.phase = 'complete'
+  transfer.currentName = ''
+  transfer.completedItems = transfer.totalItems
+  transfer.loadedBytes = transfer.totalBytes
+  refreshNoteTransferPanel()
+  window.setTimeout(() => {
+    if (state.notes.transfer === transfer && transfer.phase === 'complete') dismissNoteTransfer()
+  }, 2600)
+}
+
+function failNoteTransfer(transfer, error) {
+  if (state.notes.transfer !== transfer) return
+  transfer.phase = 'error'
+  transfer.error = friendlyError(error)
+  refreshNoteTransferPanel()
+}
+
+function dismissNoteTransfer() {
+  state.notes.transfer = null
+  document.querySelector('.notes-transfer')?.remove()
+}
+
+function refreshNoteTransferPanel() {
+  const current = document.querySelector('.notes-transfer')
+  const panel = renderNoteTransfer()
+  if (!panel) {
+    current?.remove()
+    return
+  }
+  if (current) current.replaceWith(panel)
+  else document.querySelector('.notes-workspace')?.append(panel)
+  syncNoteTransferPanel()
+}
+
+function scheduleNoteTransferSync() {
+  if (noteTransferFrame) return
+  noteTransferFrame = requestAnimationFrame(() => {
+    noteTransferFrame = 0
+    syncNoteTransferPanel()
+  })
+}
+
+function syncNoteTransferPanel() {
+  const transfer = state.notes.transfer
+  const panel = document.querySelector('.notes-transfer')
+  if (!transfer || !panel || panel.dataset.noteTransfer !== transfer.id) return
+  const percent = noteTransferPercent(transfer)
+  panel.dataset.state = transfer.phase
+  panel.style.setProperty('--notes-transfer-progress', String(percent / 100))
+  const title = panel.querySelector('.notes-transfer-title')
+  const detail = panel.querySelector('.notes-transfer-detail')
+  const count = panel.querySelector('.notes-transfer-count')
+  const percentLabel = panel.querySelector('.notes-transfer-percent')
+  const progress = panel.querySelector('.notes-transfer-track')
+  if (title) title.textContent = noteTransferTitle(transfer)
+  if (detail) {
+    detail.textContent = noteTransferDetail(transfer)
+    detail.title = transfer.currentName || ''
+  }
+  if (count) count.textContent = noteTransferCount(transfer)
+  if (percentLabel) percentLabel.textContent = transfer.phase === 'scanning' ? '正在整理' : `${percent}%`
+  if (progress) {
+    if (transfer.phase === 'scanning') progress.removeAttribute('aria-valuenow')
+    else progress.setAttribute('aria-valuenow', String(percent))
+  }
+}
+
+function noteTransferPercent(transfer) {
+  if (transfer.phase === 'complete') return 100
+  const value = transfer.totalBytes > 0
+    ? transfer.loadedBytes / transfer.totalBytes
+    : transfer.totalItems > 0 ? transfer.completedItems / transfer.totalItems : 0
+  return Math.min(transfer.phase === 'uploading' ? 99 : 100, Math.max(0, Math.round(value * 100)))
+}
+
+function noteTransferTitle(transfer) {
+  if (transfer.phase === 'scanning') return '正在整理导入内容'
+  if (transfer.phase === 'complete') return '导入完成'
+  if (transfer.phase === 'error') return '导入未完成'
+  return '正在导入笔记'
+}
+
+function noteTransferDetail(transfer) {
+  if (transfer.phase === 'error') return transfer.error || '导入过程中发生错误'
+  if (transfer.phase === 'complete') return `${transfer.files} 个文件、${transfer.folders} 个目录已写入`
+  if (transfer.phase === 'scanning') return transfer.currentName || '正在读取文件和目录…'
+  return transfer.currentName || '准备写入…'
+}
+
+function noteTransferCount(transfer) {
+  if (transfer.phase === 'scanning') return `已读取 ${transfer.scannedItems} 项`
+  const count = `${transfer.completedItems} / ${transfer.totalItems} 项`
+  const bytes = transfer.totalBytes ? ` · ${formatBytes(transfer.loadedBytes)} / ${formatBytes(transfer.totalBytes)}` : ''
+  const skipped = transfer.skipped ? ` · 跳过 ${transfer.skipped}` : ''
+  return `${count}${bytes}${skipped}`
+}
+
+function showNoteImportResult(summary) {
+  const added = [summary.folders ? `${summary.folders} 个目录` : '', summary.files ? `${summary.files} 个文件` : ''].filter(Boolean).join('、')
+  const skipped = summary.skipped ? `，跳过 ${summary.skipped} 个超过 64 MiB 的文件` : ''
+  showToast(`已添加${added ? ` ${added}` : ''}${skipped}。`)
 }
 
 async function saveNoteDocument() {
