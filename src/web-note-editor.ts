@@ -70,7 +70,7 @@ export function createMarkdownEditor(options: MarkdownEditorOptions): MarkdownEd
         role: 'textbox',
         'aria-label': options.label,
         'aria-multiline': 'true',
-        spellcheck: 'true',
+        spellcheck: 'false',
       },
       handleKeyDown: (_view, event) => {
         if (!(event.metaKey || event.ctrlKey) || event.key.toLocaleLowerCase() !== 's') return false
@@ -116,7 +116,7 @@ export function createPlainTextEditor(options: PlainTextEditorOptions): PlainTex
         role: 'textbox',
         'aria-label': options.label,
         'aria-multiline': 'true',
-        spellcheck: 'true',
+        spellcheck: 'false',
       },
       handleKeyDown: (_view, event) => {
         if (!(event.metaKey || event.ctrlKey) || event.key.toLocaleLowerCase() !== 's') return false

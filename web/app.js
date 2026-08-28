@@ -2169,7 +2169,7 @@ function renderEditableNote(node) {
   return element('main', { class: `notes-content is-document${markdown ? '' : ' has-line-numbers'}` },
     renderNoteFileToolbar(node, { editable: true }),
     element('h1', {
-      class: 'notes-document-title', contenteditable: 'plaintext-only', spellcheck: 'true',
+      class: 'notes-document-title', contenteditable: 'plaintext-only', spellcheck: 'false',
       'aria-label': `修改 ${node.name} 的标题`, title: '点击修改标题',
       onBlur: event => { void saveEditableNoteTitle(event.currentTarget, node) },
       onKeyDown: event => {
