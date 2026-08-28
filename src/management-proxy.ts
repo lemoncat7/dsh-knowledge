@@ -2,8 +2,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { KnowledgeConnectionSettings } from './connection.js'
 import type { RuntimeContextLike } from './runtime.js'
 
-const MAX_REQUEST_BYTES = 1_048_576
-const MAX_RESPONSE_BYTES = 10_485_760
+const MAX_JSON_REQUEST_BYTES = 1_048_576
+const MAX_JSON_RESPONSE_BYTES = 10_485_760
+const MAX_NOTE_FILE_BYTES = 64 * 1024 * 1024
 
 export function registerRemoteManagementProxy(
   ctx: RuntimeContextLike,
@@ -55,7 +56,7 @@ async function dispatch(
       })
     }
     if (method !== 'PUT') throw httpError(405, '不支持此本机设置请求方法。')
-    const body = JSON.parse(await readBody(req) ?? '{}') as Record<string, unknown>
+    const body = JSON.parse((await readBody(req, MAX_JSON_REQUEST_BYTES))?.toString('utf8') ?? '{}') as Record<string, unknown>
     if (body.publicApiEnabled !== undefined) throw httpError(409, '请在中央 DSH 的知识库管理台中修改远程 API 状态。')
     const writebackProvider = body.writebackProvider
     const writebackModel = body.writebackModel
@@ -77,7 +78,8 @@ async function dispatch(
   if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) throw httpError(405, '不支持此远程管理请求方法。')
   const base = settings.remoteUrl.endsWith('/') ? settings.remoteUrl : `${settings.remoteUrl}/`
   const target = new URL(`${relative}${incoming.search}`, base)
-  const body = method === 'GET' ? undefined : await readBody(req)
+  const noteContentRoute = relative.startsWith('notes/files') || /notes\/[^/]+\/content(?:\?|$)/.test(relative)
+  const body = method === 'GET' ? undefined : await readBody(req, noteContentRoute ? MAX_NOTE_FILE_BYTES : MAX_JSON_REQUEST_BYTES)
   const controller = new AbortController()
   const abort = () => { controller.abort() }
   req.once('aborted', abort)
@@ -85,23 +87,30 @@ async function dispatch(
     const response = await fetch(target, {
       method,
       headers: {
-        accept: 'application/json',
+        accept: firstHeader(req.headers.accept) ?? 'application/json',
         authorization: `Bearer ${settings.remoteToken}`,
-        ...body === undefined ? {} : { 'content-type': 'application/json' },
+        ...body === undefined ? {} : { 'content-type': firstHeader(req.headers['content-type']) ?? 'application/octet-stream' },
       },
-      ...body === undefined ? {} : { body },
+      ...body === undefined ? {} : { body: new Uint8Array(body) },
       signal: controller.signal,
       redirect: 'manual',
     })
+    const maximumResponseBytes = noteContentRoute ? MAX_NOTE_FILE_BYTES : MAX_JSON_RESPONSE_BYTES
     const declared = Number(response.headers.get('content-length') ?? 0)
-    if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) throw httpError(502, '中央知识库响应过大。')
+    if (Number.isFinite(declared) && declared > maximumResponseBytes) throw httpError(502, '中央知识库响应过大。')
     const payload = Buffer.from(await response.arrayBuffer())
-    if (payload.byteLength > MAX_RESPONSE_BYTES) throw httpError(502, '中央知识库响应过大。')
+    if (payload.byteLength > maximumResponseBytes) throw httpError(502, '中央知识库响应过大。')
     res.writeHead(response.status, {
       'content-type': response.headers.get('content-type') ?? 'application/json; charset=utf-8',
       'content-length': payload.byteLength,
       'cache-control': 'no-store',
       'x-content-type-options': 'nosniff',
+      ...response.headers.get('content-disposition') === null
+        ? {}
+        : { 'content-disposition': response.headers.get('content-disposition') as string },
+      ...response.headers.get('content-security-policy') === null
+        ? {}
+        : { 'content-security-policy': response.headers.get('content-security-policy') as string },
     })
     res.end(payload)
   } finally {
@@ -121,18 +130,18 @@ function assertManagementRequest(req: IncomingMessage): void {
   if (expectedHost === undefined || originHost.toLowerCase() !== expectedHost.toLowerCase()) throw httpError(403, '已拒绝跨域知识库管理请求。')
 }
 
-async function readBody(req: IncomingMessage): Promise<string | undefined> {
+async function readBody(req: IncomingMessage, maximumBytes: number): Promise<Buffer | undefined> {
   const declared = Number(req.headers['content-length'] ?? 0)
-  if (Number.isFinite(declared) && declared > MAX_REQUEST_BYTES) throw httpError(413, '远程管理请求内容过大。')
+  if (Number.isFinite(declared) && declared > maximumBytes) throw httpError(413, '远程管理请求内容过大。')
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of req) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
     size += buffer.length
-    if (size > MAX_REQUEST_BYTES) throw httpError(413, '远程管理请求内容过大。')
+    if (size > maximumBytes) throw httpError(413, '远程管理请求内容过大。')
     chunks.push(buffer)
   }
-  return size === 0 ? undefined : Buffer.concat(chunks).toString('utf8')
+  return size === 0 ? undefined : Buffer.concat(chunks)
 }
 
 function firstHeader(value: string | string[] | undefined): string | undefined {

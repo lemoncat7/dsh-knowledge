@@ -39,6 +39,17 @@ await build({
 })
 
 await build({
+  entryPoints: ['src/web-note-editor.ts'],
+  outfile: 'web/note-editor.js',
+  bundle: true,
+  format: 'iife',
+  globalName: 'DshKnowledgeNoteEditor',
+  platform: 'browser',
+  target: 'es2022',
+  minify: true,
+})
+
+await build({
   entryPoints: ['src/web-change-review.ts'],
   outfile: 'web/change-review.js',
   bundle: true,

@@ -36,6 +36,7 @@ The browser integration is compiled against the exact official client packages u
 - `local-provider.ts` owns schema migrations, transactions, FTS and token hashes.
 - `remote-provider.ts` is an authenticated, timeout-bounded HTTPS adapter.
 - `management-proxy.ts` lets the embedded console operate on the selected central service while keeping the saved remote token on the DSH server.
+- `notes/domain.ts` owns stable note ids and the Markdown reference contract; `notes/store.ts` owns the independent directory tree, editable notes and opaque file storage.
 - `extraction.ts` snapshots completed turns, resolves writable mounts and validates model JSON fail-closed.
 - `retrieval.ts` owns mounted-scope authorization, signed handles, ranking and bounded rendering shared by proactive and tool-driven retrieval.
 - `recall.ts` owns the official prompt-assembly knowledge map and bounded first-step automatic retrieval. It also removes durable UI notices and prior recall snapshots before later model requests.
@@ -61,6 +62,24 @@ SQLite is authoritative in local mode. Schema version 9 contains:
 - `knowledge_settings`: the authoritative global conservative/proactive writeback policy shared by local and remote clients.
 
 Each active `knowledge_entries` row represents one topic document and is materialized as one real Markdown file under `documents/base-<stable-id>/`. Related findings are Markdown sections or incremental content inside that row/file, rather than sibling one-fact documents. `knowledge_documents` indexes those files for the management console; the entry ID is the document ID, and the human-readable filename is derived from the title plus a stable ID suffix. Mutations complete only after the corresponding file synchronization finishes. SQLite remains authoritative so FTS, version history, direct-write reconciliation and remote providers keep one consistency model.
+
+Notes form a separate hierarchical workspace beside the knowledge database:
+
+```text
+<knowledge data directory>/
+├── knowledge.sqlite
+├── documents/
+└── notes/
+    ├── notes.sqlite
+    └── objects/
+        └── note_<32 lowercase hexadecimal characters>
+```
+
+`notes.sqlite` stores an adjacency-list tree of folders, editable Markdown documents and uploaded files. Every node has a stable id and parent id; files additionally store media type, size and SHA-256. Text-based uploads expose an explicit editable capability and use the same atomic content update boundary as native note documents; binary uploads remain opaque. `objects/` stores document and file bytes under the stable id, so user-visible names never participate in physical paths. Moving and renaming are metadata-only operations. Folder copies recursively create new stable ids, and folder deletion is recursive. File operations use the shared cross-platform atomic writer and are capped at 64 MiB.
+
+Knowledge Markdown references a non-folder note node with `@[label](note://note_<id>)`. References are many-to-many and are discovered from authoritative knowledge-document content when needed, so note storage has no knowledge-base ownership or lifecycle coupling. Moving or renaming a note does not break references. Normal deletion of a node or ancestor folder is rejected while any descendant is referenced; explicit administrator force-deletion remains an API-only recovery operation. Note content is not parsed, indexed, embedded, recalled or written back by the AI unless a future explicit promotion workflow is added.
+
+The management console never loads the complete document corpus during startup. `/document-index` returns a keyset-paginated metadata projection without `content`; the browser requests one page only for the initially selected knowledge base, loads other bases when their tree nodes expand, and fetches a document body only after selection. Search uses the same bounded index endpoint across the currently visible mounted bases. The original `/documents` endpoint remains available for compatibility and internal reference inspection, but is not part of the console bootstrap path.
 
 Entry writes, version creation and FTS changes share one `BEGIN IMMEDIATE` transaction. Candidate approval and its resulting entry mutation are also one transaction. WAL mode permits readers during a writer, `busy_timeout` absorbs short contention, and foreign keys prevent orphan versions.
 
@@ -111,7 +130,7 @@ A local provider always supports its same-origin management console unless `expo
 - Stored connection secrets are never returned by plugin control APIs or written to logs.
 - Server tokens are stored as SHA-256 digests; generated client tokens are shown once.
 - Permissions are capability-oriented: `read`, `propose`, `write`, `admin`.
-- Request bodies are capped at 1 MiB and every domain value has size/range validation.
+- JSON request bodies are capped at 1 MiB and every domain value has size/range validation. Only note content upload/download routes use the separate 64 MiB bound; the remote management proxy preserves the same distinction.
 - Hard deletion and token management require admin.
 - Remote URLs require HTTPS except explicit loopback testing.
 - Tool handles are HMAC-signed, bound to the calling session, and re-authorized against live mount, project and tag policy on every read.

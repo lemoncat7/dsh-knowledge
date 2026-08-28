@@ -25,12 +25,14 @@ import { RemoteKnowledgeProvider, RemoteProviderError } from './remote-provider.
 import type { AgentLike, RuntimeContextLike } from './runtime.js'
 import { loadServiceSettings, serviceSettingsPath, storeServiceSettings, type KnowledgeServiceSettings } from './service-settings.js'
 import { registerKnowledgeTools } from './tools.js'
+import { createKnowledgeTrackingService, KNOWLEDGE_TRACKING_SERVICE } from './tracking.js'
 import { registerKnowledgeWeb } from './web.js'
 
 export const Config = ConfigSchema
 export type Config = KnowledgeConfig
 export * from './domain.js'
 export * from './provider.js'
+export * from './notes/domain.js'
 export { LocalKnowledgeProvider } from './local-provider.js'
 export { RemoteKnowledgeProvider, RemoteProviderError } from './remote-provider.js'
 
@@ -94,6 +96,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   registerKnowledgeRecall(runtime, provider, resolved, handleCodec)
   registerKnowledgeCatalog(runtime, provider, resolved)
   registerKnowledgeTools(runtime, provider, handleCodec)
+  runtime.provide?.(KNOWLEDGE_TRACKING_SERVICE, createKnowledgeTrackingService(provider))
 
   let refreshManagementApi = (): void => {}
   let switching: Promise<unknown> = Promise.resolve()

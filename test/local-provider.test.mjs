@@ -92,6 +92,34 @@ test('separate local provider instances serialize their shared Markdown projecti
   assert.match((await first.getDocument(right.id))?.content || '', /right provider/)
 })
 
+test('document index paginates metadata without returning document bodies', async (t) => {
+  const provider = await fixture(t)
+  const created = []
+  for (const [title, body] of [
+    ['Alpha runbook', 'alpha deployment details'],
+    ['Beta runbook', 'beta deployment details'],
+    ['Gamma runbook', 'gamma searchable body marker'],
+  ]) created.push(await provider.create({ ...globalDraft, title, body }))
+
+  const first = await provider.listDocumentIndex({ knowledgeBaseIds: ['default'], limit: 2 })
+  assert.equal(first.items.length, 2)
+  assert.equal(first.total, 3)
+  assert.ok(first.nextCursor)
+  assert.equal(Object.hasOwn(first.items[0], 'content'), false)
+
+  const second = await provider.listDocumentIndex({ knowledgeBaseIds: ['default'], limit: 2, cursor: first.nextCursor })
+  assert.equal(second.items.length, 1)
+  assert.equal(second.nextCursor, undefined)
+  assert.deepEqual(new Set([...first.items, ...second.items].map(item => item.id)), new Set(created.map(item => item.id)))
+
+  const searched = await provider.listDocumentIndex({ knowledgeBaseIds: ['default'], query: 'searchable body marker', limit: 10 })
+  assert.deepEqual(searched.items.map(item => item.title), ['Gamma runbook'])
+  await assert.rejects(
+    () => provider.listDocumentIndex({ knowledgeBaseIds: ['default'], cursor: 'not-a-cursor', limit: 10 }),
+    /invalid document pagination cursor/,
+  )
+})
+
 test('archived documents cannot be silently restored by editing or candidate approval', async (t) => {
   const provider = await fixture(t)
   const entry = await provider.create({

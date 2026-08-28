@@ -6,8 +6,10 @@ import {
 } from './domain.js'
 import { LocalKnowledgeProvider } from './local-provider.js'
 import type { RuntimeContextLike } from './runtime.js'
+import type { NoteReference } from './notes/domain.js'
 
 const MAX_BODY_BYTES = 1_048_576
+const MAX_NOTE_BODY_BYTES = 64 * 1024 * 1024
 export const LOCAL_MANAGEMENT_API_PREFIX = '/knowledge-local/v1'
 
 export interface KnowledgeApiOptions {
@@ -61,6 +63,88 @@ async function dispatch(
   }
 
   const actor = options.authMode === 'same-origin' ? authenticateSameOrigin(req) : authenticateBearer(provider, req)
+
+  if (segments[0] === 'notes') {
+    if (method === 'GET' && segments.length === 1) {
+      requirePermission(actor.permissions, 'read')
+      const query = url.searchParams.get('q')
+      const parentId = url.searchParams.get('parentId')
+      return sendJson(res, 200, provider.notes.list({
+        ...query === null ? {} : { query },
+        ...query === null ? { parentId } : {},
+        limit: integerParam(url, 'limit', 200, 1, 500),
+      }))
+    }
+    if (method === 'POST' && segments[1] === 'folders' && segments.length === 2) {
+      requirePermission(actor.permissions, 'write')
+      const body = await readObject(req)
+      return sendJson(res, 201, await provider.notes.createFolder(requiredString(body.name, 'name'), nullableString(body.parentId, 'parentId')))
+    }
+    if (method === 'POST' && segments[1] === 'documents' && segments.length === 2) {
+      requirePermission(actor.permissions, 'write')
+      const body = await readObject(req)
+      return sendJson(res, 201, await provider.notes.createDocument(
+        requiredString(body.name, 'name'),
+        nullableString(body.parentId, 'parentId'),
+        typeof body.content === 'string' ? body.content : '',
+      ))
+    }
+    if (method === 'POST' && segments[1] === 'files' && segments.length === 2) {
+      requirePermission(actor.permissions, 'write')
+      const name = url.searchParams.get('name') ?? ''
+      const parentId = url.searchParams.get('parentId')
+      const mediaType = firstHeader(req.headers['content-type']) ?? 'application/octet-stream'
+      const content = await readBinary(req, MAX_NOTE_BODY_BYTES)
+      return sendJson(res, 201, await provider.notes.upload({ name, parentId, mediaType, content }))
+    }
+    const id = segments[1]
+    if (id !== undefined && method === 'GET' && segments.length === 2) {
+      requirePermission(actor.permissions, 'read')
+      const node = provider.notes.get(id)
+      if (node === undefined) throw httpError(404, `note node "${id}" was not found`)
+      return sendJson(res, 200, node)
+    }
+    if (id !== undefined && method === 'GET' && segments[2] === 'content' && segments.length === 3) {
+      requirePermission(actor.permissions, 'read')
+      const note = await provider.notes.read(id)
+      return sendOpaqueFile(res, note.node.name, note.node.mediaType ?? 'application/octet-stream', note.content, url.searchParams.get('download') === '1')
+    }
+    if (id !== undefined && method === 'PUT' && segments[2] === 'content' && segments.length === 3) {
+      requirePermission(actor.permissions, 'write')
+      return sendJson(res, 200, await provider.notes.updateContent(id, await readBinary(req, MAX_NOTE_BODY_BYTES)))
+    }
+    if (id !== undefined && method === 'GET' && segments[2] === 'references' && segments.length === 3) {
+      requirePermission(actor.permissions, 'read')
+      return sendJson(res, 200, await noteReferencesForSubtree(provider, id))
+    }
+    if (id !== undefined && method === 'PATCH' && segments.length === 2) {
+      requirePermission(actor.permissions, 'write')
+      const body = await readObject(req)
+      let node = provider.notes.get(id)
+      if (node === undefined) throw httpError(404, `note node "${id}" was not found`)
+      if (Object.hasOwn(body, 'name')) node = provider.notes.rename(id, requiredString(body.name, 'name'))
+      if (Object.hasOwn(body, 'parentId')) node = provider.notes.move(id, nullableString(body.parentId, 'parentId'))
+      return sendJson(res, 200, node)
+    }
+    if (id !== undefined && method === 'POST' && segments[2] === 'copy' && segments.length === 3) {
+      requirePermission(actor.permissions, 'write')
+      const body = await readObject(req)
+      return sendJson(res, 201, await provider.notes.copy(
+        id,
+        Object.hasOwn(body, 'parentId') ? nullableString(body.parentId, 'parentId') : undefined,
+        Object.hasOwn(body, 'name') ? requiredString(body.name, 'name') : undefined,
+      ))
+    }
+    if (id !== undefined && method === 'DELETE' && segments.length === 2) {
+      requirePermission(actor.permissions, 'admin')
+      const references = await noteReferencesForSubtree(provider, id)
+      if (references.length > 0 && url.searchParams.get('force') !== 'true') {
+        throw httpError(409, `note content is referenced by ${references.length} knowledge document(s)`)
+      }
+      await provider.notes.delete(id)
+      return sendJson(res, 204, undefined)
+    }
+  }
 
   if (segments[0] === 'settings' && segments.length === 1) {
     requirePermission(actor.permissions, 'read')
@@ -117,6 +201,24 @@ async function dispatch(
   if (method === 'GET' && segments[0] === 'stats' && segments.length === 1) {
     requirePermission(actor.permissions, 'read')
     return sendJson(res, 200, await provider.stats())
+  }
+
+  if (method === 'GET' && segments[0] === 'document-index' && segments.length === 1) {
+    requirePermission(actor.permissions, 'read')
+    const query = url.searchParams.get('q') ?? undefined
+    const cursor = url.searchParams.get('cursor') ?? undefined
+    const requestedBaseIds = url.searchParams.getAll('knowledgeBaseId').map(id => id.trim()).filter(Boolean)
+    const sessionId = url.searchParams.get('sessionId')?.trim()
+    const knowledgeBaseIds = sessionId
+      ? (await provider.resolveMounts(sessionId, url.searchParams.get('projectId') ?? undefined)).map(mount => mount.knowledgeBaseId)
+      : requestedBaseIds.length > 0 ? requestedBaseIds : undefined
+    return sendJson(res, 200, await provider.listDocumentIndex({
+      ...knowledgeBaseIds === undefined ? {} : { knowledgeBaseIds },
+      activeKnowledgeBasesOnly: url.searchParams.get('active') === '1',
+      ...query === undefined ? {} : { query },
+      ...cursor === undefined ? {} : { cursor },
+      limit: integerParam(url, 'limit', 60, 1, 100),
+    }))
   }
 
   if (segments[0] === 'knowledge-bases') {
@@ -499,6 +601,42 @@ async function readObject(req: IncomingMessage): Promise<Record<string, unknown>
   }
 }
 
+async function readBinary(req: IncomingMessage, maximumBytes: number): Promise<Buffer> {
+  const declared = Number(req.headers['content-length'] ?? 0)
+  if (Number.isFinite(declared) && declared > maximumBytes) throw httpError(413, 'request body is too large')
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    size += buffer.byteLength
+    if (size > maximumBytes) throw httpError(413, 'request body is too large')
+    chunks.push(buffer)
+  }
+  return Buffer.concat(chunks)
+}
+
+async function noteReferences(provider: LocalKnowledgeProvider, noteId: string): Promise<NoteReference[]> {
+  const node = provider.notes.get(noteId)
+  if (node === undefined) throw httpError(404, `note node "${noteId}" was not found`)
+  if (node.kind === 'folder') return []
+  const marker = `note://${noteId}`
+  return (await provider.listDocuments())
+    .filter(document => document.content.includes(marker))
+    .map(document => ({
+      noteId,
+      knowledgeBaseId: document.knowledgeBaseId,
+      documentId: document.id,
+      documentTitle: document.title,
+    }))
+}
+
+async function noteReferencesForSubtree(provider: LocalKnowledgeProvider, noteId: string): Promise<NoteReference[]> {
+  const references = await Promise.all(provider.notes.subtree(noteId)
+    .filter(node => node.kind !== 'folder')
+    .map(node => noteReferences(provider, node.id)))
+  return references.flat()
+}
+
 function parseDraft(value: unknown): KnowledgeDraft {
   if (!isRecord(value) || !isRecord(value.scope)) throw httpError(400, 'draft is invalid')
   if (!isKnowledgeType(value.type)) throw httpError(400, 'draft type is invalid')
@@ -588,6 +726,26 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload)
 }
 
+function sendOpaqueFile(
+  res: ServerResponse,
+  originalName: string,
+  mediaType: string,
+  content: Buffer,
+  download: boolean,
+): void {
+  const asciiName = originalName.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_') || 'document'
+  const encodedName = encodeURIComponent(originalName).replaceAll("'", '%27')
+  res.writeHead(200, {
+    'content-type': mediaType,
+    'content-length': content.byteLength,
+    'content-disposition': `${download ? 'attachment' : 'inline'}; filename="${asciiName}"; filename*=UTF-8''${encodedName}`,
+    'content-security-policy': "sandbox; default-src 'none'",
+    'cache-control': 'private, no-store',
+    'x-content-type-options': 'nosniff',
+  })
+  res.end(content)
+}
+
 function sendError(res: ServerResponse, error: unknown): void {
   const status = statusOf(error)
   const message = error instanceof Error ? error.message : 'internal knowledge API error'
@@ -613,6 +771,17 @@ function httpError(status: number, message: string): Error {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+function requiredString(value: unknown, name: string): string {
+  if (typeof value !== 'string' || value.trim().length === 0) throw httpError(400, `${name} must be a non-empty string`)
+  return value
+}
+
+function nullableString(value: unknown, name: string): string | null {
+  if (value === undefined || value === null || value === '') return null
+  if (typeof value !== 'string') throw httpError(400, `${name} must be a string or null`)
+  return value
 }
 
 function optionalNullableStringProperty(

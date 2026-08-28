@@ -42,6 +42,52 @@ test('same-origin management API controls public access and deletes revoked toke
   })).status, 403)
 
   const headers = { 'x-dsh-knowledge-client': 'management-web' }
+  const folderResponse = await fetch(`${base}/notes/folders`, {
+    method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ name: '项目资料', parentId: null }),
+  })
+  assert.equal(folderResponse.status, 201)
+  const folder = await folderResponse.json()
+  const noteContent = Buffer.from('# 原始部署笔记\n\n内容默认不参与知识索引。')
+  const uploadedResponse = await fetch(`${base}/notes/files?name=${encodeURIComponent('部署笔记.md')}&parentId=${folder.id}`, {
+    method: 'POST', headers: { ...headers, 'content-type': 'text/markdown' }, body: noteContent,
+  })
+  assert.equal(uploadedResponse.status, 201)
+  const note = await uploadedResponse.json()
+  assert.match(note.id, /^note_[a-f0-9]{32}$/)
+  assert.equal(note.name, '部署笔记.md')
+  assert.equal((await (await fetch(`${base}/notes?parentId=${folder.id}&limit=20`, { headers })).json())[0].id, note.id)
+  const downloaded = await fetch(`${base}/notes/${note.id}/content`, { headers })
+  assert.equal(downloaded.headers.get('content-type'), 'text/markdown')
+  assert.match(downloaded.headers.get('content-disposition'), /inline/)
+  assert.equal(downloaded.headers.get('content-security-policy'), "sandbox; default-src 'none'")
+  assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), noteContent)
+  const revisedNoteContent = Buffer.from('# 更新后的部署笔记\n\n现在可以在笔记工作区直接编辑。')
+  const updatedNoteResponse = await fetch(`${base}/notes/${note.id}/content`, {
+    method: 'PUT', headers: { ...headers, 'content-type': 'text/markdown' }, body: revisedNoteContent,
+  })
+  assert.equal(updatedNoteResponse.status, 200)
+  assert.equal((await updatedNoteResponse.json()).size, revisedNoteContent.byteLength)
+  assert.deepEqual(Buffer.from(await (await fetch(`${base}/notes/${note.id}/content`, { headers })).arrayBuffer()), revisedNoteContent)
+
+  const entry = await (await fetch(`${base}/entries`, {
+    method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ draft: {
+      knowledgeBaseId: 'default', title: '笔记引用测试',
+      body: `依据 @[部署笔记.md](note://${note.id})。`,
+      type: 'fact', tags: ['note'], scope: { kind: 'global' }, confidence: 0.9,
+    } }),
+  })).json()
+  const documentIndex = await (await fetch(`${base}/document-index?knowledgeBaseId=default&limit=1`, { headers })).json()
+  assert.equal(documentIndex.total, 1)
+  assert.equal(documentIndex.items[0].id, entry.id)
+  assert.equal(Object.hasOwn(documentIndex.items[0], 'content'), false)
+  const references = await (await fetch(`${base}/notes/${folder.id}/references`, { headers })).json()
+  assert.deepEqual(references.map(item => item.documentId), [entry.id])
+  assert.equal((await fetch(`${base}/notes/${folder.id}`, { method: 'DELETE', headers })).status, 409)
+  assert.equal((await fetch(`${base}/entries/${entry.id}`, { method: 'DELETE', headers })).status, 204)
+  assert.equal((await fetch(`${base}/notes/${folder.id}`, { method: 'DELETE', headers })).status, 204)
+
   assert.equal((await (await fetch(`${base}/settings`, { headers })).json()).writebackPolicy, 'conservative')
   const policy = await (await fetch(`${base}/settings`, {
     method: 'PUT', headers: { ...headers, 'content-type': 'application/json' },

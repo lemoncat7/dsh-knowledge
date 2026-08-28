@@ -66,5 +66,5 @@ test('uses snapshot overrides when the presenter has not painted them yet', () =
   assert.equal(message.tokens['--accent'], '#2468d8')
   assert.equal(message.tokens['--accent-hover'], '#2468d8')
   assert.equal(message.tokens['--danger-soft'], '#fdebec')
-  assert.equal(message.tokens['--shadow'], '0 18px 48px rgb(30 45 70 / 10%)')
+  assert.equal(message.tokens['--shadow'], '0 1px 2px rgb(25 35 40 / 5%), 0 14px 36px rgb(25 35 40 / 9%)')
 })

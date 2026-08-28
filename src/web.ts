@@ -12,6 +12,7 @@ const STATIC_ASSETS = new Map<string, Asset>([
   ['app.js', loadAsset('../web/app.js', 'text/javascript; charset=utf-8')],
   ['change-review.js', loadAsset('../web/change-review.js', 'text/javascript; charset=utf-8')],
   ['markdown-preview.js', loadAsset('../web/markdown-preview.js', 'text/javascript; charset=utf-8')],
+  ['note-editor.js', loadAsset('../web/note-editor.js', 'text/javascript; charset=utf-8')],
   ['styles.css', loadAsset('../web/styles.css', 'text/css; charset=utf-8')],
 ])
 const ASSET_VERSION = createHash('sha256')
@@ -81,7 +82,7 @@ function sendAsset(res: ServerResponse, method: string, asset: Asset, embedded =
 }
 
 function securityHeaders(embedded = false): Record<string, string> {
-  const policy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"
+  const policy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; frame-src blob:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"
   return {
     'content-security-policy': embedded ? policy : `${policy}; frame-ancestors 'self'`,
     'referrer-policy': 'no-referrer',

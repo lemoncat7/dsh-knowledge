@@ -48,22 +48,22 @@ const TOKEN_SOURCES = {
 
 const FALLBACK_TOKENS: Record<KnowledgeColorScheme, Readonly<Record<string, string>>> = {
   light: {
-    '--bg': '#f5f5f7', '--surface': '#ffffff', '--surface-raised': '#ffffff',
-    '--surface-soft': '#f0f0f3', '--surface-hover': '#f5f5f8',
-    '--text': '#1d1d1f', '--text-secondary': '#4c4c50', '--text-tertiary': '#6e6e73',
-    '--border': '#dedee3', '--border-strong': '#c7c7cc',
-    '--accent': '#086bd8', '--accent-hover': '#005ab8', '--accent-soft': '#e8f2ff', '--on-accent': '#ffffff',
+    '--bg': '#eef1f3', '--surface': '#f7f9fa', '--surface-raised': '#ffffff',
+    '--surface-soft': '#e8ecef', '--surface-hover': '#e3e8eb',
+    '--text': '#202629', '--text-secondary': '#4f595e', '--text-tertiary': '#667178',
+    '--border': '#d5dce0', '--border-strong': '#bcc6cb',
+    '--accent': '#4f7773', '--accent-hover': '#3e6561', '--accent-soft': '#dfeae8', '--on-accent': '#f8fbfa',
     '--success': '#18794e', '--success-soft': '#e8f5ee', '--warning': '#986800', '--warning-soft': '#fff4cf',
-    '--danger': '#c9343a', '--danger-soft': '#fdebec', '--shadow': '0 18px 48px rgb(30 45 70 / 10%)',
+    '--danger': '#c9343a', '--danger-soft': '#fdebec', '--shadow': '0 1px 2px rgb(25 35 40 / 5%), 0 14px 36px rgb(25 35 40 / 9%)',
   },
   dark: {
-    '--bg': '#101012', '--surface': '#1c1c1e', '--surface-raised': '#242426',
-    '--surface-soft': '#2c2c2e', '--surface-hover': '#303033',
-    '--text': '#f5f5f7', '--text-secondary': '#c7c7cc', '--text-tertiary': '#98989d',
-    '--border': '#353538', '--border-strong': '#4a4a4f',
-    '--accent': '#64a8ff', '--accent-hover': '#82b8ff', '--accent-soft': '#17365d', '--on-accent': '#0c1b2c',
+    '--bg': '#111719', '--surface': '#182022', '--surface-raised': '#20292c',
+    '--surface-soft': '#283235', '--surface-hover': '#303b3e',
+    '--text': '#edf2f1', '--text-secondary': '#bec9c7', '--text-tertiary': '#8e9b99',
+    '--border': '#334044', '--border-strong': '#48585c',
+    '--accent': '#78b5ad', '--accent-hover': '#91c8c1', '--accent-soft': '#213b39', '--on-accent': '#0d1e1b',
     '--success': '#62c596', '--success-soft': '#163a2a', '--warning': '#e7bc62', '--warning-soft': '#423414',
-    '--danger': '#ff858a', '--danger-soft': '#4b2227', '--shadow': '0 16px 40px rgb(0 0 0 / 28%)',
+    '--danger': '#ff858a', '--danger-soft': '#4b2227', '--shadow': '0 2px 4px rgb(0 0 0 / 22%), 0 18px 46px rgb(0 0 0 / 32%)',
   },
 }
 

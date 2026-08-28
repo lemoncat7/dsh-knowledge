@@ -76,6 +76,22 @@ export interface KnowledgeDocument {
   updatedAt: string
 }
 
+export type KnowledgeDocumentSummary = Omit<KnowledgeDocument, 'content'>
+
+export interface KnowledgeDocumentIndexRequest {
+  knowledgeBaseIds?: string[]
+  activeKnowledgeBasesOnly?: boolean
+  query?: string
+  cursor?: string
+  limit: number
+}
+
+export interface KnowledgeDocumentIndexResult {
+  items: KnowledgeDocumentSummary[]
+  total: number
+  nextCursor?: string
+}
+
 export interface KnowledgeMountDraft {
   targetKind: KnowledgeMountTargetKind
   targetId: string

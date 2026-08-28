@@ -17,7 +17,7 @@ export interface AtomicWriteOptions {
  */
 export async function atomicWriteFile(
   target: string,
-  content: string,
+  content: string | Uint8Array,
   options: AtomicWriteOptions = {},
 ): Promise<void> {
   const replace = options.replace ?? true
@@ -25,7 +25,6 @@ export async function atomicWriteFile(
   const temporary = join(dirname(target), `.${basename(target)}.${randomUUID()}.tmp`)
   try {
     await writeFile(temporary, content, {
-      encoding: 'utf8',
       flag: 'wx',
       mode: options.mode ?? 0o600,
     })

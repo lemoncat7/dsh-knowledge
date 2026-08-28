@@ -106,6 +106,7 @@ export interface WebServerLike {
 export interface RuntimeContextLike {
   llm: LlmLike
   tools: ToolRuntimeLike
+  provide?(name: string, value: unknown): () => void
   webServer?: WebServerLike
   settings?: {
     register(namespace: string, schema: unknown, options?: { base?: object }): unknown

@@ -30,8 +30,10 @@
 - DSH“设置 → 插件”提供“知识库连接”卡片，可选择本地来源或填写中央服务地址和只写客户端令牌，保存后实时验证并切换 Provider。
 - Bearer Token 仅保存 SHA-256 摘要，支持 `read / propose / write / admin` 权限及吊销。
 - 认证 HTTP API，可作为其他 DSH 客户端和未来桌面端的中央知识库。
-- 笔记软件式双栏文档界面：左侧以“知识库 → 文档”树形目录浏览和新建，右侧支持 Markdown 编辑与安全预览；已有文档默认预览，新建文档默认编辑。
+- 笔记软件式双栏文档界面：左侧以“知识库 → 文档”树形目录浏览和新建，右侧支持 Markdown 编辑与安全预览；目录按知识库懒加载并分页，只有打开文档时才读取正文。已有文档默认预览，新建文档默认编辑。
 - 每个生效主题对应一篇真实 Markdown 文档；相似知识作为章节或增量内容写入同一文档。创建、改名、保存、归档和删除会同步 SQLite、全文索引、版本历史与物理文件。
+- 独立的笔记工作区：在知识工作区上方提供可无限嵌套的目录树，支持 Markdown 与常见文本文件直接编辑，图片和 PDF 就地浏览，以及任意文件的拖拽移动、复制、重命名和下载。笔记默认不参与知识检索、自动召回或 AI 回写。
+- 知识文档可通过 `@[名称](note://note_...)` 引用笔记文档或文件；引用使用稳定编号，移动和改名不会失效。
 - 文档可标记为“已解决”或“已收集完成”。结束后的文档仍参与搜索和召回，但被服务端强制封存为只读；AI 回写、候选审核和人工编辑都必须先重新打开文档。
 - 知识库管理拆分为“知识库”和“项目与会话挂载”两个工作区；支持按名称、描述、标签和模型即时搜索，避免知识库较多时逐张翻找。
 - 随插件安装的响应式 Web 管理台，覆盖概览、文档树与编辑器、AI 候选审核和客户端令牌管理。
@@ -137,6 +139,7 @@ pnpm dsh web
 - 在知识库页切换全局“严谨 / 主动”回写策略。
 - 管理当前项目挂载和会话覆盖，设定召回、写入模式与标签范围。
 - 在左侧知识目录中搜索、新建和切换文档，在右侧进行 Markdown 编辑与安全预览；文档区域随窗口自适应，窄屏时知识目录切换为抽屉。
+- 在“笔记工作区”中建立多级目录，直接编辑 Markdown、文本、JSON、YAML、代码和配置文件，并上传、拖放、复制、移动、搜索、就地浏览图片与 PDF；编辑知识文档时可搜索笔记并在当前光标处插入 `@` 引用。
 - 查看 AI 提取依据，直接通过、编辑后通过或拒绝候选。
 - 创建、查看和撤销客户端令牌；新令牌原文只显示一次。
 
@@ -173,9 +176,18 @@ pnpm dsh web
 | POST | `/mounts/bulk` | write | 事务型批量挂载与取消 |
 | GET | `/mounts/resolve` | read | 解析项目继承与会话覆盖 |
 | GET | `/documents` | read | 按知识库或正文搜索 Markdown 文档 |
+| GET | `/document-index` | read | 分页读取不含正文的文档目录；支持 `knowledgeBaseId`、`q`、`limit` 和 `cursor` |
 | GET | `/documents/:id` | read | 读取单篇 Markdown 文档 |
 | POST | `/documents/:id/finalize` | write | 标记为已解决或已收集完成并封存 |
 | POST | `/documents/:id/reopen` | write | 重新打开封存文档 |
+| GET | `/notes` | read | 懒加载目录子节点，或使用 `q` 搜索全部笔记文档 |
+| POST | `/notes/folders` | write | 在任意层级创建目录 |
+| POST | `/notes/documents` | write | 创建可编辑的 Markdown 笔记文档 |
+| POST | `/notes/files` | write | 上传原始文件；名称和父目录通过查询参数传入 |
+| GET/PATCH/DELETE | `/notes/:id` | read/write/admin | 读取元数据、重命名或移动、递归删除 |
+| POST | `/notes/:id/copy` | write | 复制文档、文件或完整目录树 |
+| GET/PUT | `/notes/:id/content` | read/write | 读取文件内容，或保存 Markdown 与受支持的文本文件；支持 `?download=1` |
+| GET | `/notes/:id/references` | read | 列出引用该节点或其目录后代的知识文档 |
 | GET/POST | `/entries` | read/write | 列表和直接创建 |
 | GET/PUT/DELETE | `/entries/:id` | read/write/admin | 详情、更新、彻底删除 |
 | GET | `/entries/:id/versions` | read | 版本历史 |
@@ -185,6 +197,8 @@ pnpm dsh web
 | GET/POST/DELETE | `/tokens` | admin | 客户端令牌管理 |
 
 路径均位于配置的 `apiPrefix` 下。创建令牌时，原始令牌只在响应中返回一次。
+
+笔记文件上传使用请求体原始字节，不使用 Base64 或 multipart；单文件上限为 64 MiB。目录和文件元数据与知识 SQLite 分开保存在 `notes/notes.sqlite`，内容按稳定编号保存在 `notes/objects/`。知识库删除或归档不会删除笔记；仍被知识文档引用的节点及其上级目录默认禁止删除。
 
 ## 远程客户端
 

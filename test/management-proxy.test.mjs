@@ -6,8 +6,27 @@ import { registerRemoteManagementProxy } from '../lib/management-proxy.js'
 test('remote management proxy keeps credentials server-side and exposes a synthetic service view', async (t) => {
   const token = 'remote_management_token_longer_than_24_chars'
   let receivedAuthorization = ''
-  const central = createServer((req, res) => {
+  const central = createServer(async (req, res) => {
     receivedAuthorization = req.headers.authorization || ''
+    if (req.url?.endsWith('/notes/files?name=proxy.txt') && req.method === 'POST') {
+      const chunks = []
+      for await (const chunk of req) chunks.push(Buffer.from(chunk))
+      const content = Buffer.concat(chunks)
+      const payload = JSON.stringify({ id: 'note_1234567890abcdef1234567890abcdef', name: 'proxy.txt', size: content.byteLength, mediaType: req.headers['content-type'] })
+      res.writeHead(201, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) })
+      res.end(payload)
+      return
+    }
+    if (req.url?.endsWith('/notes/note_1234567890abcdef1234567890abcdef/content')) {
+      const content = Buffer.from('proxied note file')
+      res.writeHead(200, {
+        'content-type': 'text/plain', 'content-length': content.byteLength,
+        'content-disposition': 'inline; filename="proxy.txt"',
+        'content-security-policy': "sandbox; default-src 'none'",
+      })
+      res.end(content)
+      return
+    }
     const payload = JSON.stringify({ entries: { active: 3 }, path: req.url })
     res.writeHead(receivedAuthorization === `Bearer ${token}` ? 200 : 401, {
       'content-type': 'application/json', 'content-length': Buffer.byteLength(payload),
@@ -66,5 +85,14 @@ test('remote management proxy keeps credentials server-side and exposes a synthe
   assert.equal(stats.entries.active, 3)
   assert.equal(stats.path, '/knowledge-api/v1/stats')
   assert.equal(receivedAuthorization, `Bearer ${token}`)
+  const uploaded = await (await fetch(`${base}/notes/files?name=proxy.txt`, {
+    method: 'POST', headers: { ...headers, 'content-type': 'text/plain' }, body: 'proxy body',
+  })).json()
+  assert.equal(uploaded.size, 10)
+  assert.equal(uploaded.mediaType, 'text/plain')
+  const proxiedContent = await fetch(`${base}/notes/${uploaded.id}/content`, { headers })
+  assert.equal(proxiedContent.headers.get('content-disposition'), 'inline; filename="proxy.txt"')
+  assert.equal(proxiedContent.headers.get('content-security-policy'), "sandbox; default-src 'none'")
+  assert.equal(await proxiedContent.text(), 'proxied note file')
   assert.doesNotMatch(JSON.stringify(service), new RegExp(token))
 })

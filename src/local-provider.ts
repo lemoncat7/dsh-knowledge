@@ -1,6 +1,7 @@
 import { dirname, join } from 'node:path'
-import { createHash, randomBytes } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
 import {
   contentHash,
@@ -21,6 +22,9 @@ import {
   type KnowledgeDraft,
   type KnowledgeEntry,
   type KnowledgeDocument,
+  type KnowledgeDocumentIndexRequest,
+  type KnowledgeDocumentIndexResult,
+  type KnowledgeDocumentSummary,
   type KnowledgeStatus,
   type KnowledgeStats,
   type KnowledgeVersion,
@@ -46,6 +50,7 @@ import { knowledgeDocumentPath } from './documents/path.js'
 import { KnowledgeDocumentStore } from './documents/store.js'
 import { enqueueDocumentProjection } from './documents/projection-queue.js'
 import { mergeKnowledgeBodies } from './knowledge-merge.js'
+import { NoteStore } from './notes/store.js'
 
 type SqlRow = Record<string, unknown>
 
@@ -66,6 +71,7 @@ const EXTRACTION_LEASE_MS = 15 * 60 * 1000
 
 export class LocalKnowledgeProvider implements KnowledgeProvider {
   readonly mode = 'local' as const
+  readonly notes: NoteStore
   private readonly db: DatabaseSync
   private readonly documentStore: KnowledgeDocumentStore
   private readonly documentsReady: Promise<void>
@@ -73,6 +79,13 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   constructor(path: string) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })
+    const inMemory = path === ':memory:'
+    this.notes = new NoteStore(
+      inMemory
+        ? join(tmpdir(), `dsh-knowledge-notes-${randomUUID()}`)
+        : join(dirname(path), 'notes'),
+      inMemory,
+    )
     this.documentStore = new KnowledgeDocumentStore(join(dirname(path), 'documents'))
     this.db = new DatabaseSync(path)
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
@@ -456,6 +469,75 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     }
     const sql = `SELECT * FROM knowledge_documents${where.length === 0 ? '' : ` WHERE ${where.join(' AND ')}`} ORDER BY knowledge_base_id, CASE WHEN rel_path='README.md' THEN 0 ELSE 1 END, rel_path`
     return (this.db.prepare(sql).all(...args) as SqlRow[]).map(rowToDocument)
+  }
+
+  async listDocumentIndex(request: KnowledgeDocumentIndexRequest): Promise<KnowledgeDocumentIndexResult> {
+    this.assertOpen()
+    await this.documentsReady
+    const limit = Math.max(1, Math.min(request.limit, 100))
+    const where: string[] = []
+    const args: Array<string | number> = []
+    const knowledgeBaseIds = request.knowledgeBaseIds === undefined
+      ? undefined
+      : [...new Set(request.knowledgeBaseIds.map(id => id.trim()).filter(Boolean))]
+    if (knowledgeBaseIds !== undefined && knowledgeBaseIds.length === 0) return { items: [], total: 0 }
+    if (knowledgeBaseIds !== undefined) {
+      where.push(`knowledge_base_id IN (${knowledgeBaseIds.map(() => '?').join(',')})`)
+      args.push(...knowledgeBaseIds)
+    }
+    if (request.activeKnowledgeBasesOnly) {
+      where.push("knowledge_base_id IN (SELECT id FROM knowledge_bases WHERE status='active')")
+    }
+    const query = request.query?.trim()
+    if (query) {
+      const like = `%${escapeSqlLike(query)}%`
+      where.push(`(title LIKE ? ESCAPE '\\' OR rel_path LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\')`)
+      args.push(like, like, like)
+    }
+    const sourceWhere = where.length === 0 ? '' : ` WHERE ${where.join(' AND ')}`
+    const cursorWhere: string[] = []
+    const cursorArgs: Array<string | number> = []
+    if (request.cursor !== undefined) {
+      const cursor = decodeDocumentCursor(request.cursor)
+      cursorWhere.push(`(
+        knowledge_base_id > ? OR
+        (knowledge_base_id = ? AND sort_rank > ?) OR
+        (knowledge_base_id = ? AND sort_rank = ? AND rel_path > ?) OR
+        (knowledge_base_id = ? AND sort_rank = ? AND rel_path = ? AND id > ?)
+      )`)
+      cursorArgs.push(
+        cursor.knowledgeBaseId,
+        cursor.knowledgeBaseId, cursor.sortRank,
+        cursor.knowledgeBaseId, cursor.sortRank, cursor.relPath,
+        cursor.knowledgeBaseId, cursor.sortRank, cursor.relPath, cursor.id,
+      )
+    }
+    const rows = this.db.prepare(`
+      WITH document_index AS (
+        SELECT
+          id, knowledge_base_id, rel_path, title, entry_count, content_hash,
+          document_state, finalized_at, finalization_note, created_at, updated_at,
+          CASE WHEN rel_path='README.md' THEN 0 ELSE 1 END AS sort_rank
+        FROM knowledge_documents${sourceWhere}
+      )
+      SELECT * FROM document_index
+      ${cursorWhere.length === 0 ? '' : `WHERE ${cursorWhere.join(' AND ')}`}
+      ORDER BY knowledge_base_id, sort_rank, rel_path, id
+      LIMIT ?
+    `).all(...args, ...cursorArgs, limit + 1) as SqlRow[]
+    const pageRows = rows.slice(0, limit)
+    const items = pageRows.map(rowToDocumentSummary)
+    const last = pageRows.at(-1)
+    const total = Number((this.db.prepare(`SELECT COUNT(*) AS total FROM knowledge_documents${sourceWhere}`).get(...args) as SqlRow).total ?? 0)
+    return {
+      items,
+      total,
+      ...rows.length <= limit || last === undefined ? {} : {
+        nextCursor: encodeDocumentCursor(
+          String(last.knowledge_base_id), Number(last.sort_rank), String(last.rel_path), String(last.id),
+        ),
+      },
+    }
   }
 
   async getDocument(id: string): Promise<KnowledgeDocument | undefined> {
@@ -1213,6 +1295,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     await this.documentsReady
     this.closed = true
     this.db.close()
+    await this.notes.close()
   }
 
   private writeVersion(entry: KnowledgeEntry, changeKind: KnowledgeVersion['changeKind']): void {
@@ -1368,6 +1451,22 @@ function rowToDocument(row: SqlRow): KnowledgeDocument {
     relPath: String(row.rel_path),
     title: String(row.title),
     content: String(row.content),
+    entryCount: Number(row.entry_count),
+    contentHash: String(row.content_hash),
+    documentState: row.document_state == null ? 'open' : String(row.document_state) as KnowledgeDocument['documentState'],
+    ...row.finalized_at == null ? {} : { finalizedAt: String(row.finalized_at) },
+    ...row.finalization_note == null ? {} : { finalizationNote: String(row.finalization_note) },
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  }
+}
+
+function rowToDocumentSummary(row: SqlRow): KnowledgeDocumentSummary {
+  return {
+    id: String(row.id),
+    knowledgeBaseId: String(row.knowledge_base_id),
+    relPath: String(row.rel_path),
+    title: String(row.title),
     entryCount: Number(row.entry_count),
     contentHash: String(row.content_hash),
     documentState: row.document_state == null ? 'open' : String(row.document_state) as KnowledgeDocument['documentState'],
@@ -1647,6 +1746,34 @@ function decodeCursor(cursor: string): { updatedAt: string; id: string } {
   } catch {
     throw Object.assign(new Error('invalid pagination cursor'), { code: 'BAD_REQUEST' })
   }
+}
+
+function encodeDocumentCursor(knowledgeBaseId: string, sortRank: number, relPath: string, id: string): string {
+  return Buffer.from(JSON.stringify({ knowledgeBaseId, sortRank, relPath, id })).toString('base64url')
+}
+
+function decodeDocumentCursor(cursor: string): { knowledgeBaseId: string; sortRank: number; relPath: string; id: string } {
+  try {
+    const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<string, unknown>
+    if (
+      typeof value.knowledgeBaseId !== 'string'
+      || (value.sortRank !== 0 && value.sortRank !== 1)
+      || typeof value.relPath !== 'string'
+      || typeof value.id !== 'string'
+    ) throw new Error()
+    return {
+      knowledgeBaseId: value.knowledgeBaseId,
+      sortRank: value.sortRank,
+      relPath: value.relPath,
+      id: value.id,
+    }
+  } catch {
+    throw Object.assign(new Error('invalid document pagination cursor'), { code: 'BAD_REQUEST', status: 400 })
+  }
+}
+
+function escapeSqlLike(value: string): string {
+  return value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')
 }
 
 function notFound(kind: string, id: string): Error {

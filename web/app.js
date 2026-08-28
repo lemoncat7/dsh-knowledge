@@ -1,5 +1,7 @@
 const API_BASE = document.querySelector('meta[name="dsh-knowledge-api"]')?.content || '/knowledge-api/v1'
 const AUTH_MODE = document.querySelector('meta[name="dsh-knowledge-auth-mode"]')?.content || 'bearer'
+const WEB_PATH = document.querySelector('meta[name="dsh-knowledge-web"]')?.content || '/knowledge'
+const ASSET_VERSION = document.querySelector('meta[name="dsh-knowledge-asset-version"]')?.content || ''
 const HOST_THEME_MESSAGE = '@lemoncat7/dsh-knowledge/host-theme'
 const HOST_THEME_READY_MESSAGE = '@lemoncat7/dsh-knowledge/host-theme-ready'
 const HOST_THEME_PROTOCOL_VERSION = 1
@@ -32,7 +34,9 @@ const savedDocumentLayout = readDocumentLayout()
 function createDocumentViewState(overrides = {}) {
   return {
     knowledgeBaseId: '', documentId: '', query: '', mode: 'preview', treeOpen: false,
-    expandedBases: new Set(), editor: null, ...overrides,
+    expandedBases: new Set(), documentPages: new Map(),
+    searchResults: [], searchNextCursor: '', searchTotal: 0, searchLoading: false, searchError: '', searchRequest: 0,
+    editor: null, ...overrides,
   }
 }
 
@@ -75,6 +79,11 @@ const state = {
   modelCatalog: null,
   settingsSaving: false,
   tokens: [],
+  notes: {
+    children: new Map(), loadedFolders: new Set(), expandedFolders: new Set(),
+    selectedId: '', selectedNode: null, currentFolderId: null, breadcrumbs: [],
+    content: '', draft: '', dirty: false, assetUrl: '', query: '', searchResults: [],
+  },
   service: { publicApiEnabled: false, publicApiPrefix: '/knowledge-api/v1', remote: false },
   scrollPositions: new Map(),
   loading: false,
@@ -86,6 +95,13 @@ let navigationController = null
 let navigationRequest = 0
 let navigationSave = Promise.resolve(true)
 let libraryDetailRequest = 0
+let documentSearchTimer = 0
+let noteSearchTimer = 0
+let markdownEditorHandle = null
+let noteEditorLoader = null
+let markdownEditorMountRequest = 0
+let plainTextEditorHandle = null
+let plainTextEditorMountRequest = 0
 
 function installHostThemeBridge() {
   if (window.parent === window) return Promise.resolve()
@@ -277,11 +293,51 @@ async function api(path, options = {}) {
   return payload
 }
 
+async function binaryRequest(path, options = {}) {
+  const headers = { accept: options.accept || 'application/json' }
+  if (AUTH_MODE === 'same-origin') headers['x-dsh-knowledge-client'] = 'management-web'
+  if (state.token) headers.authorization = `Bearer ${state.token}`
+  if (options.contentType) headers['content-type'] = options.contentType
+  const response = await fetch(`${API_BASE}/${path.replace(/^\/+/, '')}`, {
+    method: options.method || 'GET',
+    headers,
+    body: options.body,
+    signal: options.signal,
+  })
+  if (options.responseType === 'blob') {
+    if (!response.ok) throw await responseError(response)
+    return response.blob()
+  }
+  const text = await response.text()
+  let payload
+  if (text) {
+    try { payload = JSON.parse(text) } catch { throw new Error('服务返回了无法识别的数据') }
+  }
+  if (!response.ok) {
+    const error = new Error(payload?.error || `请求失败（HTTP ${response.status}）`)
+    error.status = response.status
+    throw error
+  }
+  return payload
+}
+
+async function responseError(response) {
+  let message = `请求失败（HTTP ${response.status}）`
+  try {
+    const payload = await response.json()
+    if (payload?.error) message = payload.error
+  } catch {}
+  return Object.assign(new Error(message), { status: response.status })
+}
+
 async function boot() {
   if (AUTH_MODE === 'same-origin') {
     state.token = ''
-    try { state.service = await api('service') } catch {}
-    await navigate('entries')
+    await Promise.all([
+      api('service').then(service => { state.service = service }).catch(() => {}),
+      navigate('entries'),
+    ])
+    renderShell()
     return
   }
   if (!state.token) {
@@ -342,15 +398,18 @@ function renderLogin(message = '') {
 }
 
 function signOut() {
+  releaseNoteEditors()
+  releaseNoteAsset()
   sessionStorage.removeItem(TOKEN_KEY)
   Object.assign(state, { token: '', stats: null, overview: null, knowledgeBases: [], mounts: [], resolvedMounts: [], entries: [], documents: [], candidates: [], candidateTargets: new Map(), settings: { writebackPolicy: 'conservative', updatedAt: '' }, tokens: [] })
+  state.notes = { children: new Map(), loadedFolders: new Set(), expandedFolders: new Set(), selectedId: '', selectedNode: null, currentFolderId: null, breadcrumbs: [], content: '', draft: '', dirty: false, assetUrl: '', query: '', searchResults: [] }
   if (AUTH_MODE === 'same-origin') void boot()
   else renderLogin()
 }
 
 async function navigate(view) {
   const request = ++navigationRequest
-  navigationSave = navigationSave.then(() => saveBeforeLeavingDocument(), () => saveBeforeLeavingDocument())
+  navigationSave = navigationSave.then(() => saveBeforeNavigation(), () => saveBeforeNavigation())
   if (!await navigationSave || request !== navigationRequest) return
   navigationController?.abort()
   const controller = new AbortController()
@@ -369,6 +428,7 @@ async function navigate(view) {
     if (view === 'bases') await loadKnowledgeBasesPage(controller.signal)
     if (view === 'entries') await loadDocuments(controller.signal)
     if (view === 'candidates') await loadCandidates(controller.signal)
+    if (view === 'notes') await loadNotes(controller.signal)
     if (view === 'tokens') await loadTokens(controller.signal)
   } catch (error) {
     if (controller.signal.aborted) return
@@ -379,6 +439,11 @@ async function navigate(view) {
     state.loading = false
     renderShell()
   }
+}
+
+async function saveBeforeNavigation() {
+  if (state.view === 'notes' && state.notes.dirty) return saveNoteDocument()
+  return saveBeforeLeavingDocument()
 }
 
 async function saveBeforeLeavingDocument() {
@@ -459,17 +524,22 @@ async function loadEntries(cursor = '') {
 
 async function loadDocuments(signal) {
   const options = { signal }
-  const requests = [api('knowledge-bases', options), api('documents', options)]
+  const requests = [api('knowledge-bases', options)]
   if (state.mountContext.sessionId) {
     const params = new URLSearchParams({ sessionId: state.mountContext.sessionId })
     if (state.mountContext.projectId) params.set('projectId', state.mountContext.projectId)
     requests.push(api(`mounts/resolve?${params}`, options))
   }
-  const [bases, documents, resolved = []] = await Promise.all(requests)
+  const [results, stats] = await Promise.all([
+    Promise.all(requests),
+    state.stats ? Promise.resolve(state.stats) : api('stats', options),
+  ])
+  const [bases, resolved = []] = results
   state.knowledgeBases = bases
   state.resolvedMounts = resolved
+  state.stats = stats
   const visibleBaseIds = new Set(documentKnowledgeBases(bases).map(base => base.id))
-  state.documents = documents.filter(document => visibleBaseIds.has(document.knowledgeBaseId))
+  state.documents = state.documents.filter(document => visibleBaseIds.has(document.knowledgeBaseId))
   const workspace = sessionDocumentWorkspace()
   const view = workspace.view
   const availableBaseIds = visibleBaseIds
@@ -478,10 +548,25 @@ async function loadDocuments(signal) {
       ? state.entryFilters.knowledgeBaseId
       : documentKnowledgeBases(bases)[0]?.id || ''
   }
+  if (view.knowledgeBaseId) {
+    view.expandedBases.add(view.knowledgeBaseId)
+    await loadDocumentPage(workspace, view.knowledgeBaseId, { signal })
+  }
   selectDefaultDocument(workspace)
   if (view.documentId) await loadDocumentEditor(workspace, view.documentId, signal)
   else view.editor = null
-  if (!state.stats) await refreshStats(signal)
+}
+
+async function loadNotes(signal) {
+  state.notes.children.set('root', await api('notes?limit=500', { signal }))
+  state.notes.loadedFolders.add('root')
+  if (state.notes.selectedId) {
+    const selected = state.notes.selectedNode?.id === state.notes.selectedId
+      ? state.notes.selectedNode
+      : await api(`notes/${encodeURIComponent(state.notes.selectedId)}`, { signal }).catch(() => null)
+    if (!selected) clearNoteSelection()
+    else state.notes.selectedNode = selected
+  }
 }
 
 function documentKnowledgeBases(bases = state.knowledgeBases) {
@@ -514,6 +599,139 @@ function setDocumentWorkspaceDocuments(workspace, documents) {
   else state.documents = documents
 }
 
+function documentPageState(workspace, knowledgeBaseId) {
+  const pages = workspace.view.documentPages
+  if (!pages.has(knowledgeBaseId)) {
+    pages.set(knowledgeBaseId, { loaded: false, loading: false, nextCursor: '', total: 0, error: '' })
+  }
+  return pages.get(knowledgeBaseId)
+}
+
+function mergeDocumentSummaries(workspace, items, knowledgeBaseId, reset) {
+  const current = documentWorkspaceDocuments(workspace)
+  const retained = reset ? current.filter(document => document.knowledgeBaseId !== knowledgeBaseId) : current
+  const merged = new Map(retained.map(document => [document.id, document]))
+  for (const item of items) merged.set(item.id, item)
+  setDocumentWorkspaceDocuments(workspace, [...merged.values()])
+}
+
+async function loadDocumentPage(workspace, knowledgeBaseId, options = {}) {
+  if (!knowledgeBaseId) return
+  const page = documentPageState(workspace, knowledgeBaseId)
+  if (page.loading || (!options.reset && !options.append && page.loaded)) return
+  if (options.append && !page.nextCursor) return
+  page.loading = true
+  page.error = ''
+  const cursor = options.append ? page.nextCursor : ''
+  try {
+    const params = new URLSearchParams({ knowledgeBaseId, limit: '60' })
+    if (cursor) params.set('cursor', cursor)
+    const result = await api(`document-index?${params}`, { signal: options.signal })
+    mergeDocumentSummaries(workspace, result.items, knowledgeBaseId, !options.append)
+    page.loaded = true
+    page.nextCursor = result.nextCursor || ''
+    page.total = result.total
+  } catch (error) {
+    if (error.name === 'AbortError') throw error
+    page.error = friendlyError(error)
+    if (options.throwOnError) throw error
+  } finally {
+    page.loading = false
+  }
+}
+
+async function toggleDocumentBase(workspace, baseId) {
+  const view = workspace.view
+  view.knowledgeBaseId = baseId
+  if (view.expandedBases.has(baseId)) {
+    view.expandedBases.delete(baseId)
+    renderShell()
+    return
+  }
+  view.expandedBases.add(baseId)
+  const page = documentPageState(workspace, baseId)
+  if (!page.loaded) page.loading = true
+  renderShell()
+  if (!page.loaded) {
+    page.loading = false
+    await loadDocumentPage(workspace, baseId)
+    renderShell()
+  }
+}
+
+function resetDocumentSearch(view) {
+  view.searchRequest += 1
+  view.searchResults = []
+  view.searchNextCursor = ''
+  view.searchTotal = 0
+  view.searchLoading = false
+  view.searchError = ''
+}
+
+function scheduleDocumentSearch(workspace) {
+  window.clearTimeout(documentSearchTimer)
+  const view = workspace.view
+  if (!view.query.trim()) {
+    resetDocumentSearch(view)
+    renderShell()
+    return
+  }
+  view.searchLoading = true
+  view.searchError = ''
+  renderShell()
+  documentSearchTimer = window.setTimeout(() => { void loadDocumentSearch(workspace, true) }, 220)
+}
+
+function renderDocumentSearchState(workspace) {
+  renderShell()
+  window.requestAnimationFrame(() => {
+    const input = document.querySelector(`.note-tree-search[data-document-scope="${workspace.kind}"]`)
+    input?.focus()
+    input?.setSelectionRange(input.value.length, input.value.length)
+  })
+}
+
+async function loadDocumentSearch(workspace, reset = false) {
+  const view = workspace.view
+  const query = view.query.trim()
+  if (!query) return resetDocumentSearch(view)
+  const request = ++view.searchRequest
+  view.searchLoading = true
+  view.searchError = ''
+  const params = new URLSearchParams({ q: query, limit: '80' })
+  const bases = documentWorkspaceBases(workspace)
+  if (bases.length === 0) {
+    resetDocumentSearch(view)
+    return renderShell()
+  }
+  if (workspace.kind === 'library') {
+    params.append('knowledgeBaseId', state.libraryDetail.knowledgeBaseId)
+  } else if (state.mountContext.sessionId) {
+    params.set('sessionId', state.mountContext.sessionId)
+    if (state.mountContext.projectId) params.set('projectId', state.mountContext.projectId)
+  } else {
+    params.set('active', '1')
+  }
+  if (!reset && view.searchNextCursor) params.set('cursor', view.searchNextCursor)
+  try {
+    const result = await api(`document-index?${params}`)
+    if (request !== view.searchRequest || query !== view.query.trim()) return
+    const merged = new Map((reset ? [] : view.searchResults).map(document => [document.id, document]))
+    for (const item of result.items) merged.set(item.id, item)
+    view.searchResults = [...merged.values()]
+    view.searchNextCursor = result.nextCursor || ''
+    view.searchTotal = result.total
+  } catch (error) {
+    if (request !== view.searchRequest) return
+    view.searchError = friendlyError(error)
+  } finally {
+    if (request === view.searchRequest) {
+      view.searchLoading = false
+      renderDocumentSearchState(workspace)
+    }
+  }
+}
+
 function documentWorkspaceBases(workspace) {
   if (workspace.kind === 'library') {
     const base = state.knowledgeBases.find(item => item.id === state.libraryDetail.knowledgeBaseId)
@@ -527,19 +745,21 @@ function documentWorkspaceReadOnly(workspace) {
 }
 
 async function reloadDocumentWorkspace(workspace) {
-  const libraryBaseId = workspace.kind === 'library' ? state.libraryDetail.knowledgeBaseId : ''
-  const documents = workspace.kind === 'library'
-    ? await api(`documents?knowledgeBaseId=${encodeURIComponent(libraryBaseId)}`)
-    : await api('documents')
-  if (workspace.kind === 'library') {
-    if (state.libraryDetail.knowledgeBaseId !== libraryBaseId) return false
-    setDocumentWorkspaceDocuments(workspace, documents)
-  }
-  else {
-    const visibleBaseIds = new Set(documentKnowledgeBases().map(base => base.id))
-    setDocumentWorkspaceDocuments(workspace, documents.filter(document => visibleBaseIds.has(document.knowledgeBaseId)))
+  const baseId = workspace.kind === 'library' ? state.libraryDetail.knowledgeBaseId : workspace.view.knowledgeBaseId
+  if (!baseId) return true
+  await loadDocumentPage(workspace, baseId, { reset: true, throwOnError: true })
+  if (workspace.kind === 'library' && state.libraryDetail.knowledgeBaseId !== baseId) return false
+  const selectedId = workspace.view.documentId
+  if (selectedId && !documentWorkspaceDocuments(workspace).some(document => document.id === selectedId)) {
+    const document = await api(`documents/${encodeURIComponent(selectedId)}`)
+    mergeDocumentSummaries(workspace, [documentSummary(document)], baseId, false)
   }
   return true
+}
+
+function documentSummary(document) {
+  const { content: _content, ...summary } = document
+  return summary
 }
 
 function selectDefaultDocument(workspace) {
@@ -680,11 +900,13 @@ async function loadTokens(signal) {
 }
 
 function renderShell() {
+  releaseNoteEditors()
   captureScrollPosition()
   const titles = {
     overview: ['概览', '知识库运行状态与最近活动'],
     bases: ['知识库与挂载', '管理知识目录，并限定项目与会话的召回和写入范围'],
     entries: ['知识文档', '在知识目录中阅读、整理和维护 Markdown 文档'],
+    notes: ['笔记文档', '像本地目录一样整理笔记和资料，并按需关联到知识文档'],
     candidates: ['待审核', '确认 AI 提取结果后再写入知识文档'],
     tokens: ['访问管理', '管理其他客户端连接中央知识库的权限'],
   }
@@ -794,7 +1016,8 @@ function setSidebarHidden(hidden) {
 function renderSidebar() {
   const pending = state.stats?.candidates.pending
   const navGroups = [
-    ['知识工作区', [['entries', '文档'], ['candidates', '待审核'], ['bases', '知识库与挂载']]],
+    ['笔记工作区', [['notes', '笔记文档']]],
+    ['知识工作区', [['entries', '知识文档'], ['candidates', '待审核'], ['bases', '知识库与挂载']]],
     ['连接', [['tokens', '访问管理']].filter(([id]) => id !== 'tokens' || !state.service.remote)],
   ].filter(([, items]) => items.length)
   return element('aside', { class: 'sidebar', 'aria-label': '知识库导航' },
@@ -821,6 +1044,7 @@ function renderCurrentView() {
   if (state.view === 'overview') return renderOverview()
   if (state.view === 'bases') return renderKnowledgeBases()
   if (state.view === 'entries') return renderEntries()
+  if (state.view === 'notes') return renderNotes()
   if (state.view === 'candidates') return renderCandidates()
   return renderTokens()
 }
@@ -1249,53 +1473,77 @@ function renderDocumentWorkspace(workspace, options = {}) {
     'data-document-scope': workspace.kind,
     onInput: (event) => {
       view.query = event.target.value
-      renderShell()
-      const input = document.querySelector(`.note-tree-search[data-document-scope="${workspace.kind}"]`)
-      input?.focus()
-      input?.setSelectionRange(input.value.length, input.value.length)
+      scheduleDocumentSearch(workspace)
+      window.requestAnimationFrame(() => {
+        const input = document.querySelector(`.note-tree-search[data-document-scope="${workspace.kind}"]`)
+        input?.focus()
+        input?.setSelectionRange(input.value.length, input.value.length)
+      })
     },
   })
-  const tree = activeBases.map(base => {
+  const visibleBases = query
+    ? activeBases.filter(base => view.searchResults.some(document => document.knowledgeBaseId === base.id))
+    : activeBases
+  const tree = visibleBases.map(base => {
     const expanded = view.expandedBases.has(base.id) || Boolean(query)
-    const documents = workspaceDocuments.filter(document => document.knowledgeBaseId === base.id
-      && (!query || [document.title, document.relPath, document.content].some(value => value.toLocaleLowerCase().includes(query))))
+    const page = documentPageState(workspace, base.id)
+    const documents = (query ? view.searchResults : workspaceDocuments).filter(document => document.knowledgeBaseId === base.id)
     return element('section', { class: 'note-tree-group', 'data-expanded': String(expanded) },
       element('button', {
         type: 'button', class: 'note-tree-base', 'aria-expanded': String(expanded),
         onClick: () => {
-          view.knowledgeBaseId = base.id
-          if (expanded && !query) view.expandedBases.delete(base.id)
-          else view.expandedBases.add(base.id)
-          renderShell()
+          if (query) { view.knowledgeBaseId = base.id; return renderShell() }
+          void toggleDocumentBase(workspace, base.id)
         },
       },
       element('span', { class: 'tree-disclosure', 'aria-hidden': 'true' }),
       element('span', { class: 'tree-folder-icon', 'aria-hidden': 'true' }),
       element('span', { class: 'tree-base-name' }, base.name),
-      element('span', { class: 'tree-count' }, documents.length)),
+      element('span', { class: 'tree-count' }, query ? documents.length : page.loaded ? page.total : '—')),
       expanded ? element('div', { class: 'note-tree-documents', role: 'group', 'aria-label': `${base.name}文档` },
+        !query && page.loading && documents.length === 0 ? element('div', { class: 'note-tree-status', role: 'status' }, '正在读取目录…') : null,
+        !query && page.error ? element('div', { class: 'note-tree-status is-error' },
+          element('span', {}, page.error),
+          actionButton('重试', () => { void loadDocumentPage(workspace, base.id, { reset: true }).then(renderShell) }, 'ghost small')) : null,
         documents.map(document => element('button', {
           type: 'button', class: 'note-tree-document', 'aria-current': document.id === view.documentId ? 'page' : undefined,
-          onClick: () => { void selectDocument(workspace, document.id) },
+          onClick: () => { view.knowledgeBaseId = base.id; void selectDocument(workspace, document.id) },
         }, element('span', { class: 'tree-document-icon', 'aria-hidden': 'true' }), element('span', { class: 'tree-document-copy' },
           element('strong', {}, document.title), element('small', {}, document.relPath)),
         document.documentState !== 'open' ? badge(DOCUMENT_STATE_LABELS[document.documentState] || '已结束', 'success') : null)),
+        !query && page.nextCursor ? element('button', {
+          type: 'button', class: 'note-tree-more', disabled: page.loading,
+          onClick: () => { void loadDocumentPage(workspace, base.id, { append: true }).then(renderShell) },
+        }, page.loading ? '正在加载…' : `继续加载（已显示 ${documents.length} / ${page.total}）`) : null,
+        !query && page.loaded && documents.length === 0 ? element('div', { class: 'note-tree-status' }, '这个知识库还没有文档。') : null,
         !query && !readOnly ? element('button', { type: 'button', class: 'note-tree-new', onClick: () => { void startBlankDocument(workspace, base.id) } },
           element('span', { 'aria-hidden': 'true' }, '+'), '新建文档') : null,
       ) : null,
     )
   })
+  const treeContent = query
+    ? [
+      view.searchLoading && view.searchResults.length === 0 ? element('div', { class: 'note-tree-status', role: 'status' }, '正在搜索文档…') : null,
+      view.searchError ? element('div', { class: 'note-tree-status is-error' }, view.searchError) : null,
+      ...tree,
+      !view.searchLoading && !view.searchError && view.searchResults.length === 0 ? element('div', { class: 'note-tree-empty' }, '没有匹配的文档') : null,
+      view.searchNextCursor ? element('button', {
+        type: 'button', class: 'note-tree-more search-more', disabled: view.searchLoading,
+        onClick: () => { void loadDocumentSearch(workspace, false) },
+      }, view.searchLoading ? '正在加载…' : `继续加载搜索结果（${view.searchResults.length} / ${view.searchTotal}）`) : null,
+    ]
+    : tree.length ? tree : [element('div', { class: 'note-tree-empty' }, workspace.kind === 'session' && state.mountContext.sessionId ? '当前会话未挂载知识库' : '还没有知识库')]
   return element('section', {
     class: `note-workspace note-workspace--${workspace.kind}`, 'aria-labelledby': `${workspace.kind}-documents-heading`,
     'data-tree-open': String(view.treeOpen),
   },
     element('aside', { class: 'note-tree-panel', 'aria-label': '知识目录' },
       element('header', { class: 'note-tree-header' },
-        element('div', {}, element('h2', { id: `${workspace.kind}-documents-heading` }, options.heading || '知识目录'), element('span', {}, `${workspaceDocuments.length} 篇文档`)),
+        element('div', {}, element('h2', { id: `${workspace.kind}-documents-heading` }, options.heading || '知识目录'), element('span', {}, query ? `${view.searchTotal} 条搜索结果` : `${workspaceDocuments.length} 篇已加载`)),
         !readOnly ? actionButton('+', () => { void startBlankDocument(workspace, view.knowledgeBaseId || activeBases[0]?.id) }, 'ghost note-add-button', { 'aria-label': '新建文档', title: '新建文档' }) : null,
       ),
       element('div', { class: 'note-tree-search-wrap' }, interfaceIcon('search', 'search-symbol'), search),
-      element('nav', { class: 'note-tree', 'data-scroll-key': `${workspace.kind}-note-tree` }, tree.length ? tree : element('div', { class: 'note-tree-empty' }, workspace.kind === 'session' && state.mountContext.sessionId ? '当前会话未挂载知识库' : '还没有知识库')),
+      element('nav', { class: 'note-tree', 'data-scroll-key': `${workspace.kind}-note-tree` }, treeContent),
       workspace.kind === 'session' ? element('footer', { class: 'note-tree-footer' }, actionButton('新建知识库', () => openKnowledgeBaseEditor(), 'ghost small')) : null,
     ),
     view.treeOpen ? element('button', {
@@ -1332,29 +1580,31 @@ function renderNoteEditor(workspace, editor, base) {
     class: 'note-title-input', value: editor.title, maxlength: 200, placeholder: '无标题文档', 'aria-label': '文档标题',
     onInput: event => update('title', event.target.value), onKeyDown: saveShortcut,
   })
-  const body = element('textarea', {
-    class: 'note-body-editor', maxlength: 50000, placeholder: '从这里开始记录…', 'aria-label': '文档正文',
-    onInput: event => { update('body', event.target.value); resizeDocumentEditor(event.target) }, onKeyDown: saveShortcut,
-  })
-  body.value = editor.body
   const finalized = !editor.isNew && editor.documentState !== 'open'
-  const mode = finalized || readOnly ? 'preview' : view.mode === 'edit' ? 'edit' : 'preview'
-  if (mode === 'edit') window.requestAnimationFrame(() => resizeDocumentEditor(body))
+  const editable = !finalized && !readOnly
+  const body = editable
+    ? element('div', { class: 'notes-live-editor knowledge-live-editor', role: 'status', 'aria-label': '正在打开知识文档正文' },
+      element('div', { class: 'notes-editor-loading' }, '正在打开文档…'))
+    : renderMarkdownPreview(editor.body)
+  if (editable) mountMarkdownEditor(body, {
+    markdown: editor.body,
+    label: '编辑知识文档正文',
+    onChange: value => update('body', value),
+    onSave: () => { void saveDocumentEditor(workspace).then(saved => { if (saved) renderShell() }) },
+  })
   return element('main', { class: 'note-editor', 'aria-label': '文档编辑器' },
     element('header', { class: 'note-editor-toolbar' },
       element('div', { class: 'note-breadcrumb' },
         element('span', {}, base?.name || '知识库'),
         element('span', { 'aria-hidden': 'true' }, '/'),
-        element('strong', {}, editor.isNew ? '新文档' : documentWorkspaceDocuments(workspace).find(item => item.id === editor.id)?.relPath || editor.title)),
+        element('strong', {}, editor.isNew ? '新文档' : documentWorkspaceDocuments(workspace).find(item => item.id === editor.id)?.relPath || editor.title),
+        element('span', { class: 'note-toolbar-meta' },
+          editor.isNew ? '尚未保存' : `更新于 ${formatDate(editor.updatedAt)}`,
+          editor.scope.kind === 'global' ? '全局知识' : `项目 ${editor.scope.id}`)),
       element('div', { class: 'note-editor-actions' },
-        finalized ? badge(DOCUMENT_STATE_LABELS[editor.documentState] || '已结束', 'success') : readOnly ? badge('只读') : element('div', { class: 'note-mode-switch', role: 'tablist', 'aria-label': '文档视图' }, [
-          ['edit', '编辑'],
-          ['preview', '预览'],
-        ].map(([value, label]) => element('button', {
-          type: 'button', role: 'tab', 'aria-selected': String(mode === value),
-          onClick: () => switchDocumentMode(workspace, value),
-        }, label))),
+        finalized ? badge(DOCUMENT_STATE_LABELS[editor.documentState] || '已结束', 'success') : readOnly ? badge('只读') : null,
         element('span', { class: 'editor-save-status', role: 'status' }, editor.saveState),
+        editable ? actionButton('@ 引用笔记', () => { void openNotePicker(editor, reference => markdownEditorHandle?.insertMarkdown(reference)) }, 'ghost small note-insert-button') : null,
         finalized && !readOnly ? actionButton('重新打开', () => reopenDocument(workspace, editor), 'small') : null,
         !readOnly && !editor.isNew && !finalized ? actionButton('标记结束', () => openFinalizeDocument(workspace, editor), 'small') : null,
         !readOnly && !editor.isNew && !finalized ? actionButton('删除', () => confirmDeleteDocument(workspace, editor), 'ghost small') : null,
@@ -1370,12 +1620,9 @@ function renderNoteEditor(workspace, editor, base) {
         editor.finalizationNote ? element('p', {}, editor.finalizationNote) : null,
         editor.finalizedAt ? element('small', {}, `结束于 ${formatDate(editor.finalizedAt)}`) : null,
       ) : null,
-      element('article', { class: `note-paper is-${mode}`, 'data-document-mode': mode },
-        mode === 'edit' ? title : element('h1', { class: 'note-preview-title' }, editor.title || '无标题文档'),
-        element('div', { class: 'note-document-meta' },
-          element('span', {}, editor.isNew ? '尚未保存' : `更新于 ${formatDate(editor.updatedAt)}`),
-          element('span', {}, editor.scope.kind === 'global' ? '全局知识' : `项目 · ${editor.scope.id}`)),
-        mode === 'edit' ? body : renderMarkdownPreview(editor.body),
+      element('article', { class: `note-paper is-${editable ? 'edit' : 'preview'}`, 'data-document-mode': editable ? 'edit' : 'preview' },
+        editable ? title : element('h1', { class: 'note-preview-title' }, editor.title || '无标题文档'),
+        body,
       ),
     ),
     element('footer', { class: 'note-inspector' },
@@ -1385,16 +1632,55 @@ function renderNoteEditor(workspace, editor, base) {
       finalized || readOnly ? null : element('label', { class: 'note-tags-field' }, element('span', {}, '标签'), element('input', {
         value: editor.tagsText, placeholder: '用逗号分隔', onInput: event => update('tagsText', event.target.value),
       })),
-      !finalized && !readOnly ? element('span', { class: 'note-format-hint' }, mode === 'edit' ? 'Markdown · Ctrl/⌘ S 保存' : 'Markdown 预览') : null,
+      editable ? element('span', { class: 'note-format-hint' }, 'Markdown · Ctrl/⌘ S 保存') : null,
     ),
   )
 }
 
-function switchDocumentMode(workspace, mode) {
-  if (mode !== 'edit' && mode !== 'preview') return
-  workspace.view.mode = mode
-  renderShell()
-  if (mode === 'edit') window.requestAnimationFrame(() => document.querySelector('.note-body-editor')?.focus())
+async function openNotePicker(editor, insertReference) {
+  try {
+    const search = element('input', {
+      class: 'input', type: 'search', placeholder: '搜索笔记文档或文件', 'aria-label': '搜索可引用笔记',
+    })
+    const results = element('div', { class: 'note-picker-results' })
+    let modal
+    let request = 0
+    const paint = async () => {
+      const current = ++request
+      const query = search.value.trim()
+      const visible = query ? (await api(`notes?q=${encodeURIComponent(query)}&limit=100`)).filter(node => node.kind !== 'folder') : []
+      if (current !== request) return
+      results.replaceChildren(...(visible.length
+        ? visible.map(node => element('button', {
+          type: 'button', class: 'note-picker-row',
+          onClick: () => {
+            insertNoteReference(editor, insertReference, node)
+            modal.close(true)
+          },
+        },
+        renderNoteIcon(node),
+        element('span', {}, element('strong', {}, node.name), element('small', {}, `${node.kind === 'document' ? '笔记文档' : formatBytes(node.size)}  ${shortNoteId(node.id)}`))))
+        : [element('div', { class: 'note-picker-empty' }, query ? '没有匹配的笔记文档。' : '输入名称以搜索可引用的笔记文档和文件。')]))
+    }
+    let timer = 0
+    search.addEventListener('input', () => { window.clearTimeout(timer); timer = window.setTimeout(() => void paint(), 180) })
+    void paint()
+    modal = openSheet({
+      title: '引用笔记文档',
+      description: '引用使用稳定编号，笔记移动或改名后仍然有效。',
+      body: element('div', { class: 'note-picker' }, search, results),
+      cancelLabel: '取消',
+    })
+    search.focus()
+  } catch (error) { showToast(friendlyError(error), 'error') }
+}
+
+function insertNoteReference(editor, insertReference, node) {
+  const reference = noteReference(node)
+  if (typeof insertReference !== 'function') return showToast('文档编辑器尚未准备好，请稍后重试。', 'error')
+  insertReference(reference)
+  editor.saveState = '未保存'
+  updateEditorSaveState(editor.saveState)
 }
 
 function renderMarkdownPreview(markdown) {
@@ -1409,12 +1695,29 @@ function renderMarkdownPreview(markdown) {
     table.replaceWith(scroller)
     scroller.append(table)
   })
+  preview.querySelectorAll('[data-note-id]').forEach(link => {
+    link.setAttribute('role', 'button')
+    link.setAttribute('tabindex', '0')
+    link.setAttribute('title', '打开笔记文档')
+    const open = event => {
+      if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return
+      event.preventDefault()
+      void openNoteReference(link.dataset.noteId)
+    }
+    link.addEventListener('click', open)
+    link.addEventListener('keydown', open)
+  })
   return preview
 }
 
-function resizeDocumentEditor(editor) {
-  editor.style.height = 'auto'
-  editor.style.height = `${Math.max(420, editor.scrollHeight)}px`
+async function openNoteReference(id) {
+  try {
+    const node = await api(`notes/${encodeURIComponent(id)}`)
+    state.view = 'notes'
+    state.loading = false
+    await selectNoteNode(node)
+    renderShell()
+  } catch (error) { showToast(friendlyError(error), 'error') }
 }
 
 function openFinalizeDocument(workspace, editor) {
@@ -1482,6 +1785,827 @@ function confirmDeleteDocument(workspace, editor) {
       showToast('文档已删除。')
     },
   })
+}
+
+function renderNotes() {
+  const fileInput = element('input', {
+    class: 'visually-hidden', type: 'file', multiple: true, tabindex: '-1',
+    onChange: event => { void uploadNoteFiles([...event.target.files], state.notes.currentFolderId); event.target.value = '' },
+  })
+  const rootNodes = state.notes.children.get('root') || []
+  const tree = state.notes.query.trim()
+    ? renderNoteSearchResults()
+    : renderNoteTreeBranch(null)
+  const workspace = element('section', {
+    class: 'notes-workspace', 'data-drop-active': 'false',
+    onDragEnter: noteWorkspaceDragEnter, onDragOver: noteWorkspaceDragEnter,
+    onDragLeave: noteWorkspaceDragLeave,
+    onDrop: event => {
+      clearNoteDragState()
+      if (!hasDragType(event, 'Files')) return
+      event.preventDefault()
+      void importDroppedNotes(event.dataTransfer, state.notes.currentFolderId)
+    },
+  },
+    element('aside', { class: 'notes-browser', 'aria-label': '笔记目录' },
+      element('header', { class: 'notes-browser-header' },
+        element('div', {}, element('h2', {}, '目录'), element('span', {}, `${rootNodes.length} 个根目录项目`)),
+        element('div', { class: 'notes-browser-actions' },
+          actionButton('新建', () => openCreateNoteDocument(), 'primary small'),
+          actionButton('目录', () => openCreateNoteFolder(), 'small'),
+          actionButton('导入', () => fileInput.click(), 'ghost small'),
+          fileInput,
+        ),
+      ),
+      element('div', { class: 'notes-search' }, element('input', {
+        class: 'input', type: 'search', value: state.notes.query, placeholder: '搜索笔记文档', 'aria-label': '搜索笔记文档',
+        onInput: event => scheduleNoteSearch(event.target.value),
+      })),
+      element('div', {
+        class: 'notes-tree', role: 'tree', 'data-scroll-key': 'notes-tree',
+        onDragOver: event => {
+          if (hasDragType(event, 'application/x-dsh-note-id') || hasDragType(event, 'Files')) event.preventDefault()
+        },
+        onDrop: event => { if (event.target === event.currentTarget) void dropNoteNode(event, null) },
+      }, tree),
+    ),
+    renderNoteContent(),
+    element('div', { class: 'notes-drop-overlay', 'aria-hidden': 'true' },
+      element('strong', {}, '放开以导入当前目录'),
+      element('span', {}, '支持文件和完整目录，原有目录层级会被保留。')),
+  )
+  return element('section', { class: 'notes-page', 'aria-label': '笔记工作区' }, workspace)
+}
+
+function renderNoteTreeBranch(parentId, depth = 0) {
+  const key = parentId || 'root'
+  const nodes = state.notes.children.get(key) || []
+  if (!nodes.length && depth === 0) {
+    return element('div', { class: 'notes-tree-empty' }, element('strong', {}, '还没有笔记'), element('span', {}, '新建目录或文档开始整理。'))
+  }
+  return element('div', { class: 'notes-tree-branch', role: depth ? 'group' : undefined }, nodes.map(node => {
+    const selected = state.notes.selectedId === node.id
+    const expanded = node.kind === 'folder' && state.notes.expandedFolders.has(node.id)
+    const row = element('div', {
+      class: 'notes-tree-item', 'data-kind': node.kind, 'data-selected': String(selected),
+      'data-note-id': node.id,
+      draggable: 'true',
+      onDragStart: event => {
+        event.dataTransfer.effectAllowed = 'move'
+        event.dataTransfer.setData('application/x-dsh-note-id', node.id)
+        event.currentTarget.dataset.dragging = 'true'
+      },
+      onDragEnd: () => clearNoteDragState(),
+      onDragEnter: event => activateNoteFolderDropTarget(event, node),
+      onDragOver: event => activateNoteFolderDropTarget(event, node),
+      onDragLeave: event => { if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.dataset.dropTarget = 'false' },
+      onDrop: event => { if (node.kind === 'folder') void dropNoteNode(event, node.id) },
+    },
+      element('button', {
+        type: 'button', class: 'notes-tree-row', role: 'treeitem',
+        'aria-selected': String(selected), 'aria-expanded': node.kind === 'folder' ? String(expanded) : undefined,
+        onClick: () => { void selectNoteNode(node, { toggleFolder: node.kind === 'folder' }) },
+      },
+        node.kind === 'folder' ? element('span', { class: 'notes-tree-chevron', 'aria-hidden': 'true' }) : element('span', { class: 'notes-tree-spacer' }),
+        renderNoteIcon(node),
+        element('span', { class: 'notes-tree-name', title: node.name }, node.name),
+      ),
+      element('div', { class: 'notes-row-actions' },
+        actionButton('重命名', event => { event.stopPropagation(); openRenameNoteNode(node) }, 'ghost tiny'),
+        actionButton('复制', event => { event.stopPropagation(); void copyNoteNode(node) }, 'ghost tiny'),
+        actionButton('删除', event => { event.stopPropagation(); void confirmDeleteNoteNode(node) }, 'ghost tiny danger-text'),
+      ),
+    )
+    const children = expanded
+      ? state.notes.loadedFolders.has(node.id)
+        ? renderNoteTreeBranch(node.id, depth + 1)
+        : element('div', { class: 'notes-tree-loading', role: 'status' }, '正在读取…')
+      : null
+    return element('div', { class: 'notes-tree-node' }, row, children)
+  }))
+}
+
+function renderNoteSearchResults() {
+  if (!state.notes.searchResults.length) return element('div', { class: 'notes-tree-empty' }, '没有匹配的笔记文档。')
+  return element('div', { class: 'notes-search-results' }, state.notes.searchResults.map(node => element('button', {
+    type: 'button', class: 'notes-search-row', onClick: () => { void selectNoteNode(node) },
+  }, renderNoteIcon(node), element('span', {}, element('strong', {}, node.name), element('small', {}, noteKindLabel(node))))))
+}
+
+function renderNoteContent() {
+  const node = state.notes.selectedNode
+  if (!node) return renderNoteFolderContent(null)
+  if (node.kind === 'folder') return renderNoteFolderContent(node)
+  if (node.kind === 'document') return renderNoteDocument(node)
+  return renderNoteFile(node)
+}
+
+function renderNoteFolderContent(folder) {
+  const parentId = folder?.id || null
+  const children = state.notes.children.get(parentId || 'root') || []
+  return element('main', {
+    class: 'notes-content is-folder',
+    onDragOver: event => event.preventDefault(),
+    onDrop: event => void dropNoteNode(event, parentId),
+  },
+    renderNoteContentHeader(folder),
+    children.length
+      ? element('div', { class: 'notes-file-list', role: 'list' }, children.map(node => element('div', {
+        class: 'notes-file-row', role: 'listitem', draggable: 'true',
+        onDragStart: event => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-dsh-note-id', node.id) },
+        onDblClick: () => { void selectNoteNode(node, { toggleFolder: node.kind === 'folder' }) },
+      },
+        element('button', { type: 'button', class: 'notes-file-main', onClick: () => { void selectNoteNode(node) } },
+          renderNoteIcon(node, true),
+          element('span', {}, element('strong', {}, node.name), element('small', {}, noteKindLabel(node))),
+        ),
+        element('time', { datetime: node.updatedAt }, formatDate(node.updatedAt)),
+        element('span', { class: 'notes-file-size' }, node.kind === 'folder' ? '' : formatBytes(node.size)),
+        element('div', { class: 'notes-file-actions' },
+          actionButton('重命名', () => openRenameNoteNode(node), 'ghost tiny'),
+          actionButton('复制', () => { void copyNoteNode(node) }, 'ghost tiny'),
+          actionButton('删除', () => { void confirmDeleteNoteNode(node) }, 'ghost tiny danger-text'),
+        ),
+      )))
+      : element('div', { class: 'notes-folder-empty' },
+        element('span', { class: 'notes-empty-folder-mark', 'aria-hidden': 'true' }),
+        element('h3', {}, '这个目录还是空的'),
+        element('p', {}, '可以新建笔记文档、建立子目录，或把本地文件拖到这里。'),
+        element('div', {}, actionButton('新建文档', () => openCreateNoteDocument(parentId), 'primary small'), actionButton('新建目录', () => openCreateNoteFolder(parentId), 'small')),
+      ),
+  )
+}
+
+function renderNoteContentHeader(folder) {
+  const path = folder ? [...state.notes.breadcrumbs] : []
+  return element('header', { class: 'notes-content-header' },
+    element('nav', { class: 'notes-breadcrumb', 'aria-label': '当前位置' },
+      element('button', { type: 'button', onClick: () => { void openNoteRoot() } }, '笔记文档'),
+      path.map(node => element('span', {}, element('span', { 'aria-hidden': 'true' }, '/'), element('button', { type: 'button', onClick: () => { void selectNoteNode(node) } }, node.name))),
+    ),
+    element('div', { class: 'notes-content-title' },
+      element('div', {}, element('h2', {}, folder?.name || '全部笔记'), element('p', {}, folder ? `${(state.notes.children.get(folder.id) || []).length} 个项目` : '你的独立笔记与资料目录')),
+      element('div', { class: 'notes-content-actions' },
+        actionButton('新建文档', () => openCreateNoteDocument(folder?.id || null), 'primary small'),
+        actionButton('新建目录', () => openCreateNoteFolder(folder?.id || null), 'small'),
+      ),
+    ),
+  )
+}
+
+function renderNoteDocument(node) {
+  return renderEditableNote(node)
+}
+
+function renderEditableNote(node) {
+  const markdown = isMarkdownNote(node)
+  const title = editableNoteTitle(node)
+  const editor = markdown
+    ? element('div', { class: 'notes-live-editor', role: 'status', 'aria-label': `正在打开 ${node.name}` },
+      element('div', { class: 'notes-editor-loading' }, '正在打开文档…'))
+    : createPlainTextNoteEditor(node)
+  if (markdown) mountMarkdownNoteEditor(editor, node)
+  else mountPlainTextNoteEditor(editor, node)
+  return element('main', { class: `notes-content is-document${markdown ? '' : ' has-line-numbers'}` },
+    renderNoteFileToolbar(node, { editable: true }),
+    element('h1', {
+      class: 'notes-document-title', contenteditable: 'plaintext-only', spellcheck: 'true',
+      'aria-label': `修改 ${node.name} 的标题`, title: '点击修改标题',
+      onBlur: event => { void saveEditableNoteTitle(event.currentTarget, node) },
+      onKeyDown: event => {
+        if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur() }
+        if (event.key === 'Escape') { event.preventDefault(); event.currentTarget.textContent = title; event.currentTarget.blur() }
+      },
+    }, title),
+    editor,
+  )
+}
+
+function editableNoteTitle(node) {
+  return node.kind === 'document' ? node.name.replace(/\.md$/i, '') : node.name
+}
+
+async function saveEditableNoteTitle(editor, node) {
+  const title = readPlainTextEditor(editor).replace(/\s+/g, ' ').trim()
+  const name = node.kind === 'document' && title ? `${title.replace(/\.md$/i, '')}.md` : title
+  if (!name) {
+    editor.textContent = editableNoteTitle(node)
+    showToast('标题不能为空。', 'error')
+    return
+  }
+  if (name === node.name) {
+    editor.textContent = editableNoteTitle(node)
+    return
+  }
+  editor.setAttribute('contenteditable', 'false')
+  try {
+    const updated = await api(`notes/${encodeURIComponent(node.id)}`, { method: 'PATCH', body: { name } })
+    if (state.notes.selectedNode?.id === node.id) state.notes.selectedNode = updated
+    editor.textContent = editableNoteTitle(updated)
+    const breadcrumb = document.querySelector('.notes-document-toolbar .notes-breadcrumb strong')
+    if (breadcrumb) breadcrumb.textContent = updated.name
+    await loadNoteChildren(updated.parentId, true).catch(() => {})
+    const treeName = document.querySelector(`.notes-tree-item[data-note-id="${updated.id}"] .notes-tree-name`)
+    if (treeName) treeName.textContent = updated.name
+    showToast('标题已更新。')
+  } catch (error) {
+    editor.textContent = editableNoteTitle(node)
+    showToast(friendlyError(error), 'error')
+  } finally {
+    if (editor.isConnected) editor.setAttribute('contenteditable', 'plaintext-only')
+  }
+}
+
+function createPlainTextNoteEditor(node) {
+  return element('div', { class: 'notes-plain-editor', role: 'status', 'aria-label': `正在打开 ${node.name}` },
+    element('div', { class: 'notes-editor-loading' }, '正在打开文档…'))
+}
+
+function readPlainTextEditor(editor) {
+  return editor.innerText.replace(/\r\n?/g, '\n')
+}
+
+function updateNoteDraft(value) {
+  state.notes.draft = value
+  state.notes.dirty = state.notes.draft !== state.notes.content
+  syncNoteEditorChrome()
+}
+
+function mountMarkdownNoteEditor(host, node) {
+  mountMarkdownEditor(host, {
+    markdown: state.notes.draft,
+    label: `编辑 ${node.name}`,
+    isCurrent: () => state.notes.selectedNode?.id === node.id,
+    onChange: updateNoteDraft,
+    onSave: () => { void saveNoteDocument() },
+  })
+}
+
+function mountPlainTextNoteEditor(host, node) {
+  const request = ++plainTextEditorMountRequest
+  window.requestAnimationFrame(async () => {
+    if (!host.isConnected || state.notes.selectedNode?.id !== node.id || request !== plainTextEditorMountRequest) return
+    try {
+      const runtime = await loadMarkdownNoteEditor()
+      if (!host.isConnected || state.notes.selectedNode?.id !== node.id || request !== plainTextEditorMountRequest) return
+      host.replaceChildren()
+      host.removeAttribute('role')
+      plainTextEditorHandle = runtime.createPlainTextEditor({
+        host,
+        text: state.notes.draft,
+        label: `编辑 ${node.name}`,
+        onChange: updateNoteDraft,
+        onSave: () => { void saveNoteDocument() },
+      })
+    } catch (error) {
+      if (!host.isConnected || request !== plainTextEditorMountRequest) return
+      host.replaceChildren(element('div', { class: 'notes-editor-error', role: 'alert' },
+        element('strong', {}, '无法打开纯文本编辑器'),
+        element('span', {}, friendlyError(error)),
+        actionButton('重试', () => { noteEditorLoader = null; host.replaceChildren(); mountPlainTextNoteEditor(host, node) }, 'small')))
+    }
+  })
+}
+
+function mountMarkdownEditor(host, options) {
+  const request = ++markdownEditorMountRequest
+  window.requestAnimationFrame(async () => {
+    if (!host.isConnected || options.isCurrent?.() === false || request !== markdownEditorMountRequest) return
+    try {
+      const runtime = await loadMarkdownNoteEditor()
+      if (!host.isConnected || options.isCurrent?.() === false || request !== markdownEditorMountRequest) return
+      host.replaceChildren()
+      host.removeAttribute('role')
+      markdownEditorHandle = runtime.createMarkdownEditor({
+        host,
+        markdown: options.markdown,
+        label: options.label,
+        onChange: options.onChange,
+        onSave: options.onSave,
+      })
+    } catch (error) {
+      if (!host.isConnected || request !== markdownEditorMountRequest) return
+      host.replaceChildren(element('div', { class: 'notes-editor-error', role: 'alert' },
+        element('strong', {}, '无法打开 Markdown 编辑器'),
+        element('span', {}, friendlyError(error)),
+        actionButton('重试', () => { noteEditorLoader = null; host.replaceChildren(); mountMarkdownEditor(host, options) }, 'small')))
+    }
+  })
+}
+
+function loadMarkdownNoteEditor() {
+  if (window.DshKnowledgeNoteEditor?.createMarkdownEditor) return Promise.resolve(window.DshKnowledgeNoteEditor)
+  if (noteEditorLoader) return noteEditorLoader
+  noteEditorLoader = new Promise((resolve, reject) => {
+    const script = document.createElement('script')
+    const suffix = ASSET_VERSION ? `?v=${encodeURIComponent(ASSET_VERSION)}` : ''
+    script.src = `${WEB_PATH.replace(/\/$/, '')}/note-editor.js${suffix}`
+    script.async = true
+    script.onload = () => window.DshKnowledgeNoteEditor?.createMarkdownEditor
+      ? resolve(window.DshKnowledgeNoteEditor)
+      : reject(new Error('Markdown 编辑器模块无效'))
+    script.onerror = () => { script.remove(); reject(new Error('Markdown 编辑器加载失败')) }
+    document.head.append(script)
+  }).catch(error => {
+    noteEditorLoader = null
+    throw error
+  })
+  return noteEditorLoader
+}
+
+function releaseNoteEditors() {
+  markdownEditorMountRequest += 1
+  plainTextEditorMountRequest += 1
+  markdownEditorHandle?.destroy()
+  plainTextEditorHandle?.destroy()
+  markdownEditorHandle = null
+  plainTextEditorHandle = null
+}
+
+function syncNoteEditorChrome() {
+  const status = document.querySelector('[data-note-save-state]')
+  if (status) {
+    status.textContent = state.notes.dirty ? '未保存' : '已保存'
+    status.dataset.dirty = String(state.notes.dirty)
+  }
+  const save = document.querySelector('[data-note-save]')
+  if (save) save.disabled = !state.notes.dirty
+}
+
+function renderNoteDocumentBreadcrumb(node) {
+  return element('nav', { class: 'notes-breadcrumb', 'aria-label': '当前位置' },
+    element('button', { type: 'button', onClick: () => { void openNoteRoot() } }, '笔记文档'),
+    state.notes.breadcrumbs.map(parent => element('span', {}, element('span', { 'aria-hidden': 'true' }, '/'), element('button', { type: 'button', onClick: () => { void selectNoteNode(parent) } }, parent.name))),
+    element('span', {}, element('span', { 'aria-hidden': 'true' }, '/'), element('strong', {}, node.name)),
+  )
+}
+
+function renderNoteFile(node) {
+  if (node.editable) return renderEditableNote(node)
+  const previewKind = noteFilePreviewKind(node)
+  let preview
+  if (previewKind === 'image' && state.notes.assetUrl) {
+    preview = element('img', { class: 'notes-inline-image', src: state.notes.assetUrl, alt: node.name })
+  } else if (previewKind === 'pdf' && state.notes.assetUrl) {
+    preview = element('iframe', { class: 'notes-inline-frame', src: state.notes.assetUrl, title: node.name })
+  } else {
+    preview = element('div', { class: 'notes-inline-unavailable' },
+      renderNoteIcon(node, true),
+      element('h2', {}, node.name),
+      element('p', {}, '该格式不能在浏览器中直接编辑，可以下载后使用本地应用打开。'),
+      actionButton('下载文件', () => { void downloadNoteFile(node) }, 'primary small'),
+    )
+  }
+  return element('main', { class: 'notes-content is-file' },
+    renderNoteFileToolbar(node),
+    element('section', { class: `notes-inline-viewer is-${previewKind}`, 'aria-label': `${node.name}内容` }, preview),
+  )
+}
+
+function renderNoteFileToolbar(node, options = {}) {
+  return element('header', { class: 'notes-document-toolbar' },
+    element('div', { class: 'notes-toolbar-leading' },
+      renderNoteDocumentBreadcrumb(node),
+      element('div', { class: 'notes-file-info', 'aria-label': '文件信息' },
+        noteInfoItem('编号', shortNoteId(node.id), node.id),
+        noteInfoItem('类型', node.kind === 'document' ? 'Markdown' : node.mediaType || '未知'),
+        noteInfoItem('大小', formatBytes(node.size), '', 'size'),
+        noteInfoItem('更新', formatDate(node.updatedAt), '', 'updated'),
+      ),
+    ),
+    element('div', { class: 'notes-document-actions' },
+      options.editable ? element('span', { class: 'notes-save-state', role: 'status', 'data-note-save-state': '', 'data-dirty': String(state.notes.dirty) }, state.notes.dirty ? '未保存' : '已保存') : null,
+      node.kind === 'file' ? actionButton('下载', () => { void downloadNoteFile(node) }, 'ghost small') : null,
+      actionButton('复制引用', () => { void copyNoteReference(node) }, 'ghost small'),
+      actionButton('重命名', () => openRenameNoteNode(node), 'ghost small'),
+      options.editable ? actionButton('保存', () => { void saveNoteDocument() }, 'primary small', { 'data-note-save': '', disabled: !state.notes.dirty }) : null,
+    ),
+  )
+}
+
+function noteInfoItem(label, value, title = '', key = '') {
+  return element('span', { class: 'notes-file-info-item', title: title || value, ...(key ? { 'data-note-info': key } : {}) }, element('strong', {}, label), element('span', {}, value))
+}
+
+function renderNoteIcon(node, large = false) {
+  const label = node.kind === 'folder' ? '' : noteExtension(node.name)
+  return element('span', { class: `note-node-icon is-${node.kind}${large ? ' is-large' : ''}`, 'data-media-kind': noteMediaKind(node), 'aria-hidden': 'true' }, label)
+}
+
+function noteKindLabel(node) {
+  if (node.kind === 'folder') return '目录'
+  if (node.kind === 'document') return 'Markdown 笔记'
+  return `${node.mediaType || '文件'}  ${formatBytes(node.size)}`
+}
+
+function isMarkdownNote(node) {
+  return node.kind === 'document' || node.mediaType === 'text/markdown' || /\.(md|markdown)$/i.test(node.name)
+}
+
+function noteFilePreviewKind(node) {
+  if (node.mediaType?.startsWith('image/')) return 'image'
+  if (node.mediaType === 'application/pdf' || /\.pdf$/i.test(node.name)) return 'pdf'
+  return 'unavailable'
+}
+
+async function selectNoteNode(node, options = {}) {
+  if (state.notes.dirty && !await saveNoteDocument()) return
+  releaseNoteAsset()
+  state.notes.selectedId = node.id
+  state.notes.selectedNode = node
+  await loadNoteBreadcrumbs(node)
+  if (node.kind === 'folder') {
+    Object.assign(state.notes, { content: '', draft: '', dirty: false })
+    state.notes.currentFolderId = node.id
+    if (options.toggleFolder) {
+      if (state.notes.expandedFolders.has(node.id)) state.notes.expandedFolders.delete(node.id)
+      else state.notes.expandedFolders.add(node.id)
+    }
+    await loadNoteChildren(node.id)
+  } else if (node.editable) {
+    const blob = await binaryRequest(`notes/${encodeURIComponent(node.id)}/content`, { responseType: 'blob', accept: node.mediaType || 'text/plain' })
+    state.notes.content = await blob.text()
+    state.notes.draft = state.notes.content
+    state.notes.dirty = false
+    state.notes.currentFolderId = node.parentId
+  } else {
+    state.notes.content = ''
+    state.notes.draft = ''
+    state.notes.dirty = false
+    state.notes.currentFolderId = node.parentId
+    if (noteFilePreviewKind(node) !== 'unavailable') {
+      const blob = await binaryRequest(`notes/${encodeURIComponent(node.id)}/content`, { responseType: 'blob', accept: node.mediaType || 'application/octet-stream' })
+      state.notes.assetUrl = URL.createObjectURL(blob)
+    }
+  }
+  renderShell()
+}
+
+async function loadNoteChildren(parentId, force = false) {
+  const key = parentId || 'root'
+  if (!force && state.notes.loadedFolders.has(key)) return state.notes.children.get(key) || []
+  const params = new URLSearchParams({ limit: '500' })
+  if (parentId) params.set('parentId', parentId)
+  const nodes = await api(`notes?${params}`)
+  state.notes.children.set(key, nodes)
+  state.notes.loadedFolders.add(key)
+  return nodes
+}
+
+async function loadNoteBreadcrumbs(node) {
+  const parents = []
+  let parentId = node.parentId
+  while (parentId) {
+    const parent = findCachedNote(parentId) || await api(`notes/${encodeURIComponent(parentId)}`)
+    parents.unshift(parent)
+    parentId = parent.parentId
+  }
+  state.notes.breadcrumbs = node.kind === 'folder' ? [...parents, node] : parents
+}
+
+function findCachedNote(id) {
+  for (const nodes of state.notes.children.values()) {
+    const found = nodes.find(node => node.id === id)
+    if (found) return found
+  }
+  return state.notes.selectedNode?.id === id ? state.notes.selectedNode : null
+}
+
+async function openNoteRoot() {
+  if (state.notes.dirty && !await saveNoteDocument()) return
+  clearNoteSelection()
+  await loadNoteChildren(null)
+  renderShell()
+}
+
+function clearNoteSelection() {
+  releaseNoteAsset()
+  Object.assign(state.notes, { selectedId: '', selectedNode: null, currentFolderId: null, breadcrumbs: [], content: '', draft: '', dirty: false })
+}
+
+function releaseNoteAsset() {
+  if (!state.notes?.assetUrl) return
+  URL.revokeObjectURL(state.notes.assetUrl)
+  state.notes.assetUrl = ''
+}
+
+function scheduleNoteSearch(value) {
+  state.notes.query = value
+  window.clearTimeout(noteSearchTimer)
+  noteSearchTimer = window.setTimeout(async () => {
+    try {
+      state.notes.searchResults = value.trim() ? await api(`notes?q=${encodeURIComponent(value.trim())}&limit=200`) : []
+      renderShell()
+    } catch (error) { showToast(friendlyError(error), 'error') }
+  }, 180)
+}
+
+function openCreateNoteFolder(parentId = state.notes.currentFolderId) {
+  const field = formField('目录名称', 'text', '', { maxlength: 255, placeholder: '例如：项目资料' })
+  const form = element('form', { class: 'form-grid' }, field.wrapper)
+  openSheet({
+    title: '新建目录', description: '目录可以继续包含子目录、笔记文档和任意文件。', body: form,
+    primaryLabel: '创建目录', onPrimary: async () => {
+      const node = await api('notes/folders', { method: 'POST', body: { name: field.input.value, parentId } })
+      await loadNoteChildren(parentId, true)
+      if (parentId) state.notes.expandedFolders.add(parentId)
+      await selectNoteNode(node)
+      return true
+    },
+  })
+  field.input.focus()
+}
+
+function openCreateNoteDocument(parentId = state.notes.currentFolderId) {
+  const field = formField('文档名称', 'text', '', { maxlength: 255, placeholder: '例如：部署记录' })
+  const form = element('form', { class: 'form-grid' }, field.wrapper)
+  openSheet({
+    title: '新建笔记文档', description: '文档使用 Markdown 编辑，默认不会被 AI 检索或回写。', body: form,
+    primaryLabel: '创建并编辑', onPrimary: async () => {
+      const node = await api('notes/documents', { method: 'POST', body: { name: field.input.value, parentId } })
+      await loadNoteChildren(parentId, true)
+      if (parentId) state.notes.expandedFolders.add(parentId)
+      await selectNoteNode(node)
+      return true
+    },
+  })
+  field.input.focus()
+}
+
+function openRenameNoteNode(node) {
+  const field = formField('名称', 'text', node.name, { maxlength: 255 })
+  openSheet({
+    title: '重命名', description: '知识文档中的 @ 引用使用稳定编号，不会因改名失效。', body: element('form', { class: 'form-grid' }, field.wrapper),
+    primaryLabel: '保存名称', onPrimary: async () => {
+      const updated = await api(`notes/${encodeURIComponent(node.id)}`, { method: 'PATCH', body: { name: field.input.value } })
+      await loadNoteChildren(node.parentId, true)
+      if (state.notes.selectedId === node.id) await selectNoteNode(updated)
+      else renderShell()
+      showToast('名称已更新。')
+      return true
+    },
+  })
+  field.input.select()
+}
+
+async function copyNoteNode(node) {
+  try {
+    const copy = await api(`notes/${encodeURIComponent(node.id)}/copy`, { method: 'POST', body: {} })
+    await loadNoteChildren(node.parentId, true)
+    renderShell()
+    showToast(`已创建“${copy.name}”。`)
+  } catch (error) { showToast(friendlyError(error), 'error') }
+}
+
+async function dropNoteNode(event, parentId) {
+  event.preventDefault()
+  event.stopPropagation()
+  clearNoteDragState()
+  const id = event.dataTransfer.getData('application/x-dsh-note-id')
+  if (!id) {
+    if (hasDragType(event, 'Files')) await importDroppedNotes(event.dataTransfer, parentId)
+    return
+  }
+  const node = findCachedNote(id)
+  if (!node || id === parentId || node.parentId === parentId) return
+  try {
+    await api(`notes/${encodeURIComponent(id)}`, { method: 'PATCH', body: { parentId } })
+    await Promise.all([loadNoteChildren(node.parentId, true), loadNoteChildren(parentId, true)])
+    if (state.notes.selectedId === id) state.notes.selectedNode = await api(`notes/${encodeURIComponent(id)}`)
+    renderShell()
+    showToast('已移动到目标目录。')
+  } catch (error) { showToast(friendlyError(error), 'error') }
+}
+
+async function uploadNoteFiles(files, parentId) {
+  const available = files.filter(file => file.size <= 64 * 1024 * 1024)
+  if (!available.length) return showToast('没有可上传的文件，单文件上限为 64 MiB。', 'error')
+  let uploaded = 0
+  try {
+    for (const file of available) {
+      await uploadNoteFile(file, parentId)
+      uploaded += 1
+    }
+    await loadNoteChildren(parentId, true)
+    renderShell()
+    showToast(`已添加 ${uploaded} 个文件。`)
+  } catch (error) {
+    if (uploaded) await loadNoteChildren(parentId, true).catch(() => {})
+    renderShell()
+    showToast(friendlyError(error), 'error')
+  }
+}
+
+async function importDroppedNotes(dataTransfer, parentId) {
+  const payload = captureNoteDropPayload(dataTransfer)
+  if (!payload.entries.length) return uploadNoteFiles(payload.files, parentId)
+
+  const result = { files: 0, folders: 0, skipped: 0 }
+  try {
+    for (const entry of payload.entries) await importNoteEntry(entry, parentId, result)
+    await loadNoteChildren(parentId, true)
+    if (parentId) state.notes.expandedFolders.add(parentId)
+    renderShell()
+    const added = [result.folders ? `${result.folders} 个目录` : '', result.files ? `${result.files} 个文件` : ''].filter(Boolean).join('、')
+    const skipped = result.skipped ? `，跳过 ${result.skipped} 个超过 64 MiB 的文件` : ''
+    showToast(`已添加${added ? ` ${added}` : ''}${skipped}。`)
+  } catch (error) {
+    await loadNoteChildren(parentId, true).catch(() => {})
+    renderShell()
+    showToast(friendlyError(error), 'error')
+  }
+}
+
+function captureNoteDropPayload(dataTransfer) {
+  const files = Array.from(dataTransfer?.files || [])
+  const entries = Array.from(dataTransfer?.items || []).flatMap(item => {
+    if (item.kind !== 'file' || typeof item.webkitGetAsEntry !== 'function') return []
+    try {
+      const entry = item.webkitGetAsEntry()
+      return entry ? [entry] : []
+    } catch {
+      return []
+    }
+  })
+  return { entries, files }
+}
+
+async function importNoteEntry(entry, parentId, result) {
+  if (entry.isDirectory) {
+    const folder = await api('notes/folders', { method: 'POST', body: { name: entry.name, parentId } })
+    result.folders += 1
+    for (const child of await readNoteDirectoryEntries(entry)) await importNoteEntry(child, folder.id, result)
+    return
+  }
+  if (!entry.isFile) return
+  const file = await readNoteFileEntry(entry)
+  if (file.size > 64 * 1024 * 1024) {
+    result.skipped += 1
+    return
+  }
+  await uploadNoteFile(file, parentId)
+  result.files += 1
+}
+
+async function readNoteDirectoryEntries(entry) {
+  const reader = entry.createReader()
+  const entries = []
+  while (true) {
+    const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject))
+    if (!batch.length) return entries
+    entries.push(...batch)
+  }
+}
+
+function readNoteFileEntry(entry) {
+  return new Promise((resolve, reject) => entry.file(resolve, reject))
+}
+
+async function uploadNoteFile(file, parentId) {
+  const params = new URLSearchParams({ name: file.name })
+  if (parentId) params.set('parentId', parentId)
+  return binaryRequest(`notes/files?${params}`, {
+    method: 'POST', body: file, contentType: file.type || 'application/octet-stream',
+  })
+}
+
+async function saveNoteDocument() {
+  const node = state.notes.selectedNode
+  if (!node || !node.editable || !state.notes.dirty) return true
+  try {
+    const updated = await binaryRequest(`notes/${encodeURIComponent(node.id)}/content`, {
+      method: 'PUT', body: new Blob([state.notes.draft], { type: node.mediaType || 'text/plain' }), contentType: node.mediaType || 'text/plain',
+    })
+    state.notes.selectedNode = updated
+    state.notes.content = state.notes.draft
+    state.notes.dirty = false
+    await loadNoteChildren(node.parentId, true)
+    const size = document.querySelector('[data-note-info="size"] > span')
+    const updatedAt = document.querySelector('[data-note-info="updated"] > span')
+    if (size) size.textContent = formatBytes(updated.size)
+    if (updatedAt) updatedAt.textContent = formatDate(updated.updatedAt)
+    syncNoteEditorChrome()
+    showToast('文件已保存。')
+    return true
+  } catch (error) {
+    showToast(friendlyError(error), 'error')
+    return false
+  }
+}
+
+async function downloadNoteFile(node) {
+  try {
+    const blob = await binaryRequest(`notes/${encodeURIComponent(node.id)}/content?download=1`, { responseType: 'blob', accept: node.mediaType || 'application/octet-stream' })
+    const url = URL.createObjectURL(blob)
+    const anchor = element('a', { href: url, download: node.name })
+    document.body.append(anchor); anchor.click(); anchor.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch (error) { showToast(friendlyError(error), 'error') }
+}
+
+async function copyNoteReference(node) {
+  try { await navigator.clipboard.writeText(noteReference(node)); showToast('笔记引用已复制。') }
+  catch { showToast('复制失败，请手动复制文档编号。', 'error') }
+}
+
+async function confirmDeleteNoteNode(node) {
+  try {
+    const references = await api(`notes/${encodeURIComponent(node.id)}/references`)
+    if (references.length) {
+      const names = references.slice(0, 4).map(item => `“${item.documentTitle}”`).join('、')
+      return openModal({
+        title: '仍被知识文档引用', description: node.name,
+        body: element('p', {}, `${names}${references.length > 4 ? `等 ${references.length} 篇文档` : ''}仍在引用这里的内容。请先移除引用，再删除。`),
+        cancelLabel: '知道了',
+      })
+    }
+    openConfirm({
+      title: `删除“${node.name}”？`,
+      message: node.kind === 'folder' ? '目录及其全部子目录和文件会被永久删除。' : '该文档会被永久删除，此操作无法撤销。',
+      confirmLabel: '永久删除', danger: true,
+      onConfirm: async () => {
+        await api(`notes/${encodeURIComponent(node.id)}`, { method: 'DELETE' })
+        await loadNoteChildren(node.parentId, true)
+        if (state.notes.selectedId === node.id || state.notes.breadcrumbs.some(parent => parent.id === node.id)) clearNoteSelection()
+        renderShell(); showToast('已删除。')
+      },
+    })
+  } catch (error) { showToast(friendlyError(error), 'error') }
+}
+
+function noteWorkspaceDragEnter(event) {
+  if (!hasDragType(event, 'Files')) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+  event.currentTarget.dataset.dropActive = 'true'
+}
+
+function noteWorkspaceDragLeave(event) {
+  if (event.currentTarget.contains(event.relatedTarget)) return
+  clearNoteDragState()
+}
+
+function activateNoteFolderDropTarget(event, node) {
+  if (node.kind !== 'folder') return
+  const hasFiles = hasDragType(event, 'Files')
+  if (!hasFiles && !hasDragType(event, 'application/x-dsh-note-id')) return
+  event.preventDefault()
+  event.stopPropagation()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = hasFiles ? 'copy' : 'move'
+  const workspace = document.querySelector('.notes-workspace')
+  if (workspace) workspace.dataset.dropActive = 'false'
+  document.querySelectorAll('.notes-tree-item[data-drop-target="true"]').forEach(target => {
+    if (target !== event.currentTarget) target.dataset.dropTarget = 'false'
+  })
+  event.currentTarget.dataset.dropTarget = 'true'
+}
+
+function hasDragType(event, type) {
+  return Array.from(event.dataTransfer?.types || []).includes(type)
+}
+
+function clearNoteDragState() {
+  const workspace = document.querySelector('.notes-workspace')
+  if (workspace) workspace.dataset.dropActive = 'false'
+  document.querySelectorAll('.notes-tree-item[data-drop-target="true"]').forEach(node => { node.dataset.dropTarget = 'false' })
+  document.querySelectorAll('.notes-tree-item[data-dragging="true"]').forEach(node => { node.dataset.dragging = 'false' })
+}
+
+function installNoteDragRecovery() {
+  window.addEventListener('drop', clearNoteDragState, true)
+  window.addEventListener('dragend', clearNoteDragState, true)
+  window.addEventListener('blur', clearNoteDragState)
+  document.addEventListener('dragleave', event => {
+    if (event.relatedTarget === null) clearNoteDragState()
+  }, true)
+}
+
+function noteReference(node) {
+  const label = node.name.replaceAll('\\', '\\\\').replaceAll('[', '\\[').replaceAll(']', '\\]')
+  return `@[${label}](note://${node.id})`
+}
+
+function noteMediaKind(node) {
+  if (node.kind === 'folder') return 'folder'
+  if (node.kind === 'document' || node.mediaType?.startsWith('text/')) return 'text'
+  if (node.mediaType?.startsWith('image/')) return 'image'
+  if (node.mediaType === 'application/pdf') return 'pdf'
+  return 'file'
+}
+
+function noteExtension(name) {
+  const extension = name.includes('.') ? name.split('.').pop() : 'FILE'
+  return extension.slice(0, 4).toLocaleUpperCase()
+}
+
+function shortNoteId(id) {
+  return `${id.slice(0, 11)}…${id.slice(-5)}`
+}
+
+function formatBytes(value) {
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} KiB`
+  return `${(value / 1024 / 1024).toFixed(value < 10 * 1024 * 1024 ? 1 : 0)} MiB`
 }
 
 function renderCandidates() {
@@ -2233,21 +3357,24 @@ function openSheet(options) {
   return openModal({ ...options, presentation: 'sheet' })
 }
 
-function openModal({ title, description = '', body, primaryLabel, primaryVariant = 'primary', onPrimary, cancelLabel = '取消', presentation = 'modal' }) {
+function openModal({ title, description = '', body, primaryLabel, primaryVariant = 'primary', onPrimary, cancelLabel = '取消', presentation = 'modal', onClose }) {
   const previouslyFocused = document.activeElement
   const isSheet = presentation === 'sheet'
   const backdrop = element('div', { class: `dialog-backdrop${isSheet ? ' sheet-backdrop' : ''}` })
   const dialog = element('section', { class: `dialog${isSheet ? ' sheet' : ''} ${primaryLabel ? '' : 'narrow'}`.trim(), role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'dialog-title' })
   let busy = false
   let formDirty = false
+  let closed = false
   const close = (explicit = false) => {
-    if (busy) return
+    if (busy || closed) return
     if (!explicit && formDirty) {
       showToast('表单有未保存的修改，请先保存，或使用“取消”放弃修改。', 'error')
       return
     }
     document.removeEventListener('keydown', onKeyDown)
+    closed = true
     backdrop.remove()
+    onClose?.()
     if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus()
   }
   const closeButton = actionButton('×', () => close(), 'ghost', { 'aria-label': '关闭对话框' })
@@ -2319,9 +3446,10 @@ function friendlyError(error) {
 
 window.addEventListener('beforeunload', event => {
   const editor = activeDocumentWorkspace()?.view.editor
-  if (!editor?.dirty) return
+  if (!editor?.dirty && !state.notes.dirty) return
   event.preventDefault()
   event.returnValue = ''
 })
 
+installNoteDragRecovery()
 void installHostThemeBridge().then(() => boot())

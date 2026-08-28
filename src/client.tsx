@@ -44,6 +44,7 @@ interface KnowledgeWorkspaceController {
 }
 
 const CONNECTION_CONTROL_PATH = '/knowledge-control/v1/connection'
+let cachedConnectionView: KnowledgeConnectionView | undefined
 
 /** Cordis services needed by the browser half. */
 export const inject = ['slots', 'theme']
@@ -308,6 +309,7 @@ async function requestConnection(
     throw new Error(message)
   }
   if (!isConnectionView(payload)) throw new Error('插件连接接口返回了无效数据。')
+  cachedConnectionView = payload
   return payload
 }
 
@@ -353,16 +355,17 @@ function KnowledgeWorkspace({
   client,
   workspace,
 }: ConversationSlotProps & { client: ClientContext; workspace: KnowledgeWorkspaceController }) {
-  const [panelState, setPanelState] = useState<'loading' | 'ready' | 'unavailable' | 'error'>('loading')
-  const [managementPath, setManagementPath] = useState<string>()
+  const cachedManagementPath = cachedConnectionView?.managementAvailable ? cachedConnectionView.managementPath : undefined
+  const [panelState, setPanelState] = useState<'loading' | 'ready' | 'unavailable' | 'error'>(cachedConnectionView === undefined ? 'loading' : cachedManagementPath === undefined ? 'unavailable' : 'ready')
+  const [managementPath, setManagementPath] = useState<string | undefined>(cachedManagementPath)
   const [panelError, setPanelError] = useState('')
   const projectId = useSessions(state => sessionId === undefined ? undefined : state.byId[sessionId]?.cwd)
   const knowledgeUrl = managementPath === undefined ? undefined : knowledgePanelUrl(managementPath, sessionId, projectId)
   const frame = useRef<HTMLIFrameElement | null>(null)
   const themeFrame = useRef(0)
 
-  const loadManagement = useCallback(async (): Promise<void> => {
-    setPanelState('loading')
+  const loadManagement = useCallback(async (background = false): Promise<void> => {
+    if (!background) setPanelState('loading')
     setPanelError('')
     try {
       const connection = await requestConnection('GET')
@@ -381,7 +384,7 @@ function KnowledgeWorkspace({
   }, [])
 
   useEffect(() => {
-    void loadManagement()
+    void loadManagement(cachedConnectionView !== undefined)
   }, [loadManagement])
 
   const sendTheme = useCallback((): void => {
