@@ -21,6 +21,7 @@ import type { KnowledgeProvider } from './provider.js'
 import { KnowledgeProviderRouter } from './provider-router.js'
 import { registerKnowledgeCatalog, registerKnowledgeRecall } from './recall.js'
 import { KnowledgeHandleCodec } from './retrieval.js'
+import { KnowledgeNoteHandleCodec } from './note-reference-handle.js'
 import { RemoteKnowledgeProvider, RemoteProviderError } from './remote-provider.js'
 import type { AgentLike, RuntimeContextLike } from './runtime.js'
 import { loadServiceSettings, serviceSettingsPath, storeServiceSettings, type KnowledgeServiceSettings } from './service-settings.js'
@@ -92,10 +93,11 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   const writebackSources = new Map<string, { agent: AgentLike; turn: number }>()
   let runWriteback: (agent: AgentLike, turn: number, signal: AbortSignal) => Promise<WritebackStatus>
   const handleCodec = new KnowledgeHandleCodec(randomBytes(32))
+  const noteHandleCodec = new KnowledgeNoteHandleCodec(randomBytes(32))
   const managementEmbedToken = randomBytes(32).toString('base64url')
   registerKnowledgeRecall(runtime, provider, resolved, handleCodec)
   registerKnowledgeCatalog(runtime, provider, resolved)
-  registerKnowledgeTools(runtime, provider, handleCodec)
+  registerKnowledgeTools(runtime, provider, handleCodec, noteHandleCodec)
   runtime.provide?.(KNOWLEDGE_TRACKING_SERVICE, createKnowledgeTrackingService(provider))
 
   let refreshManagementApi = (): void => {}

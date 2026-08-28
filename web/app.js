@@ -810,11 +810,15 @@ function selectDefaultDocument(workspace) {
 async function loadDocumentEditor(workspace, id, signal) {
   const revision = (workspace.view.loadRevision || 0) + 1
   workspace.view.loadRevision = revision
-  const entry = await api(`entries/${encodeURIComponent(id)}`, { signal })
+  const [entry, noteReferences] = await Promise.all([
+    api(`entries/${encodeURIComponent(id)}`, { signal }),
+    api(`entries/${encodeURIComponent(id)}/note-references`, { signal }),
+  ])
   if (workspace.view.loadRevision !== revision || workspace.view.documentId !== id) return false
   workspace.view.mode = 'preview'
   workspace.view.editor = {
     ...entry,
+    noteReferences,
     tagsText: entry.tags.join(', '),
     dirty: false,
     isNew: false,
@@ -834,7 +838,7 @@ function createBlankDocument(workspace, baseId) {
   view.expandedBases.add(base.id)
   view.editor = {
     id: '', knowledgeBaseId: base.id, title: '', body: '', type: 'fact', tags: [], tagsText: '',
-    scope: { kind: 'global' }, confidence: .8, dirty: true, isNew: true, saveState: '新文档',
+    scope: { kind: 'global' }, confidence: .8, noteReferences: [], dirty: true, isNew: true, saveState: '新文档',
   }
   renderShell()
   document.querySelector('.note-title-input')?.focus()
@@ -1640,7 +1644,6 @@ function renderNoteEditor(workspace, editor, base) {
       element('div', { class: 'note-editor-actions' },
         finalized ? badge(DOCUMENT_STATE_LABELS[editor.documentState] || '已结束', 'success') : readOnly ? badge('只读') : null,
         element('span', { class: 'editor-save-status', role: 'status' }, editor.saveState),
-        editable ? actionButton('@ 引用笔记', () => { void openNotePicker(editor, reference => markdownEditorHandle?.insertMarkdown(reference)) }, 'ghost small note-insert-button') : null,
         finalized && !readOnly ? actionButton('重新打开', () => reopenDocument(workspace, editor), 'small') : null,
         !readOnly && !editor.isNew && !finalized ? actionButton('标记结束', () => openFinalizeDocument(workspace, editor), 'small') : null,
         !readOnly && !editor.isNew && !finalized ? actionButton('删除', () => confirmDeleteDocument(workspace, editor), 'ghost small') : null,
@@ -1661,6 +1664,7 @@ function renderNoteEditor(workspace, editor, base) {
         body,
       ),
     ),
+    renderDocumentReferenceBar(workspace, editor, editable),
     element('footer', { class: 'note-inspector' },
       finalized || readOnly ? element('span', { class: 'note-format-hint' }, readOnly ? '知识库已归档 · 只读' : '只读封存 · 重新打开后才能编辑') : element('label', {}, element('span', {}, '类型'), element('select', {
         class: 'note-meta-select', onChange: event => update('type', event.target.value),
@@ -1673,50 +1677,91 @@ function renderNoteEditor(workspace, editor, base) {
   )
 }
 
-async function openNotePicker(editor, insertReference) {
-  try {
-    const search = element('input', {
-      class: 'input', type: 'search', placeholder: '搜索笔记文档或文件', 'aria-label': '搜索可引用笔记',
-    })
-    const results = element('div', { class: 'note-picker-results' })
-    let modal
-    let request = 0
-    const paint = async () => {
-      const current = ++request
-      const query = search.value.trim()
-      const visible = query ? (await api(`notes?q=${encodeURIComponent(query)}&limit=100`)).filter(node => node.kind !== 'folder') : []
+function renderDocumentReferenceBar(workspace, editor, editable) {
+  const references = editor.noteReferences || []
+  return element('section', { class: 'document-reference-bar', 'aria-label': '关联笔记' },
+    element('div', { class: 'document-reference-heading' },
+      element('span', { class: 'document-reference-mark', 'aria-hidden': 'true' }),
+      element('strong', {}, '关联笔记'),
+      element('small', {}, references.length ? `${references.length} 项` : '未关联')),
+    element('div', { class: 'document-reference-list' }, references.length
+      ? references.map(reference => element('span', { class: 'document-reference-chip' },
+        element('button', {
+          type: 'button', class: 'document-reference-open', title: `打开 ${reference.note.name}`,
+          onClick: () => { void openNoteReference(reference.note.id) },
+        }, renderNoteIcon(reference.note), element('span', {}, reference.note.name)),
+        editable ? element('button', {
+          type: 'button', class: 'document-reference-remove', 'aria-label': `移除 ${reference.note.name} 的关联`, title: '移除关联',
+          onClick: () => { void removeDocumentNoteReference(workspace, editor, reference) },
+        }, '×') : null,
+      ))
+      : element('span', { class: 'document-reference-empty' }, editor.isNew ? '保存文档后可以关联笔记或资料文件' : '这篇知识还没有关联笔记')),
+    editable && !editor.isNew ? actionButton('+ 添加', () => { void openDocumentNoteReferencePicker(workspace, editor) }, 'ghost small document-reference-add') : null,
+  )
+}
+
+async function openDocumentNoteReferencePicker(workspace, editor) {
+  const search = element('input', {
+    class: 'input', type: 'search', placeholder: '搜索笔记文档或文件', 'aria-label': '搜索可关联的笔记',
+  })
+  const results = element('div', { class: 'note-picker-results', 'aria-live': 'polite' })
+  let modal
+  let request = 0
+  const paint = async () => {
+    const current = ++request
+    const query = search.value.trim()
+    if (!query) {
+      results.replaceChildren(element('div', { class: 'note-picker-empty' }, '输入名称以搜索可关联的笔记文档和文件。'))
+      return
+    }
+    results.replaceChildren(element('div', { class: 'note-picker-empty' }, '正在搜索…'))
+    try {
+      const linked = new Set((editor.noteReferences || []).map(reference => reference.note.id))
+      const visible = (await api(`notes?q=${encodeURIComponent(query)}&limit=100`)).filter(node => node.kind !== 'folder' && !linked.has(node.id))
       if (current !== request) return
       results.replaceChildren(...(visible.length
         ? visible.map(node => element('button', {
           type: 'button', class: 'note-picker-row',
-          onClick: () => {
-            insertNoteReference(editor, insertReference, node)
-            modal.close(true)
+          onClick: async event => {
+            event.currentTarget.disabled = true
+            try {
+              const reference = await api(`entries/${encodeURIComponent(editor.id)}/note-references`, { method: 'POST', body: { noteId: node.id } })
+              editor.noteReferences = [...(editor.noteReferences || []), reference]
+              modal.close(true)
+              renderShell()
+              showToast('已关联笔记。')
+            } catch (error) {
+              event.currentTarget.disabled = false
+              showToast(friendlyError(error), 'error')
+            }
           },
         },
         renderNoteIcon(node),
         element('span', {}, element('strong', {}, node.name), element('small', {}, `${node.kind === 'document' ? '笔记文档' : formatBytes(node.size)}  ${shortNoteId(node.id)}`))))
-        : [element('div', { class: 'note-picker-empty' }, query ? '没有匹配的笔记文档。' : '输入名称以搜索可引用的笔记文档和文件。')]))
+        : [element('div', { class: 'note-picker-empty' }, '没有匹配的笔记文档或文件。')]))
+    } catch (error) {
+      if (current !== request) return
+      results.replaceChildren(element('div', { class: 'note-picker-empty is-error' }, friendlyError(error)))
     }
-    let timer = 0
-    search.addEventListener('input', () => { window.clearTimeout(timer); timer = window.setTimeout(() => void paint(), 180) })
-    void paint()
-    modal = openSheet({
-      title: '引用笔记文档',
-      description: '引用使用稳定编号，笔记移动或改名后仍然有效。',
-      body: element('div', { class: 'note-picker' }, search, results),
-      cancelLabel: '取消',
-    })
-    search.focus()
-  } catch (error) { showToast(friendlyError(error), 'error') }
+  }
+  let timer = 0
+  search.addEventListener('input', () => { window.clearTimeout(timer); timer = window.setTimeout(() => void paint(), 180) })
+  modal = openSheet({
+    title: '添加关联笔记',
+    description: '关联保存在文档正文之外；笔记移动或改名后仍然有效。',
+    body: element('div', { class: 'note-picker' }, search, results),
+    cancelLabel: '取消',
+  })
+  search.focus()
 }
 
-function insertNoteReference(editor, insertReference, node) {
-  const reference = noteReference(node)
-  if (typeof insertReference !== 'function') return showToast('文档编辑器尚未准备好，请稍后重试。', 'error')
-  insertReference(reference)
-  editor.saveState = '未保存'
-  updateEditorSaveState(editor.saveState)
+async function removeDocumentNoteReference(workspace, editor, reference) {
+  try {
+    await api(`entries/${encodeURIComponent(editor.id)}/note-references/${encodeURIComponent(reference.note.id)}`, { method: 'DELETE' })
+    editor.noteReferences = (editor.noteReferences || []).filter(item => item.note.id !== reference.note.id)
+    if (workspace.view.editor === editor) renderShell()
+    showToast('已移除关联。')
+  } catch (error) { showToast(friendlyError(error), 'error') }
 }
 
 function renderMarkdownPreview(markdown) {
@@ -1748,6 +1793,7 @@ function renderMarkdownPreview(markdown) {
 
 async function openNoteReference(id) {
   try {
+    if (!await saveBeforeLeavingDocument()) return
     const node = await api(`notes/${encodeURIComponent(id)}`)
     state.view = 'notes'
     state.loading = false

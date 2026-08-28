@@ -36,7 +36,8 @@ The browser integration is compiled against the exact official client packages u
 - `local-provider.ts` owns schema migrations, transactions, FTS and token hashes.
 - `remote-provider.ts` is an authenticated, timeout-bounded HTTPS adapter.
 - `management-proxy.ts` lets the embedded console operate on the selected central service while keeping the saved remote token on the DSH server.
-- `notes/domain.ts` owns stable note ids and the Markdown reference contract; `notes/store.ts` owns the independent directory tree, editable notes and opaque file storage.
+- `notes/domain.ts` owns stable note ids and knowledge-to-note relation types; `notes/store.ts` owns the independent directory tree, editable notes and opaque file storage.
+- `note-reference-tools.ts` owns the AI-facing metadata search and structured reference mutations; `note-reference-handle.ts` keeps note selections opaque and session-bound.
 - `extraction.ts` snapshots completed turns, resolves writable mounts and validates model JSON fail-closed.
 - `retrieval.ts` owns mounted-scope authorization, signed handles, ranking and bounded rendering shared by proactive and tool-driven retrieval.
 - `recall.ts` owns the official prompt-assembly knowledge map and bounded first-step automatic retrieval. It also removes durable UI notices and prior recall snapshots before later model requests.
@@ -49,7 +50,7 @@ The browser integration is compiled against the exact official client packages u
 
 ## Data model and consistency
 
-SQLite is authoritative in local mode. Schema version 9 contains:
+SQLite is authoritative in local mode. Schema version 10 contains:
 
 - `knowledge_bases`: independently named destinations with default tags and extraction instructions.
 - `knowledge_mounts`: project/session policy overlays for recall, write mode and tag constraints.
@@ -60,6 +61,7 @@ SQLite is authoritative in local mode. Schema version 9 contains:
 - `extraction_jobs`: one idempotency record per `sessionId:turn`.
 - `api_tokens`: token metadata, permissions and SHA-256 token digests.
 - `knowledge_settings`: the authoritative global conservative/proactive writeback policy shared by local and remote clients.
+- `knowledge_note_references`: the many-to-many relation between knowledge documents and stable note nodes, including user/agent/legacy provenance.
 
 Each active `knowledge_entries` row represents one topic document and is materialized as one real Markdown file under `documents/base-<stable-id>/`. Related findings are Markdown sections or incremental content inside that row/file, rather than sibling one-fact documents. `knowledge_documents` indexes those files for the management console; the entry ID is the document ID, and the human-readable filename is derived from the title plus a stable ID suffix. Mutations complete only after the corresponding file synchronization finishes. SQLite remains authoritative so FTS, version history, direct-write reconciliation and remote providers keep one consistency model.
 
@@ -77,7 +79,7 @@ Notes form a separate hierarchical workspace beside the knowledge database:
 
 `notes.sqlite` stores an adjacency-list tree of folders, editable Markdown documents and uploaded files. Every node has a stable id and parent id; files additionally store media type, size and SHA-256. Text-based uploads expose an explicit editable capability and use the same atomic content update boundary as native note documents; binary uploads remain opaque. `objects/` stores document and file bytes under the stable id, so user-visible names never participate in physical paths. Moving and renaming are metadata-only operations. Folder copies recursively create new stable ids, and folder deletion is recursive. File operations use the shared cross-platform atomic writer and are capped at 64 MiB.
 
-Knowledge Markdown references a non-folder note node with `@[label](note://note_<id>)`. References are many-to-many and are discovered from authoritative knowledge-document content when needed, so note storage has no knowledge-base ownership or lifecycle coupling. Moving or renaming a note does not break references. Normal deletion of a node or ancestor folder is rejected while any descendant is referenced; explicit administrator force-deletion remains an API-only recovery operation. Note content is not parsed, indexed, embedded, recalled or written back by the AI unless a future explicit promotion workflow is added.
+Knowledge-to-note references are explicit many-to-many rows in `knowledge_note_references`; knowledge Markdown contains only knowledge content. Moving or renaming a note does not break a relation because it targets the stable note id. Normal deletion of a node or ancestor folder is rejected while any descendant is referenced; explicit administrator force-deletion remains an API-only recovery operation. Schema 9 upgrades scan valid legacy `note://note_<id>` markers once and backfill `source=legacy` rows without rewriting user-authored Markdown, so old prose remains byte-safe while new mutations use only the relation table. Note content is not parsed, indexed, embedded, recalled or written back by the AI.
 
 The management console never loads the complete document corpus during startup. `/document-index` returns a keyset-paginated metadata projection without `content`; the browser requests one page only for the initially selected knowledge base, loads other bases when their tree nodes expand, and fetches a document body only after selection. Search uses the same bounded index endpoint across the currently visible mounted bases. The original `/documents` endpoint remains available for compatibility and internal reference inspection, but is not part of the console bootstrap path.
 
@@ -111,6 +113,8 @@ Recall combines bounded automatic retrieval with model-driven tools:
 - `knowledge_base_search` matches the current information need against the names, routing descriptions and tags of recall-enabled mounted bases, returning metadata only;
 - `knowledge_search` requires one exact base returned by the discovery tool and returns ranked snippets with signed handles;
 - `knowledge_read` opens an exact result through a signed, session-bound handle and paginates long documents;
+- `knowledge_note_search` searches note names and metadata only after an explicit reference request, returning signed session-bound note handles without note bodies;
+- `knowledge_note_references` lists, adds or removes relation rows using exact knowledge and note handles, re-resolving live mounts and rejecting writes through read-only mounts or finalized documents;
 - content write-back, including an explicit user request to save knowledge, runs only in the separate completed-turn extractor and never in the main Agent loop;
 - remote retrieval is awaited and cancellation propagates through the current turn signal;
 - greetings and empty input skip automatic retrieval, and search failures fail open so the normal answer can continue.
@@ -133,7 +137,7 @@ A local provider always supports its same-origin management console unless `expo
 - JSON request bodies are capped at 1 MiB and every domain value has size/range validation. Only note content upload/download routes use the separate 64 MiB bound; the remote management proxy preserves the same distinction.
 - Hard deletion and token management require admin.
 - Remote URLs require HTTPS except explicit loopback testing.
-- Tool handles are HMAC-signed, bound to the calling session, and re-authorized against live mount, project and tag policy on every read.
+- Knowledge and note tool handles are HMAC-signed and bound to the calling session. Reference mutations re-authorize the knowledge document against live mount, project, tag and write policy; note metadata search never returns file content.
 - The embedded DSH web server has no TLS; LAN/public exposure requires an HTTPS reverse proxy.
 - The management console uses a dedicated same-origin API guarded by Fetch Metadata, origin checks and a non-simple client header; it never makes the public Bearer API implicitly available.
 - Public API routes always require Bearer capabilities. Any user who can access the DSH Web origin can administer the local knowledge base, so public DSH deployments must protect the whole origin with authentication at the reverse proxy.

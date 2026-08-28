@@ -20,6 +20,18 @@ export interface NoteReference {
   documentTitle: string
 }
 
+export type KnowledgeNoteReferenceSource = 'user' | 'agent' | 'legacy'
+
+export interface KnowledgeNoteReference {
+  knowledgeId: string
+  knowledgeBaseId: string
+  documentTitle: string
+  note: NoteNode
+  source: KnowledgeNoteReferenceSource
+  sourceSessionId?: string
+  createdAt: string
+}
+
 export interface NoteListRequest {
   parentId?: string | null
   query?: string

@@ -18,6 +18,8 @@ import {
 } from './retrieval.js'
 import { assertExplicitKnowledgeBaseManagementRequest } from './tool-authorization.js'
 import type { AgentLike, LlmLike, RuntimeContextLike, ToolDefinitionLike, ToolRunContextLike } from './runtime.js'
+import { registerKnowledgeNoteReferenceTools } from './note-reference-tools.js'
+import type { KnowledgeNoteHandleCodec } from './note-reference-handle.js'
 
 const textOutput = {
   schema: { type: 'string' },
@@ -29,12 +31,14 @@ export function registerKnowledgeTools(
   ctx: RuntimeContextLike,
   provider: KnowledgeProvider,
   codec: KnowledgeHandleCodec,
+  noteCodec: KnowledgeNoteHandleCodec,
 ): void {
   ctx.tools.register(searchKnowledgeBaseTool(provider))
   ctx.tools.register(searchTool(provider, codec))
   ctx.tools.register(readTool(provider, codec))
   ctx.tools.register(createKnowledgeBaseTool(provider, ctx.llm))
   ctx.tools.register(updateKnowledgeBaseTool(provider, ctx.llm))
+  registerKnowledgeNoteReferenceTools(ctx, provider, codec, noteCodec)
 }
 
 function searchKnowledgeBaseTool(provider: KnowledgeProvider): ToolDefinitionLike {

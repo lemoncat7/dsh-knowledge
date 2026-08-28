@@ -25,6 +25,7 @@ import type {
   SearchHit,
   SearchRequest,
 } from './domain.js'
+import type { KnowledgeNoteReference, KnowledgeNoteReferenceSource, NoteNode } from './notes/domain.js'
 
 /** Stable storage boundary shared by local SQLite and remote HTTP clients. */
 export interface KnowledgeProvider {
@@ -57,6 +58,16 @@ export interface KnowledgeProvider {
   reopen(id: string, signal?: AbortSignal): Promise<KnowledgeEntry>
   archive(id: string, signal?: AbortSignal): Promise<KnowledgeEntry>
   delete(id: string, signal?: AbortSignal): Promise<void>
+  searchNotes(query: string, limit: number, signal?: AbortSignal): Promise<NoteNode[]>
+  listKnowledgeNoteReferences(knowledgeId: string, signal?: AbortSignal): Promise<KnowledgeNoteReference[]>
+  addKnowledgeNoteReference(
+    knowledgeId: string,
+    noteId: string,
+    source: KnowledgeNoteReferenceSource,
+    sourceSessionId?: string,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeNoteReference>
+  deleteKnowledgeNoteReference(knowledgeId: string, noteId: string, signal?: AbortSignal): Promise<void>
   propose(proposal: CandidateProposal, sourceKey?: string, signal?: AbortSignal): Promise<KnowledgeCandidate>
   writeDirect(proposal: CandidateProposal, sourceKey?: string, signal?: AbortSignal): Promise<DirectWriteResult>
   listCandidates(status: 'pending' | 'approved' | 'rejected', limit: number, signal?: AbortSignal): Promise<KnowledgeCandidate[]>

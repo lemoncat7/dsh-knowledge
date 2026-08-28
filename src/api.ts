@@ -59,7 +59,7 @@ async function dispatch(
   const method = req.method ?? 'GET'
 
   if (method === 'GET' && segments[0] === 'health') {
-    return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 9 })
+    return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 10 })
   }
 
   const actor = options.authMode === 'same-origin' ? authenticateSameOrigin(req) : authenticateBearer(provider, req)
@@ -137,11 +137,13 @@ async function dispatch(
     }
     if (id !== undefined && method === 'DELETE' && segments.length === 2) {
       requirePermission(actor.permissions, 'admin')
+      const noteIds = provider.notes.subtree(id).filter(node => node.kind !== 'folder').map(node => node.id)
       const references = await noteReferencesForSubtree(provider, id)
       if (references.length > 0 && url.searchParams.get('force') !== 'true') {
         throw httpError(409, `note content is referenced by ${references.length} knowledge document(s)`)
       }
       await provider.notes.delete(id)
+      provider.deleteNoteReferences(noteIds)
       return sendJson(res, 204, undefined)
     }
   }
@@ -361,6 +363,27 @@ async function dispatch(
     if (id !== undefined && method === 'GET' && segments[2] === 'versions' && segments.length === 3) {
       requirePermission(actor.permissions, 'read')
       return sendJson(res, 200, await provider.versions(id))
+    }
+    if (id !== undefined && method === 'GET' && segments[2] === 'note-references' && segments.length === 3) {
+      requirePermission(actor.permissions, 'read')
+      return sendJson(res, 200, await provider.listKnowledgeNoteReferences(id))
+    }
+    if (id !== undefined && method === 'POST' && segments[2] === 'note-references' && segments.length === 3) {
+      requirePermission(actor.permissions, 'write')
+      const body = await readObject(req)
+      const source = body.source === 'agent' ? 'agent' : 'user'
+      const sourceSessionId = source === 'agent' ? optionalString(body.sourceSessionId) : undefined
+      return sendJson(res, 201, await provider.addKnowledgeNoteReference(
+        id,
+        requiredString(body.noteId, 'noteId'),
+        source,
+        sourceSessionId,
+      ))
+    }
+    if (id !== undefined && method === 'DELETE' && segments[2] === 'note-references' && segments[3] !== undefined && segments.length === 4) {
+      requirePermission(actor.permissions, 'write')
+      await provider.deleteKnowledgeNoteReference(id, segments[3])
+      return sendJson(res, 204, undefined)
     }
     if (id !== undefined && method === 'PUT' && segments.length === 2) {
       requirePermission(actor.permissions, 'write')
@@ -619,8 +642,9 @@ async function noteReferences(provider: LocalKnowledgeProvider, noteId: string):
   const node = provider.notes.get(noteId)
   if (node === undefined) throw httpError(404, `note node "${noteId}" was not found`)
   if (node.kind === 'folder') return []
+  const structured = provider.noteReferencesForNotes([noteId])
   const marker = `note://${noteId}`
-  return (await provider.listDocuments())
+  const legacy = (await provider.listDocuments())
     .filter(document => document.content.includes(marker))
     .map(document => ({
       noteId,
@@ -628,13 +652,30 @@ async function noteReferences(provider: LocalKnowledgeProvider, noteId: string):
       documentId: document.id,
       documentTitle: document.title,
     }))
+  return deduplicateNoteReferences([...structured, ...legacy])
 }
 
 async function noteReferencesForSubtree(provider: LocalKnowledgeProvider, noteId: string): Promise<NoteReference[]> {
-  const references = await Promise.all(provider.notes.subtree(noteId)
-    .filter(node => node.kind !== 'folder')
-    .map(node => noteReferences(provider, node.id)))
-  return references.flat()
+  const noteIds = provider.notes.subtree(noteId).filter(node => node.kind !== 'folder').map(node => node.id)
+  if (noteIds.length === 0) return []
+  const structured = provider.noteReferencesForNotes(noteIds)
+  const noteIdSet = new Set(noteIds)
+  const legacy = (await provider.listDocuments()).flatMap(document => {
+    const references = document.content.match(/note:\/\/(note_[a-f0-9]{32})/giu) ?? []
+    return [...new Set(references.map(value => value.slice('note://'.length).toLocaleLowerCase()))]
+      .filter(id => noteIdSet.has(id))
+      .map(id => ({
+        noteId: id,
+        knowledgeBaseId: document.knowledgeBaseId,
+        documentId: document.id,
+        documentTitle: document.title,
+      }))
+  })
+  return deduplicateNoteReferences([...structured, ...legacy])
+}
+
+function deduplicateNoteReferences(references: NoteReference[]): NoteReference[] {
+  return [...new Map(references.map(reference => [`${reference.documentId}\u0000${reference.noteId}`, reference])).values()]
 }
 
 function parseDraft(value: unknown): KnowledgeDraft {

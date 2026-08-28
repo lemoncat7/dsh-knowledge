@@ -1,6 +1,7 @@
 import type { AgentLike, MessageLike } from './runtime.js'
 
 export type KnowledgeBaseManagementOperation = 'create' | 'update'
+export type KnowledgeNoteReferenceOperation = 'inspect' | 'add' | 'remove'
 
 /**
  * Knowledge-base management is a persistent control-plane mutation. Tool
@@ -26,6 +27,17 @@ export function explicitlyRequestsKnowledgeBaseManagement(
   const clauses = text.split(/[。！？!?；;\n，,]+/u).map(clause => clause.trim()).filter(Boolean)
   return clauses.some(clause => !deniesKnowledgeBaseMutation(clause, operation)
     && clauseRequestsKnowledgeBaseManagement(clause, operation))
+}
+
+export function assertExplicitKnowledgeNoteReferenceRequest(
+  agent: AgentLike,
+  operation: KnowledgeNoteReferenceOperation,
+): void {
+  const text = currentDirectUserText(agent).normalize('NFKC').toLocaleLowerCase('zh-CN').trim()
+  const clauses = text.split(/[。！？!?；;\n，,]+/u).map(clause => clause.trim()).filter(Boolean)
+  if (!clauses.some(clause => clauseRequestsKnowledgeNoteReference(clause, operation))) {
+    throw new Error(`knowledge note reference ${operation} requires an explicit request in the current direct user message`)
+  }
 }
 
 function clauseRequestsKnowledgeBaseManagement(
@@ -60,6 +72,17 @@ function currentDirectUserText(agent: AgentLike): string {
     .filter(block => block.type === 'text' && typeof block.text === 'string')
     .map(block => block.text ?? '')
     .join('\n')
+}
+
+function clauseRequestsKnowledgeNoteReference(text: string, operation: KnowledgeNoteReferenceOperation): boolean {
+  const subject = /(?:知识|知識|knowledge).{0,28}(?:笔记|筆記|note)|(?:笔记|筆記|note).{0,28}(?:知识|知識|knowledge)/iu.test(text)
+  if (!subject) return false
+  if (operation === 'inspect') return /(?:引用|关联|關聯|连接|連接|link|reference|associate|attach)/iu.test(text)
+  if (operation === 'add') {
+    if (/(?:不要|别|取消|移除|删除|解除|do\s+not|don't|remove|delete|detach|unlink).{0,20}(?:引用|关联|link|reference|attach)/iu.test(text)) return false
+    return /(?:引用|关联|關聯|连接|連接|绑定|綁定|加上|添加|link|reference|associate|attach)/iu.test(text)
+  }
+  return /(?:取消|移除|删除|解除|不再).{0,20}(?:引用|关联|關聯|连接|連接|绑定|link|reference|associate|attach)|(?:remove|delete|detach|unlink).{0,24}(?:note|reference|link)/iu.test(text)
 }
 
 function deniesKnowledgeBaseMutation(text: string, operation: KnowledgeBaseManagementOperation): boolean {

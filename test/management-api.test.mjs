@@ -74,10 +74,20 @@ test('same-origin management API controls public access and deletes revoked toke
     method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
     body: JSON.stringify({ draft: {
       knowledgeBaseId: 'default', title: '笔记引用测试',
-      body: `依据 @[部署笔记.md](note://${note.id})。`,
+      body: '依据独立关联的原始部署资料。',
       type: 'fact', tags: ['note'], scope: { kind: 'global' }, confidence: 0.9,
     } }),
   })).json()
+  const linkedResponse = await fetch(`${base}/entries/${entry.id}/note-references`, {
+    method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ noteId: note.id }),
+  })
+  assert.equal(linkedResponse.status, 201)
+  const linked = await linkedResponse.json()
+  assert.equal(linked.note.id, note.id)
+  assert.equal(linked.source, 'user')
+  assert.equal((await (await fetch(`${base}/entries/${entry.id}/note-references`, { headers })).json())[0].note.id, note.id)
+  assert.doesNotMatch((await (await fetch(`${base}/entries/${entry.id}`, { headers })).json()).body, /note:\/\//)
   const documentIndex = await (await fetch(`${base}/document-index?knowledgeBaseId=default&limit=1`, { headers })).json()
   assert.equal(documentIndex.total, 1)
   assert.equal(documentIndex.items[0].id, entry.id)
@@ -85,7 +95,8 @@ test('same-origin management API controls public access and deletes revoked toke
   const references = await (await fetch(`${base}/notes/${folder.id}/references`, { headers })).json()
   assert.deepEqual(references.map(item => item.documentId), [entry.id])
   assert.equal((await fetch(`${base}/notes/${folder.id}`, { method: 'DELETE', headers })).status, 409)
-  assert.equal((await fetch(`${base}/entries/${entry.id}`, { method: 'DELETE', headers })).status, 204)
+  assert.equal((await fetch(`${base}/entries/${entry.id}/note-references/${note.id}`, { method: 'DELETE', headers })).status, 204)
+  assert.deepEqual(await (await fetch(`${base}/entries/${entry.id}/note-references`, { headers })).json(), [])
   assert.equal((await fetch(`${base}/notes/${folder.id}`, { method: 'DELETE', headers })).status, 204)
 
   assert.equal((await (await fetch(`${base}/settings`, { headers })).json()).writebackPolicy, 'conservative')

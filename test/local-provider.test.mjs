@@ -666,3 +666,89 @@ test('API tokens are hashed, permissioned, and revocable', async (t) => {
   assert.equal(provider.listApiTokens().some(token => token.id === created.record.id), false)
   assert.throws(() => provider.deleteApiToken(actor.id), /only revoked/)
 })
+
+test('knowledge documents keep stable structured references to note documents', async (t) => {
+  const provider = await fixture(t)
+  const note = await provider.notes.createDocument('部署记录', null, '# 部署记录\n\n原始资料不进入知识正文。')
+  const file = await provider.notes.upload({
+    name: '架构图.png', mediaType: 'image/png', content: Buffer.from('image bytes'),
+  })
+  const folder = await provider.notes.createFolder('资料目录')
+  const entry = await provider.create({
+    ...globalDraft,
+    title: '部署知识摘要',
+    body: '部署前需要核对原始记录和架构图。',
+  })
+
+  assert.deepEqual((await provider.searchNotes('部署', 10)).map(item => item.id), [note.id])
+  assert.deepEqual(await provider.searchNotes('不存在', 10), [])
+  await assert.rejects(
+    () => provider.addKnowledgeNoteReference(entry.id, folder.id, 'user'),
+    /can reference note documents or files, not folders/,
+  )
+
+  const first = await provider.addKnowledgeNoteReference(entry.id, note.id, 'user')
+  const duplicate = await provider.addKnowledgeNoteReference(entry.id, note.id, 'agent', 'session-duplicate')
+  await provider.addKnowledgeNoteReference(entry.id, file.id, 'agent', 'session-1')
+  assert.equal(first.note.id, note.id)
+  assert.equal(duplicate.source, 'user')
+  assert.equal((await provider.listKnowledgeNoteReferences(entry.id)).length, 2)
+  assert.deepEqual(
+    new Set(provider.noteReferencesForNotes([note.id, file.id]).map(item => `${item.documentId}:${item.noteId}`)),
+    new Set([`${entry.id}:${note.id}`, `${entry.id}:${file.id}`]),
+  )
+  assert.doesNotMatch((await provider.get(entry.id))?.body || '', /note:\/\//)
+
+  await provider.deleteKnowledgeNoteReference(entry.id, note.id)
+  assert.deepEqual((await provider.listKnowledgeNoteReferences(entry.id)).map(item => item.note.id), [file.id])
+  await assert.rejects(
+    () => provider.deleteKnowledgeNoteReference(entry.id, note.id),
+    /knowledge note reference.*was not found/,
+  )
+
+  await provider.finalize(entry.id, 'complete')
+  await assert.rejects(
+    () => provider.addKnowledgeNoteReference(entry.id, note.id, 'user'),
+    /is finalized as collection complete/,
+  )
+  await assert.rejects(
+    () => provider.deleteKnowledgeNoteReference(entry.id, file.id),
+    /is finalized as collection complete/,
+  )
+  await provider.reopen(entry.id)
+  await provider.archive(entry.id)
+  await assert.rejects(
+    () => provider.addKnowledgeNoteReference(entry.id, note.id, 'user'),
+    /archived knowledge documents cannot change note references/,
+  )
+  await provider.delete(entry.id)
+  assert.deepEqual(provider.noteReferencesForNotes([file.id]), [])
+})
+
+test('schema 9 migration backfills legacy note links without rewriting knowledge bodies', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-knowledge-note-reference-migration-'))
+  const path = join(root, 'knowledge.sqlite')
+  let provider = new LocalKnowledgeProvider(path)
+  const note = await provider.notes.createDocument('旧引用', null, '# 旧资料')
+  const entry = await provider.create({
+    ...globalDraft,
+    title: '旧格式引用',
+    body: `兼容保留 @[旧引用.md](note://${note.id})。`,
+  })
+  await provider.close()
+
+  const database = new DatabaseSync(path)
+  database.exec('DROP TABLE knowledge_note_references; PRAGMA user_version = 9;')
+  database.close()
+  provider = new LocalKnowledgeProvider(path)
+  t.after(async () => {
+    await provider.close()
+    await rm(root, { recursive: true, force: true })
+  })
+
+  const references = await provider.listKnowledgeNoteReferences(entry.id)
+  assert.equal(references.length, 1)
+  assert.equal(references[0].note.id, note.id)
+  assert.equal(references[0].source, 'legacy')
+  assert.match((await provider.get(entry.id))?.body || '', new RegExp(`note://${note.id}`))
+})

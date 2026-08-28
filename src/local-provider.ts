@@ -51,6 +51,12 @@ import { KnowledgeDocumentStore } from './documents/store.js'
 import { enqueueDocumentProjection } from './documents/projection-queue.js'
 import { mergeKnowledgeBodies } from './knowledge-merge.js'
 import { NoteStore } from './notes/store.js'
+import {
+  type KnowledgeNoteReference,
+  type KnowledgeNoteReferenceSource,
+  type NoteNode,
+  type NoteReference,
+} from './notes/domain.js'
 
 type SqlRow = Record<string, unknown>
 
@@ -95,7 +101,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   private migrate(): void {
     let version = Number((this.db.prepare('PRAGMA user_version').get() as SqlRow).user_version ?? 0)
-    if (version > 9) throw new Error(`knowledge database schema ${version} is newer than this plugin supports`)
+    if (version > 10) throw new Error(`knowledge database schema ${version} is newer than this plugin supports`)
     if (version === 0) this.db.exec(`
       BEGIN IMMEDIATE;
       CREATE TABLE knowledge_entries (
@@ -286,10 +292,49 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       PRAGMA user_version = 9;
       COMMIT;
     `)
+    if (version <= 8) version = 9
+    if (version === 9) {
+      this.db.exec('BEGIN IMMEDIATE')
+      try {
+        this.db.exec(`
+          CREATE TABLE knowledge_note_references (
+            knowledge_id TEXT NOT NULL REFERENCES knowledge_entries(id) ON DELETE CASCADE,
+            note_id TEXT NOT NULL,
+            source TEXT NOT NULL CHECK(source IN ('user','agent','legacy')),
+            source_session_id TEXT,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(knowledge_id, note_id)
+          );
+          CREATE INDEX knowledge_note_references_note ON knowledge_note_references(note_id, created_at DESC);
+        `)
+        this.backfillLegacyNoteReferences()
+        this.db.exec('PRAGMA user_version = 10; COMMIT')
+      } catch (error) {
+        this.db.exec('ROLLBACK')
+        throw error
+      }
+    }
     // Alpha v2 used a migration note as the default base's routing description.
     // Clear only that exact placeholder so existing user-authored descriptions stay untouched.
     this.db.prepare("UPDATE knowledge_bases SET description='' WHERE id=? AND description=?")
       .run(DEFAULT_KNOWLEDGE_BASE_ID, '由 0.2 版本迁移的知识。')
+  }
+
+  private backfillLegacyNoteReferences(): void {
+    const insert = this.db.prepare(`
+      INSERT OR IGNORE INTO knowledge_note_references(knowledge_id,note_id,source,source_session_id,created_at)
+      VALUES(?,?,'legacy',NULL,?)
+    `)
+    const timestamp = nowIso()
+    const rows = this.db.prepare("SELECT id,body FROM knowledge_entries WHERE body LIKE '%note://note_%'").all() as SqlRow[]
+    for (const row of rows) {
+      const noteIds = String(row.body).match(/note:\/\/(note_[a-f0-9]{32})/giu) ?? []
+      for (const reference of new Set(noteIds)) {
+        const noteId = reference.slice('note://'.length).toLocaleLowerCase()
+        const note = this.notes.get(noteId)
+        if (note !== undefined && note.kind !== 'folder') insert.run(String(row.id), note.id, timestamp)
+      }
+    }
   }
 
   private assertOpen(): void {
@@ -974,6 +1019,105 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       if (result.changes === 0) throw notFound('knowledge entry', id)
     })
     if (current !== undefined) await this.syncKnowledgeDocumentsQueued(current.knowledgeBaseId)
+  }
+
+  async searchNotes(query: string, limit: number): Promise<NoteNode[]> {
+    this.assertOpen()
+    const value = query.trim()
+    if (value.length === 0) return []
+    const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 100))
+    return this.notes.list({ query: value, limit: Math.min(500, boundedLimit * 3) })
+      .filter(node => node.kind !== 'folder')
+      .slice(0, boundedLimit)
+  }
+
+  async listKnowledgeNoteReferences(knowledgeId: string): Promise<KnowledgeNoteReference[]> {
+    this.assertOpen()
+    const entry = await this.get(knowledgeId)
+    if (entry === undefined) throw notFound('knowledge entry', knowledgeId)
+    const rows = this.db.prepare(`
+      SELECT knowledge_id,note_id,source,source_session_id,created_at
+      FROM knowledge_note_references
+      WHERE knowledge_id=?
+      ORDER BY created_at,note_id
+    `).all(knowledgeId) as SqlRow[]
+    return rows.flatMap(row => {
+      const note = this.notes.get(String(row.note_id))
+      if (note === undefined || note.kind === 'folder') return []
+      return [{
+        knowledgeId: entry.id,
+        knowledgeBaseId: entry.knowledgeBaseId,
+        documentTitle: entry.title,
+        note,
+        source: String(row.source) as KnowledgeNoteReferenceSource,
+        ...row.source_session_id == null ? {} : { sourceSessionId: String(row.source_session_id) },
+        createdAt: String(row.created_at),
+      }]
+    })
+  }
+
+  async addKnowledgeNoteReference(
+    knowledgeId: string,
+    noteId: string,
+    source: KnowledgeNoteReferenceSource,
+    sourceSessionId?: string,
+  ): Promise<KnowledgeNoteReference> {
+    this.assertOpen()
+    const entry = await this.get(knowledgeId)
+    if (entry === undefined) throw notFound('knowledge entry', knowledgeId)
+    if (entry.status !== 'active') throw conflict('archived knowledge documents cannot change note references')
+    if (entry.documentState !== 'open') throw finalizedConflict(entry)
+    const note = this.notes.get(noteId)
+    if (note === undefined) throw notFound('note node', noteId)
+    if (note.kind === 'folder') throw inputError('knowledge documents can reference note documents or files, not folders')
+    if (source !== 'user' && source !== 'agent' && source !== 'legacy') throw inputError('invalid knowledge note reference source')
+    const sessionId = sourceSessionId?.trim() || undefined
+    if (sessionId !== undefined && sessionId.length > 200) throw inputError('reference source session id is too long')
+    const createdAt = nowIso()
+    this.db.prepare(`
+      INSERT OR IGNORE INTO knowledge_note_references(knowledge_id,note_id,source,source_session_id,created_at)
+      VALUES(?,?,?,?,?)
+    `).run(entry.id, note.id, source, sessionId ?? null, createdAt)
+    const reference = (await this.listKnowledgeNoteReferences(entry.id)).find(item => item.note.id === note.id)
+    if (reference === undefined) throw new Error('knowledge note reference was not persisted')
+    return reference
+  }
+
+  async deleteKnowledgeNoteReference(knowledgeId: string, noteId: string): Promise<void> {
+    this.assertOpen()
+    const entry = await this.get(knowledgeId)
+    if (entry === undefined) throw notFound('knowledge entry', knowledgeId)
+    if (entry.status !== 'active') throw conflict('archived knowledge documents cannot change note references')
+    if (entry.documentState !== 'open') throw finalizedConflict(entry)
+    const result = this.db.prepare('DELETE FROM knowledge_note_references WHERE knowledge_id=? AND note_id=?').run(knowledgeId, noteId)
+    if (result.changes === 0) throw notFound('knowledge note reference', `${knowledgeId}/${noteId}`)
+  }
+
+  noteReferencesForNotes(noteIds: string[]): NoteReference[] {
+    this.assertOpen()
+    const ids = [...new Set(noteIds)]
+    if (ids.length === 0) return []
+    const placeholders = ids.map(() => '?').join(',')
+    return (this.db.prepare(`
+      SELECT r.note_id,e.knowledge_base_id,e.id AS document_id,e.title AS document_title
+      FROM knowledge_note_references r
+      JOIN knowledge_entries e ON e.id=r.knowledge_id
+      WHERE r.note_id IN (${placeholders})
+      ORDER BY e.updated_at DESC,e.id
+    `).all(...ids) as SqlRow[]).map(row => ({
+      noteId: String(row.note_id),
+      knowledgeBaseId: String(row.knowledge_base_id),
+      documentId: String(row.document_id),
+      documentTitle: String(row.document_title),
+    }))
+  }
+
+  deleteNoteReferences(noteIds: string[]): void {
+    this.assertOpen()
+    const ids = [...new Set(noteIds)]
+    if (ids.length === 0) return
+    const placeholders = ids.map(() => '?').join(',')
+    this.db.prepare(`DELETE FROM knowledge_note_references WHERE note_id IN (${placeholders})`).run(...ids)
   }
 
   async propose(input: CandidateProposal, sourceKey?: string): Promise<KnowledgeCandidate> {
@@ -1782,6 +1926,10 @@ function notFound(kind: string, id: string): Error {
 
 function conflict(message: string): Error {
   return Object.assign(new Error(message), { code: 'CONFLICT' })
+}
+
+function inputError(message: string): Error {
+  return Object.assign(new Error(message), { code: 'BAD_REQUEST', status: 400 })
 }
 
 function finalizedConflict(entry: Pick<KnowledgeEntry, 'id' | 'title' | 'documentState'>): Error {

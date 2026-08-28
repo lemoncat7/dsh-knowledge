@@ -27,6 +27,7 @@ import type {
 } from './domain.js'
 import type { KnowledgeProvider } from './provider.js'
 import { normalizeRemoteKnowledgeUrl } from './remote-url.js'
+import type { KnowledgeNoteReference, KnowledgeNoteReferenceSource, NoteNode } from './notes/domain.js'
 
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 
@@ -191,6 +192,33 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
 
   async delete(id: string, signal?: AbortSignal): Promise<void> {
     await this.request<unknown>(`entries/${encodeURIComponent(id)}`, { method: 'DELETE', signal })
+  }
+
+  async searchNotes(query: string, limit: number, signal?: AbortSignal): Promise<NoteNode[]> {
+    const params = new URLSearchParams({ q: query, limit: String(limit) })
+    return this.request<NoteNode[]>(`notes?${params}`, { signal })
+  }
+
+  async listKnowledgeNoteReferences(knowledgeId: string, signal?: AbortSignal): Promise<KnowledgeNoteReference[]> {
+    return this.request<KnowledgeNoteReference[]>(`entries/${encodeURIComponent(knowledgeId)}/note-references`, { signal })
+  }
+
+  async addKnowledgeNoteReference(
+    knowledgeId: string,
+    noteId: string,
+    source: KnowledgeNoteReferenceSource,
+    sourceSessionId?: string,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeNoteReference> {
+    return this.request<KnowledgeNoteReference>(`entries/${encodeURIComponent(knowledgeId)}/note-references`, {
+      method: 'POST', body: { noteId, source, sourceSessionId }, signal,
+    })
+  }
+
+  async deleteKnowledgeNoteReference(knowledgeId: string, noteId: string, signal?: AbortSignal): Promise<void> {
+    await this.request<unknown>(`entries/${encodeURIComponent(knowledgeId)}/note-references/${encodeURIComponent(noteId)}`, {
+      method: 'DELETE', signal,
+    })
   }
 
   async propose(proposal: CandidateProposal, sourceKey?: string, signal?: AbortSignal): Promise<KnowledgeCandidate> {
