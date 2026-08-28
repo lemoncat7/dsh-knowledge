@@ -3553,7 +3553,7 @@ function openTokenCreator() {
     return { permission, input, node: element('label', { class: 'check-option' }, input, permission) }
   })
   const body = element('form', { class: 'form-grid' }, name.wrapper,
-    element('div', { class: 'field span-2' }, element('label', {}, '权限'), element('div', { class: 'check-grid' }, checkboxes.map(item => item.node)), element('span', { class: 'field-hint' }, '普通客户端建议只授予 read + propose。')))
+    element('div', { class: 'field span-2' }, element('label', {}, '权限'), element('div', { class: 'check-grid' }, checkboxes.map(item => item.node)), element('span', { class: 'field-hint' }, '普通客户端建议只授予 read + propose。write 是当前中央服务的全局写权限，同时允许直接写入、管理知识库、挂载和笔记；仅在确实需要时授予。')))
   name.wrapper.classList.add('span-2')
   openModal({ title: '创建客户端令牌', description: '原始令牌只会在创建成功后显示一次。', body, primaryLabel: '创建令牌', onPrimary: async () => {
     if (!body.reportValidity()) return false

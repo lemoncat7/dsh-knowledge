@@ -42,6 +42,10 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
         yield { type: 'text-delta', text: JSON.stringify({ candidates }) }
         yield { type: 'finish', reason: { kind: 'stop' } }
       },
+      async resolveModelInfo(provider, model) {
+        if (provider === 'missing') throw new Error('provider was not found')
+        return { provider, id: model, name: model }
+      },
     },
     tools: {
       register(definition) {
@@ -176,6 +180,22 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
     'knowledge_search',
   ])
   const toolExec = { agent: { session }, signal: new AbortController().signal }
+  await assert.rejects(
+    tools.get('knowledge_base_create').execute({ name: 'Unauthorized base' }, toolExec),
+    /requires an explicit request in the current direct user message/,
+  )
+  session.events.push(
+    { type: 'turn/start', seq: session.events.length, data: { turn: 2 } },
+    { type: 'user/message', seq: session.events.length + 1, data: {
+      id: 'create-base', role: 'user', content: [{ type: 'text', text: '请创建一个工具管理知识库。' }], source: { kind: 'user' },
+    } },
+  )
+  await assert.rejects(
+    tools.get('knowledge_base_create').execute({
+      name: 'Invalid model base', writebackProvider: 'missing', writebackModel: 'unknown-model',
+    }, toolExec),
+    /write-back model missing\/unknown-model is unavailable/,
+  )
   const created = JSON.parse(await tools.get('knowledge_base_create').execute({
     name: 'Tool-managed base',
     description: 'Reusable knowledge managed through DSH tools.',
@@ -187,6 +207,19 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
   assert.equal(created.mountsChanged, false)
   assert.deepEqual(created.knowledgeBase.defaultTags, ['dsh', 'tools'])
 
+  await assert.rejects(
+    tools.get('knowledge_base_update').execute({ base: created.knowledgeBase.id, name: 'Unauthorized update' }, {
+      agent: { session: { ...session, events: session.events.slice(0, 4) } },
+      signal: new AbortController().signal,
+    }),
+    /requires an explicit request in the current direct user message/,
+  )
+  session.events.push(
+    { type: 'turn/start', seq: session.events.length, data: { turn: 3 } },
+    { type: 'user/message', seq: session.events.length + 1, data: {
+      id: 'update-base', role: 'user', content: [{ type: 'text', text: '把这个知识库修改为新的名称和描述。' }], source: { kind: 'user' },
+    } },
+  )
   const updated = JSON.parse(await tools.get('knowledge_base_update').execute({
     base: created.knowledgeBase.id,
     name: 'Updated tool-managed base',
@@ -341,76 +374,6 @@ test('content write-back is not exposed to the main agent tool surface', async (
   assert.deepEqual([...tools.keys()].sort(), [
     'knowledge_base_create', 'knowledge_base_search', 'knowledge_base_update', 'knowledge_read', 'knowledge_search',
   ])
-  return
-
-  const observer = new LocalKnowledgeProvider(databasePath)
-  t.after(() => observer.close())
-  await observer.patchKnowledgeBase('default', { name: 'GitHub 项目收藏', description: '收集 GitHub 项目资料。' })
-  await observer.upsertMount({
-    targetKind: 'project', targetId: '/workspace/github', knowledgeBaseId: 'default',
-    enabled: true, recallEnabled: true, writeMode: 'direct', includeTags: ['github'], excludeTags: ['temporary'], extractionInstructions: '',
-  })
-  const session = { id: 'tool-session', header: { cwd: '/workspace/github' }, events: [
-    { type: 'turn/start', seq: 0, data: { turn: 3 } },
-    { type: 'user/message', seq: 1, data: {
-      id: 'explicit-write', role: 'user', content: [{ type: 'text', text: '请把这项内容写入知识库。' }], source: { kind: 'user' },
-    } },
-  ] }
-  const exec = { agent: { session }, signal: new AbortController().signal }
-  const created = JSON.parse(await tools.get('knowledge_write').execute({
-    base: 'GitHub 项目收藏', title: 'example/repository', type: 'fact', scope: 'project',
-    tags: ['repository', 'temporary'], content: '仓库地址：https://github.com/example/repository\n\n这是一个可复用的项目调研结论。',
-  }, exec))
-  assert.equal(created.storage, 'local')
-  assert.equal(created.outcome, 'created')
-  const first = (await observer.list({ knowledgeBaseId: 'default', status: 'active', limit: 10 })).items[0]
-  assert.deepEqual(first.tags, ['github', 'repository'])
-  assert.deepEqual(first.scope, { kind: 'project', id: '/workspace/github' })
-
-  const search = await tools.get('knowledge_search').execute({ query: 'example repository', base: 'default' }, exec)
-  const handle = /handle: (k1\.[^\s]+)/.exec(search)?.[1]
-  assert.ok(handle)
-  const updated = JSON.parse(await tools.get('knowledge_write').execute({
-    handle, content: '适合在后续选型时作为候选项目参考。', tags: ['selection'],
-  }, exec))
-  assert.equal(updated.outcome, 'merged')
-  const merged = await observer.get(first.id)
-  assert.match(merged.body, /后续选型/)
-  assert.deepEqual(merged.tags, ['github', 'repository', 'selection'])
-
-  await assert.rejects(
-    tools.get('knowledge_write').execute({ base: 'not-mounted', title: 'x', type: 'fact', content: 'x' }, exec),
-    /not mounted for write-back/,
-  )
-
-  session.events.push(
-    { type: 'turn/start', seq: session.events.length, data: { turn: 4 } },
-    { type: 'user/message', seq: session.events.length + 1, data: {
-      id: 'normal-request', role: 'user', content: [{ type: 'text', text: '继续分析这个仓库的问题。' }], source: { kind: 'user' },
-    } },
-  )
-  await assert.rejects(
-    tools.get('knowledge_write').execute({
-      base: 'GitHub 项目收藏', title: 'forbidden/automatic-write', type: 'fact',
-      content: '普通回答中的内容不允许由主模型在回答过程中主动写入知识库。',
-    }, exec),
-    /requires an explicit knowledge-base write request/,
-  )
-
-  session.events.push(
-    { type: 'turn/start', seq: session.events.length, data: { turn: 5 } },
-    { type: 'user/message', seq: session.events.length + 1, data: {
-      id: 'negative-write', role: 'user', content: [{ type: 'text', text: '这次不要写入知识库，只回答问题。' }], source: { kind: 'user' },
-    } },
-  )
-  await assert.rejects(
-    tools.get('knowledge_write').execute({
-      base: 'GitHub 项目收藏', title: 'forbidden/negative-write', type: 'fact',
-      content: '用户明确禁止写入时，知识库工具必须拒绝执行。',
-    }, exec),
-    /requires an explicit knowledge-base write request/,
-  )
-
 })
 
 test('direct write approves all non-conflicts and skips unmounted sessions', async (t) => {
@@ -452,6 +415,12 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
             body: 'This may be correct but still needs review.', type: 'fact', tags: ['policy'],
             scope: { kind: 'global' }, confidence: 0.74,
             retention: { durable: true, evidence: 'inferred' }, reason: 'Inferred reusable detail.',
+          },
+          {
+            action: 'create', knowledgeBaseId: 'default', title: 'Credential-bearing setup',
+            body: 'Use Authorization: Bearer abcdefghijklmnopqrstuvwxyz for the service.', type: 'procedure', tags: ['policy'],
+            scope: { kind: 'global' }, confidence: 0.99,
+            retention: { durable: true, evidence: 'explicit' }, reason: 'Explicitly supplied setup.',
           },
           {
             action: 'conflict', knowledgeBaseId: 'default', targetId, title: 'Conflicting policy',
@@ -533,9 +502,11 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
   assert.deepEqual(streamPolicies, ['proactive', 'proactive'])
   assert.equal((await observer.listCandidates('approved', 10)).length, 2)
   const pending = await observer.listCandidates('pending', 10)
-  assert.equal(pending.length, 2)
+  assert.equal(pending.length, 3)
   assert.ok(pending.some(candidate => candidate.action === 'conflict'))
   assert.ok(pending.some(candidate => candidate.draft.source?.evidence === 'inferred'))
+  assert.ok(pending.some(candidate => candidate.draft.title === 'Credential-bearing setup'
+    && /credential-like content requires manual review/.test(candidate.reason)))
   assert.equal((await observer.list({ status: 'active', limit: 10 })).items.length, 2)
   const updatedExisting = await observer.get(existing.id)
   assert.equal(updatedExisting.type, 'decision')

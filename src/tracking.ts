@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { containsSensitiveContent } from './content-safety.js'
 import { normalizeTags, type CandidateProposal, type KnowledgeEntry, type ResolvedKnowledgeMount } from './domain.js'
 import type { KnowledgeProvider } from './provider.js'
 import { resolveKnowledgeMounts } from './retrieval.js'
@@ -65,7 +66,7 @@ export function createKnowledgeTrackingService(provider: KnowledgeProvider): Kno
         reason: `伙伴挂念出现了经过校验的新变化：${compact(input.event, 240)}`,
       }
       const sourceKey = `partner-observation:${input.id}:${createHash('sha256').update(content).digest('hex').slice(0, 24)}`
-      if (mount.writeMode === 'audit') {
+      if (mount.writeMode === 'audit' || containsSensitiveContent(`${title}\n${content}`)) {
         await provider.propose(proposal, sourceKey, signal)
         return { storage: 'knowledge', outcome: 'pending-review', knowledgeBaseId: mount.knowledgeBaseId }
       }

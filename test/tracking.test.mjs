@@ -27,6 +27,14 @@ test('records knowledge-linked partner observations through the mounted write po
   assert.equal(entries.items[0]?.title, 'Canvas 稳定性')
   assert.match(entries.items[0]?.body ?? '', /新版修复了拖动丢帧/)
   assert.deepEqual(entries.items[0]?.tags, ['dsh', 'partner-observation'])
+
+  const guarded = await service.record(agent, {
+    id: 'observation-2', subject: '临时接入凭证', event: 'password: actual-secret-value', evidence: '用户消息',
+    source: 'conversation', reference: 'DSH/临时接入凭证', at: Date.parse('2026-08-28T08:01:00Z'),
+  })
+  assert.deepEqual(guarded, { storage: 'knowledge', outcome: 'pending-review', knowledgeBaseId: 'default' })
+  assert.equal((await provider.list({ knowledgeBaseId: 'default', status: 'active', limit: 10 })).items.length, 1)
+  assert.equal((await provider.listCandidates('pending', 10)).length, 1)
 })
 
 test('lists only recallable documents mounted for the partner session', async (t) => {

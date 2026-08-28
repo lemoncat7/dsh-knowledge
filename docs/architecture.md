@@ -129,7 +129,7 @@ A local provider always supports its same-origin management console unless `expo
 
 - Stored connection secrets are never returned by plugin control APIs or written to logs.
 - Server tokens are stored as SHA-256 digests; generated client tokens are shown once.
-- Permissions are capability-oriented: `read`, `propose`, `write`, `admin`.
+- Permissions are capability-oriented: `read`, `propose`, `write`, `admin`. `write` is currently instance-wide and also covers knowledge-base, mount, and note mutations; ordinary remote clients should use `read + propose` unless they explicitly need that broader authority.
 - JSON request bodies are capped at 1 MiB and every domain value has size/range validation. Only note content upload/download routes use the separate 64 MiB bound; the remote management proxy preserves the same distinction.
 - Hard deletion and token management require admin.
 - Remote URLs require HTTPS except explicit loopback testing.

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { ResolvedConfig } from './config.js'
+import { inspectSensitiveContent } from './content-safety.js'
 import { isKnowledgeType, normalizeTags, type CandidateProposal, type KnowledgeDraft, type KnowledgeEvidence, type KnowledgeScope, type KnowledgeType, type KnowledgeWritebackPolicy, type ResolvedKnowledgeMount } from './domain.js'
 import type { KnowledgeProvider } from './provider.js'
 import { messageText, type MessageLike, type RuntimeContextLike, type SessionLike } from './runtime.js'
@@ -85,8 +86,13 @@ export class ExtractionCoordinator {
         if (mount === undefined) continue
         const counts = byBase.get(mount.knowledgeBaseId)
         if (mount.writeMode === 'direct') {
-          if (!qualifiesForDirectWrite(proposal, mount.base.writebackPolicy)) {
-            const proposed = await proposeUnlessFinalized(this.provider, proposal, snapshot.sourceKey, signal)
+          const sensitiveFindings = inspectSensitiveContent(`${proposal.draft.title}\n${proposal.draft.body}`)
+          if (sensitiveFindings.length > 0 || !qualifiesForDirectWrite(proposal, mount.base.writebackPolicy)) {
+            const guardedProposal = sensitiveFindings.length === 0 ? proposal : {
+              ...proposal,
+              reason: `${proposal.reason} Automatic direct write was withheld because credential-like content requires manual review (${sensitiveFindings.map(item => item.kind).join(', ')}).`,
+            }
+            const proposed = await proposeUnlessFinalized(this.provider, guardedProposal, snapshot.sourceKey, signal)
             if (!proposed) continue
             candidateCount += 1
             auditCount += 1
