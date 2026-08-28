@@ -54,6 +54,7 @@ import { NoteStore } from './notes/store.js'
 import {
   type KnowledgeNoteReference,
   type KnowledgeNoteReferenceSource,
+  type NoteListRequest,
   type NoteNode,
   type NoteReference,
 } from './notes/domain.js'
@@ -1019,6 +1020,55 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       if (result.changes === 0) throw notFound('knowledge entry', id)
     })
     if (current !== undefined) await this.syncKnowledgeDocumentsQueued(current.knowledgeBaseId)
+  }
+
+  async listNotes(request: NoteListRequest = {}): Promise<NoteNode[]> {
+    this.assertOpen()
+    return this.notes.list(request)
+  }
+
+  async getNote(id: string): Promise<NoteNode | undefined> {
+    this.assertOpen()
+    return this.notes.get(id)
+  }
+
+  async readNote(id: string): Promise<{ node: NoteNode; content: Uint8Array }> {
+    this.assertOpen()
+    return this.notes.read(id)
+  }
+
+  async createNoteFolder(name: string, parentId: string | null = null): Promise<NoteNode> {
+    this.assertOpen()
+    return this.notes.createFolder(name, parentId)
+  }
+
+  async createNoteDocument(name: string, parentId: string | null = null, content = ''): Promise<NoteNode> {
+    this.assertOpen()
+    return this.notes.createDocument(name, parentId, content)
+  }
+
+  async updateNoteContent(id: string, content: Uint8Array): Promise<NoteNode> {
+    this.assertOpen()
+    return this.notes.updateContent(id, content)
+  }
+
+  async renameNote(id: string, name: string): Promise<NoteNode> {
+    this.assertOpen()
+    return this.notes.rename(id, name)
+  }
+
+  async moveNote(id: string, parentId: string | null): Promise<NoteNode> {
+    this.assertOpen()
+    return this.notes.move(id, parentId)
+  }
+
+  async deleteNote(id: string): Promise<void> {
+    this.assertOpen()
+    const noteIds = this.notes.subtree(id).filter(node => node.kind !== 'folder').map(node => node.id)
+    const references = this.noteReferencesForNotes(noteIds)
+    if (references.length > 0) throw conflict(`note content is referenced by ${references.length} knowledge document(s)`)
+    await this.notes.delete(id)
+    this.deleteNoteReferences(noteIds)
   }
 
   async searchNotes(query: string, limit: number): Promise<NoteNode[]> {

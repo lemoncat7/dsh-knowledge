@@ -113,7 +113,10 @@ Recall combines bounded automatic retrieval with model-driven tools:
 - `knowledge_base_search` matches the current information need against the names, routing descriptions and tags of recall-enabled mounted bases, returning metadata only;
 - `knowledge_search` requires one exact base returned by the discovery tool and returns ranked snippets with signed handles;
 - `knowledge_read` opens an exact result through a signed, session-bound handle and paginates long documents;
-- `knowledge_note_search` searches note names and metadata only after an explicit reference request, returning signed session-bound note handles without note bodies;
+- `knowledge_note_list` browses one note folder or searches all note-node names, returning signed session-bound handles;
+- `knowledge_note_search` searches non-folder note metadata without returning bodies;
+- `knowledge_note_read` reads bounded UTF-8 chunks only after an explicit note request;
+- `knowledge_note_create`, `knowledge_note_update`, `knowledge_note_move`, and `knowledge_note_delete` mutate the active local or remote note workspace only after a matching direct user request; remote permissions and referenced-note deletion protection remain server-enforced;
 - `knowledge_note_references` lists, adds or removes relation rows using exact knowledge and note handles, re-resolving live mounts and rejecting writes through read-only mounts or finalized documents;
 - content write-back, including an explicit user request to save knowledge, runs only in the separate completed-turn extractor and never in the main Agent loop;
 - remote retrieval is awaited and cancellation propagates through the current turn signal;

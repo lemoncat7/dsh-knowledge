@@ -19,6 +19,7 @@ import {
 import { assertExplicitKnowledgeBaseManagementRequest } from './tool-authorization.js'
 import type { AgentLike, LlmLike, RuntimeContextLike, ToolDefinitionLike, ToolRunContextLike } from './runtime.js'
 import { registerKnowledgeNoteReferenceTools } from './note-reference-tools.js'
+import { registerKnowledgeNoteTools } from './note-tools.js'
 import type { KnowledgeNoteHandleCodec } from './note-reference-handle.js'
 
 const textOutput = {
@@ -38,6 +39,7 @@ export function registerKnowledgeTools(
   ctx.tools.register(readTool(provider, codec))
   ctx.tools.register(createKnowledgeBaseTool(provider, ctx.llm))
   ctx.tools.register(updateKnowledgeBaseTool(provider, ctx.llm))
+  registerKnowledgeNoteTools(ctx, provider, noteCodec)
   registerKnowledgeNoteReferenceTools(ctx, provider, codec, noteCodec)
 }
 

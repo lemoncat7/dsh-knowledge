@@ -2,6 +2,7 @@ import type { AgentLike, MessageLike } from './runtime.js'
 
 export type KnowledgeBaseManagementOperation = 'create' | 'update'
 export type KnowledgeNoteReferenceOperation = 'inspect' | 'add' | 'remove'
+export type KnowledgeNoteOperation = 'inspect' | 'create' | 'update' | 'move' | 'delete'
 
 /**
  * Knowledge-base management is a persistent control-plane mutation. Tool
@@ -37,6 +38,14 @@ export function assertExplicitKnowledgeNoteReferenceRequest(
   const clauses = text.split(/[。！？!?；;\n，,]+/u).map(clause => clause.trim()).filter(Boolean)
   if (!clauses.some(clause => clauseRequestsKnowledgeNoteReference(clause, operation))) {
     throw new Error(`knowledge note reference ${operation} requires an explicit request in the current direct user message`)
+  }
+}
+
+export function assertExplicitKnowledgeNoteRequest(agent: AgentLike, operation: KnowledgeNoteOperation): void {
+  const text = currentDirectUserText(agent).normalize('NFKC').toLocaleLowerCase('zh-CN').trim()
+  const clauses = text.split(/[。！？!?；;\n，,]+/u).map(clause => clause.trim()).filter(Boolean)
+  if (!clauses.some(clause => clauseRequestsKnowledgeNote(clause, operation))) {
+    throw new Error(`knowledge_note_${operation} requires an explicit request in the current direct user message`)
   }
 }
 
@@ -83,6 +92,43 @@ function clauseRequestsKnowledgeNoteReference(text: string, operation: Knowledge
     return /(?:引用|关联|關聯|连接|連接|绑定|綁定|加上|添加|link|reference|associate|attach)/iu.test(text)
   }
   return /(?:取消|移除|删除|解除|不再).{0,20}(?:引用|关联|關聯|连接|連接|绑定|link|reference|associate|attach)|(?:remove|delete|detach|unlink).{0,24}(?:note|reference|link)/iu.test(text)
+}
+
+function clauseRequestsKnowledgeNote(text: string, operation: KnowledgeNoteOperation): boolean {
+  const subject = /(?:笔记|筆記|notes?|notebook)/iu
+  if (!subject.test(text)) return false
+  if (operation === 'inspect') {
+    return /(?:查看|读取|读一下|打开|搜索|查找|找一下|列出|浏览|检查|内容|引用|关联|连接|绑定|创建|新建|建立|添加|写入|记录|修改|更新|编辑|追加|重命名|改名|移动|整理|删除|移除|read|open|search|find|list|browse|inspect|reference|link|attach|create|add|write|record|update|edit|append|rename|move|delete|remove)/iu.test(text)
+  }
+  if (deniesKnowledgeNoteMutation(text, operation)) return false
+  if (operation === 'create') {
+    return /(?:创建|新建|建立|新增|加一个|建一个|写一篇|记一篇|记录一篇|create|add|make|write|record).{0,24}(?:笔记|筆記|notes?|notebook)/iu.test(text)
+      || /(?:笔记|筆記|notes?|notebook).{0,24}(?:创建|新建|建立|新增|写入|记录|create|add|make|write|record)/iu.test(text)
+  }
+  if (operation === 'update') {
+    return /(?:修改|更新|编辑|追加|补充|写入|改写|替换|重命名|改名|update|edit|append|write|replace|rename).{0,28}(?:笔记|筆記|notes?|notebook)/iu.test(text)
+      || /(?:笔记|筆記|notes?|notebook).{0,28}(?:修改|更新|编辑|追加|补充|写入|改写|替换|重命名|改名|update|edit|append|write|replace|rename)/iu.test(text)
+  }
+  if (operation === 'move') {
+    return /(?:移动|挪到|放到|整理到|move|relocate).{0,28}(?:笔记|筆記|notes?|notebook)/iu.test(text)
+      || /(?:笔记|筆記|notes?|notebook).{0,28}(?:移动|挪到|放到|整理到|move|relocate)/iu.test(text)
+  }
+  return /(?:删除|移除|清理|delete|remove).{0,28}(?:笔记|筆記|notes?|notebook)/iu.test(text)
+    || /(?:笔记|筆記|notes?|notebook).{0,28}(?:删除|移除|清理|delete|remove)/iu.test(text)
+}
+
+function deniesKnowledgeNoteMutation(text: string, operation: Exclude<KnowledgeNoteOperation, 'inspect'>): boolean {
+  const verbs = {
+    create: '(?:创建|新建|建立|新增|写入|记录|create|add|make|write|record)',
+    update: '(?:修改|更新|编辑|追加|补充|写入|改写|替换|重命名|改名|update|edit|append|write|replace|rename)',
+    move: '(?:移动|挪到|放到|整理到|move|relocate)',
+    delete: '(?:删除|移除|清理|delete|remove)',
+  } as const
+  const denial = '(?:不要|别|无需|不需要|禁止|取消|停止|do\\s+not|don\'t|never|no\\s+need\\s+to|stop)'
+  const subject = '(?:笔记|筆記|notes?|notebook)'
+  const verb = verbs[operation]
+  return new RegExp(`${denial}.{0,24}${verb}.{0,24}${subject}`, 'iu').test(text)
+    || new RegExp(`${denial}.{0,24}${subject}.{0,24}${verb}`, 'iu').test(text)
 }
 
 function deniesKnowledgeBaseMutation(text: string, operation: KnowledgeBaseManagementOperation): boolean {

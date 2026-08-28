@@ -2,7 +2,8 @@ import type { KnowledgeProvider } from './provider.js'
 import { readMountedKnowledge, type KnowledgeHandleCodec } from './retrieval.js'
 import type { RuntimeContextLike, ToolDefinitionLike, ToolRunContextLike } from './runtime.js'
 import { KnowledgeNoteHandleCodec } from './note-reference-handle.js'
-import { assertExplicitKnowledgeNoteReferenceRequest } from './tool-authorization.js'
+import { assertExplicitKnowledgeNoteReferenceRequest, assertExplicitKnowledgeNoteRequest } from './tool-authorization.js'
+import { optionalToolInteger, requiredToolString, requireToolAgent, toolRecord } from './tool-input.js'
 
 const textOutput = {
   schema: { type: 'string' },
@@ -22,7 +23,7 @@ export function registerKnowledgeNoteReferenceTools(
 function searchNotesTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCodec): ToolDefinitionLike {
   return {
     name: 'knowledge_note_search',
-    description: 'Search note-document metadata only when the current user explicitly asks to inspect or change the note references of a knowledge document. This never reads note content. Pass an exact returned note handle to knowledge_note_references; never invent a handle.',
+    description: 'Search note-document and editable-file metadata when the current user explicitly asks to inspect, edit, organize, or reference notes. This never reads note content. Pass exact returned handles to knowledge_note_read/update/move/delete or knowledge_note_references; never invent a handle.',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
@@ -34,11 +35,11 @@ function searchNotesTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandle
     output: textOutput,
     isConcurrencySafe: () => true,
     async execute(raw: unknown, exec: ToolRunContextLike): Promise<string> {
-      const agent = requireAgent(exec)
-      assertExplicitKnowledgeNoteReferenceRequest(agent, 'inspect')
-      const args = asRecord(raw)
-      const query = requireNonEmptyString(args.query, 'query', 1000)
-      const limit = optionalInteger(args.limit, 'limit', 1, 20) ?? 10
+      const agent = requireToolAgent(exec, 'knowledge note tools')
+      assertExplicitKnowledgeNoteRequest(agent, 'inspect')
+      const args = toolRecord(raw)
+      const query = requiredToolString(args.query, 'query', 1000)
+      const limit = optionalToolInteger(args.limit, 'limit', 1, 20) ?? 10
       const notes = await provider.searchNotes(query, limit, exec.signal)
       if (notes.length === 0) return `No note document matches ${JSON.stringify(query)}.`
       return [
@@ -67,13 +68,13 @@ function manageNoteReferencesTool(
       required: ['knowledgeHandle', 'operation'],
     },
     output: textOutput,
-    isConcurrencySafe: args => asRecord(args).operation === 'list',
+    isConcurrencySafe: args => toolRecord(args).operation === 'list',
     async execute(raw: unknown, exec: ToolRunContextLike): Promise<string> {
-      const agent = requireAgent(exec)
-      const args = asRecord(raw)
+      const agent = requireToolAgent(exec, 'knowledge note tools')
+      const args = toolRecord(raw)
       const operation = parseOperation(args.operation)
       assertExplicitKnowledgeNoteReferenceRequest(agent, operation === 'list' ? 'inspect' : operation)
-      const knowledgeHandle = requireNonEmptyString(args.knowledgeHandle, 'knowledgeHandle', 4096)
+      const knowledgeHandle = requiredToolString(args.knowledgeHandle, 'knowledgeHandle', 4096)
       const { entry, mount } = await readMountedKnowledge(provider, agent, knowledgeHandle, knowledgeCodec, exec.signal)
       if (operation !== 'list' && mount.writeMode === 'none') {
         throw new Error('the knowledge document is mounted read-only in this session')
@@ -113,29 +114,6 @@ function manageNoteReferencesTool(
   }
 }
 
-function requireAgent(exec: ToolRunContextLike) {
-  if (exec.agent === undefined) throw new Error('knowledge note tools require a calling DSH agent')
-  return exec.agent
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('tool arguments must be an object')
-  return value as Record<string, unknown>
-}
-
-function requireNonEmptyString(value: unknown, name: string, maxLength: number): string {
-  if (typeof value !== 'string' || value.trim().length === 0) throw new Error(`${name} must be a non-empty string`)
-  const result = value.trim()
-  if (result.length > maxLength) throw new Error(`${name} must contain at most ${maxLength} characters`)
-  return result
-}
-
-function optionalInteger(value: unknown, name: string, min: number, max: number): number | undefined {
-  if (value === undefined) return undefined
-  if (!Number.isInteger(value) || Number(value) < min || Number(value) > max) throw new Error(`${name} must be an integer between ${min} and ${max}`)
-  return Number(value)
-}
-
 function parseOperation(value: unknown): 'list' | 'add' | 'remove' {
   if (value !== 'list' && value !== 'add' && value !== 'remove') throw new Error('operation must be list, add, or remove')
   return value
@@ -149,5 +127,5 @@ function parseNoteHandles(value: unknown, operation: 'list' | 'add' | 'remove'):
   if (!Array.isArray(value) || value.length === 0 || value.length > 16) {
     throw new Error('noteHandles must contain 1-16 signed handles for add/remove')
   }
-  return value.map((handle, index) => requireNonEmptyString(handle, `noteHandles[${index}]`, 4096))
+  return value.map((handle, index) => requiredToolString(handle, `noteHandles[${index}]`, 4096))
 }

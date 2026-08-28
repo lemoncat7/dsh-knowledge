@@ -27,9 +27,18 @@ import type {
 } from './domain.js'
 import type { KnowledgeProvider } from './provider.js'
 import { normalizeRemoteKnowledgeUrl } from './remote-url.js'
-import type { KnowledgeNoteReference, KnowledgeNoteReferenceSource, NoteNode } from './notes/domain.js'
+import type { KnowledgeNoteReference, KnowledgeNoteReferenceSource, NoteListRequest, NoteNode } from './notes/domain.js'
 
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024
+const MAX_NOTE_RESPONSE_BYTES = 64 * 1024 * 1024
+
+interface RemoteRequestOptions {
+  method?: string | undefined
+  body?: unknown
+  binaryBody?: Uint8Array | undefined
+  signal?: AbortSignal | undefined
+  accept?: string | undefined
+}
 
 export interface RemoteProviderOptions {
   url: string
@@ -194,6 +203,58 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     await this.request<unknown>(`entries/${encodeURIComponent(id)}`, { method: 'DELETE', signal })
   }
 
+  async listNotes(request: NoteListRequest = {}, signal?: AbortSignal): Promise<NoteNode[]> {
+    const params = new URLSearchParams({ limit: String(request.limit ?? 200) })
+    const query = request.query?.trim()
+    if (query) params.set('q', query)
+    else if (request.parentId !== undefined && request.parentId !== null) params.set('parentId', request.parentId)
+    else if (request.parentId === null) params.set('parentId', '')
+    return this.request<NoteNode[]>(`notes?${params}`, { signal })
+  }
+
+  async getNote(id: string, signal?: AbortSignal): Promise<NoteNode | undefined> {
+    try {
+      return await this.request<NoteNode>(`notes/${encodeURIComponent(id)}`, { signal })
+    } catch (error) {
+      if (error instanceof RemoteProviderError && error.status === 404) return undefined
+      throw error
+    }
+  }
+
+  async readNote(id: string, signal?: AbortSignal): Promise<{ node: NoteNode; content: Uint8Array }> {
+    const node = await this.getNote(id, signal)
+    if (node === undefined) throw new RemoteProviderError(`note node "${id}" was not found`, 404)
+    const content = await this.requestBytes(`notes/${encodeURIComponent(id)}/content`, { signal })
+    return { node, content }
+  }
+
+  async createNoteFolder(name: string, parentId: string | null = null, signal?: AbortSignal): Promise<NoteNode> {
+    return this.request<NoteNode>('notes/folders', { method: 'POST', body: { name, parentId }, signal })
+  }
+
+  async createNoteDocument(name: string, parentId: string | null = null, content = '', signal?: AbortSignal): Promise<NoteNode> {
+    return this.request<NoteNode>('notes/documents', { method: 'POST', body: { name, parentId, content }, signal })
+  }
+
+  async updateNoteContent(id: string, content: Uint8Array, signal?: AbortSignal): Promise<NoteNode> {
+    const response = await this.requestBytes(`notes/${encodeURIComponent(id)}/content`, {
+      method: 'PUT', binaryBody: content, signal, accept: 'application/json',
+    })
+    return safeJson(new TextDecoder().decode(response)) as NoteNode
+  }
+
+  async renameNote(id: string, name: string, signal?: AbortSignal): Promise<NoteNode> {
+    return this.request<NoteNode>(`notes/${encodeURIComponent(id)}`, { method: 'PATCH', body: { name }, signal })
+  }
+
+  async moveNote(id: string, parentId: string | null, signal?: AbortSignal): Promise<NoteNode> {
+    return this.request<NoteNode>(`notes/${encodeURIComponent(id)}`, { method: 'PATCH', body: { parentId }, signal })
+  }
+
+  async deleteNote(id: string, signal?: AbortSignal): Promise<void> {
+    await this.request<unknown>(`notes/${encodeURIComponent(id)}`, { method: 'DELETE', signal })
+  }
+
   async searchNotes(query: string, limit: number, signal?: AbortSignal): Promise<NoteNode[]> {
     const params = new URLSearchParams({ q: query, limit: String(limit) })
     return this.request<NoteNode[]>(`notes?${params}`, { signal })
@@ -267,36 +328,81 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
 
   private async request<T>(
     path: string,
-    options: { method?: string; body?: unknown; signal?: AbortSignal | undefined } = {},
+    options: RemoteRequestOptions = {},
   ): Promise<T> {
+    const response = await this.fetchResponse(path, options)
+    const text = await readBoundedResponse(response, MAX_RESPONSE_BYTES)
+    const payload = text.length === 0 ? undefined : safeJson(text)
+    if (!response.ok) throw remoteResponseError(path, response.status, payload, text)
+    return payload as T
+  }
+
+  private async requestBytes(path: string, options: RemoteRequestOptions = {}): Promise<Uint8Array> {
+    const response = await this.fetchResponse(path, { ...options, accept: options.accept ?? 'application/octet-stream' })
+    if (!response.ok) {
+      const text = await readBoundedResponse(response, MAX_RESPONSE_BYTES)
+      let payload: unknown
+      try { payload = text.length === 0 ? undefined : safeJson(text) } catch { payload = undefined }
+      throw remoteResponseError(path, response.status, payload, text)
+    }
+    return readBoundedBytes(response, MAX_NOTE_RESPONSE_BYTES)
+  }
+
+  private async fetchResponse(path: string, options: RemoteRequestOptions): Promise<Response> {
+    if (options.body !== undefined && options.binaryBody !== undefined) throw new Error('remote request cannot contain both JSON and binary bodies')
     const timeout = AbortSignal.timeout(this.options.timeoutMs)
     const signal = options.signal === undefined ? timeout : AbortSignal.any([options.signal, timeout])
-    let response: Response
     try {
-      response = await fetch(new URL(path, this.baseUrl), {
+      return await fetch(new URL(path, this.baseUrl), {
         method: options.method ?? 'GET',
         headers: {
-          accept: 'application/json',
+          accept: options.accept ?? 'application/json',
           authorization: `Bearer ${this.options.token}`,
           ...options.body === undefined ? {} : { 'content-type': 'application/json' },
+          ...options.binaryBody === undefined ? {} : { 'content-type': 'application/octet-stream' },
         },
-        ...options.body === undefined ? {} : { body: JSON.stringify(options.body) },
+        ...options.body !== undefined
+          ? { body: JSON.stringify(options.body) }
+          : options.binaryBody !== undefined ? { body: Buffer.from(options.binaryBody) } : {},
         signal,
       })
     } catch (error) {
       throw new RemoteProviderError(`knowledge server request failed: ${error instanceof Error ? error.message : String(error)}`, 0)
     }
-    const text = await readBoundedResponse(response, MAX_RESPONSE_BYTES)
-    const payload = text.length === 0 ? undefined : safeJson(text)
-    if (!response.ok) {
-      const detail = remoteErrorDetail(payload, text)
-      const message = detail === undefined
-        ? `knowledge server returned HTTP ${response.status} for ${path}`
-        : `knowledge server rejected ${path}: ${detail}`
-      throw new RemoteProviderError(message, response.status)
-    }
-    return payload as T
   }
+}
+
+async function readBoundedBytes(response: Response, maximumBytes: number): Promise<Uint8Array> {
+  const declared = Number(response.headers.get('content-length') ?? 0)
+  if (Number.isFinite(declared) && declared > maximumBytes) {
+    await response.body?.cancel().catch(() => {})
+    throw new RemoteProviderError('knowledge server response is too large', 502)
+  }
+  if (response.body === null) return new Uint8Array()
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  try {
+    while (true) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      size += chunk.value.byteLength
+      if (size > maximumBytes) {
+        await reader.cancel().catch(() => {})
+        throw new RemoteProviderError('knowledge server response is too large', 502)
+      }
+      chunks.push(chunk.value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  const result = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    result.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return result
 }
 
 async function readBoundedResponse(response: Response, maximumBytes: number): Promise<string> {
@@ -354,4 +460,12 @@ function remoteErrorDetail(payload: unknown, text: string): string | undefined {
   }
   const compact = text.replace(/\s+/g, ' ').trim()
   return compact.length === 0 ? undefined : compact.slice(0, 500)
+}
+
+function remoteResponseError(path: string, status: number, payload: unknown, text: string): RemoteProviderError {
+  const detail = remoteErrorDetail(payload, text)
+  const message = detail === undefined
+    ? `knowledge server returned HTTP ${status} for ${path}`
+    : `knowledge server rejected ${path}: ${detail}`
+  return new RemoteProviderError(message, status)
 }
