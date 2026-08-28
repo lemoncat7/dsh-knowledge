@@ -37,7 +37,7 @@ function createDocumentViewState(overrides = {}) {
     knowledgeBaseId: '', documentId: '', query: '', mode: 'preview', treeOpen: false,
     expandedBases: new Set(), documentPages: new Map(),
     searchResults: [], searchNextCursor: '', searchTotal: 0, searchLoading: false, searchError: '', searchRequest: 0,
-    editor: null, ...overrides,
+    editor: null, editorLoading: false, loadingDocumentId: '', ...overrides,
   }
 }
 
@@ -84,11 +84,13 @@ const state = {
     children: new Map(), loadedFolders: new Set(), expandedFolders: new Set(),
     selectedId: '', selectedNode: null, currentFolderId: null, breadcrumbs: [],
     content: '', draft: '', dirty: false, assetUrl: '', query: '', searchResults: [],
-    transfer: null,
+    transfer: null, loadingNodeId: '',
   },
   service: { publicApiEnabled: false, publicApiPrefix: '/knowledge-api/v1', remote: false },
   scrollPositions: new Map(),
   loading: false,
+  loadingPhase: '',
+  loadingProgress: 0,
   error: '',
 }
 
@@ -106,6 +108,7 @@ let plainTextEditorHandle = null
 let plainTextEditorMountRequest = 0
 let noteTransferFrame = 0
 let noteTransferSequence = 0
+let noteSelectionRequest = 0
 
 function installHostThemeBridge() {
   if (window.parent === window) return Promise.resolve()
@@ -438,7 +441,7 @@ function signOut() {
   releaseNoteAsset()
   sessionStorage.removeItem(TOKEN_KEY)
   Object.assign(state, { token: '', stats: null, overview: null, knowledgeBases: [], mounts: [], resolvedMounts: [], entries: [], documents: [], candidates: [], candidateTargets: new Map(), settings: { writebackPolicy: 'conservative', updatedAt: '' }, tokens: [] })
-  state.notes = { children: new Map(), loadedFolders: new Set(), expandedFolders: new Set(), selectedId: '', selectedNode: null, currentFolderId: null, breadcrumbs: [], content: '', draft: '', dirty: false, assetUrl: '', query: '', searchResults: [] }
+  state.notes = { children: new Map(), loadedFolders: new Set(), expandedFolders: new Set(), selectedId: '', selectedNode: null, currentFolderId: null, breadcrumbs: [], content: '', draft: '', dirty: false, assetUrl: '', query: '', searchResults: [], transfer: null, loadingNodeId: '' }
   if (AUTH_MODE === 'same-origin') void boot()
   else renderLogin()
 }
@@ -457,14 +460,16 @@ async function navigate(view) {
   state.view = view
   state.menuOpen = false
   state.loading = true
+  state.loadingPhase = loadingPhaseForView(view)
+  state.loadingProgress = .12
   state.error = ''
   renderShell()
   try {
     if (view === 'overview') await loadOverview(controller.signal)
     if (view === 'bases') await loadKnowledgeBasesPage(controller.signal)
-    if (view === 'entries') await loadDocuments(controller.signal)
+    if (view === 'entries') await loadDocuments(controller.signal, (label, progress) => updateLoadingPhase(request, label, progress))
     if (view === 'candidates') await loadCandidates(controller.signal)
-    if (view === 'notes') await loadNotes(controller.signal)
+    if (view === 'notes') await loadNotes(controller.signal, (label, progress) => updateLoadingPhase(request, label, progress))
     if (view === 'tokens') await loadTokens(controller.signal)
   } catch (error) {
     if (controller.signal.aborted) return
@@ -473,8 +478,24 @@ async function navigate(view) {
   } finally {
     if (navigationController !== controller) return
     state.loading = false
+    state.loadingPhase = ''
+    state.loadingProgress = 1
     renderShell()
   }
+}
+
+function loadingPhaseForView(view) {
+  return ({
+    overview: '正在汇总知识活动', bases: '正在读取知识库配置', entries: '正在读取知识目录',
+    notes: '正在读取笔记目录', candidates: '正在准备审核队列', tokens: '正在读取访问权限',
+  })[view] || '正在准备工作区'
+}
+
+function updateLoadingPhase(request, label, progress) {
+  if (request !== navigationRequest || !state.loading) return
+  state.loadingPhase = label
+  state.loadingProgress = Math.max(0, Math.min(1, progress))
+  renderShell()
 }
 
 async function saveBeforeNavigation() {
@@ -558,7 +579,8 @@ async function loadEntries(cursor = '') {
   if (!state.stats) await refreshStats()
 }
 
-async function loadDocuments(signal) {
+async function loadDocuments(signal, onPhase = () => {}) {
+  onPhase('正在读取可用知识库', .24)
   const options = { signal }
   const requests = [api('knowledge-bases', options)]
   if (state.mountContext.sessionId) {
@@ -574,6 +596,7 @@ async function loadDocuments(signal) {
   state.knowledgeBases = bases
   state.resolvedMounts = resolved
   state.stats = stats
+  onPhase('正在建立文档索引', .56)
   const visibleBaseIds = new Set(documentKnowledgeBases(bases).map(base => base.id))
   state.documents = state.documents.filter(document => visibleBaseIds.has(document.knowledgeBaseId))
   const workspace = sessionDocumentWorkspace()
@@ -589,14 +612,19 @@ async function loadDocuments(signal) {
     await loadDocumentPage(workspace, view.knowledgeBaseId, { signal })
   }
   selectDefaultDocument(workspace)
-  if (view.documentId) await loadDocumentEditor(workspace, view.documentId, signal)
+  if (view.documentId) {
+    onPhase('正在打开最近文档', .82)
+    await loadDocumentEditor(workspace, view.documentId, signal)
+  }
   else view.editor = null
 }
 
-async function loadNotes(signal) {
+async function loadNotes(signal, onPhase = () => {}) {
+  onPhase('正在读取顶层目录', .36)
   state.notes.children.set('root', await api('notes?limit=500', { signal }))
   state.notes.loadedFolders.add('root')
   if (state.notes.selectedId) {
+    onPhase('正在恢复上次打开的笔记', .74)
     const selected = state.notes.selectedNode?.id === state.notes.selectedId
       ? state.notes.selectedNode
       : await api(`notes/${encodeURIComponent(state.notes.selectedId)}`, { signal }).catch(() => null)
@@ -857,7 +885,21 @@ async function selectDocument(workspace, id) {
   if (editor?.dirty && !emptyDraft && !await saveDocumentEditor(workspace)) return
   workspace.view.documentId = id
   workspace.view.treeOpen = false
-  if (await loadDocumentEditor(workspace, id)) renderShell()
+  workspace.view.editor = null
+  workspace.view.editorLoading = true
+  workspace.view.loadingDocumentId = id
+  renderShell()
+  try {
+    await loadDocumentEditor(workspace, id)
+  } catch (error) {
+    if (workspace.view.documentId === id) showToast(friendlyError(error), 'error')
+  } finally {
+    if (workspace.view.loadingDocumentId === id) {
+      workspace.view.editorLoading = false
+      workspace.view.loadingDocumentId = ''
+      renderShell()
+    }
+  }
 }
 
 function editorDraft(editor) {
@@ -951,6 +993,7 @@ function renderShell() {
     tokens: ['访问管理', '管理其他客户端连接中央知识库的权限'],
   }
   const [title, subtitle] = titles[state.view]
+  const viewIndexes = { overview: '00', notes: '01', entries: '02', candidates: '03', bases: '04', tokens: '05' }
   const shell = element('div', {
     class: 'app-shell', 'data-menu-open': String(state.menuOpen),
     'data-view': state.view, 'data-loading': String(state.loading),
@@ -975,10 +1018,17 @@ function renderShell() {
             workspace.view.treeOpen = !workspace.view.treeOpen
             renderShell()
           }, '知识目录') : null,
-          element('div', {}, element('h1', {}, title), element('p', {}, subtitle)),
+          element('div', { class: 'topbar-heading' },
+            element('span', { class: 'topbar-kicker' }, `KNOWLEDGE / ${viewIndexes[state.view] || '00'}`),
+            element('h1', {}, title),
+            element('p', {}, subtitle)),
         ),
+        state.loading ? element('div', {
+          class: 'route-progress', role: 'progressbar', 'aria-label': state.loadingPhase || '正在加载',
+          'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': String(Math.round(state.loadingProgress * 100)),
+        }, element('span', { style: `--route-progress: ${state.loadingProgress}` })) : null,
       ),
-      element('div', { class: 'page' }, renderCurrentView()),
+      element('div', { class: 'page' }, element('div', { class: 'view-stage', 'data-view-stage': state.view }, renderCurrentView())),
     ),
   )
   if (state.menuOpen) shell.addEventListener('click', (event) => {
@@ -1060,8 +1110,10 @@ function renderSidebar() {
     ['知识工作区', [['entries', '知识文档'], ['candidates', '待审核'], ['bases', '知识库与挂载']]],
     ['连接', [['tokens', '访问管理']].filter(([id]) => id !== 'tokens' || !state.service.remote)],
   ].filter(([, items]) => items.length)
+  let navIndex = 0
   return element('aside', { class: 'sidebar', 'aria-label': '知识库导航' },
     element('div', { class: 'brand' },
+      element('span', { class: 'brand-emblem', 'aria-hidden': 'true' }, element('span', {})),
       element('div', { class: 'brand-copy' }, element('span', {}, 'DSH Knowledge'), element('strong', {}, '知识库')),
     ),
     element('nav', { class: 'nav' }, navGroups.map(([group, items]) => element('div', { class: 'nav-group' },
@@ -1069,7 +1121,7 @@ function renderSidebar() {
       items.map(([id, label]) => element('button', {
         type: 'button', class: 'nav-button', 'aria-current': state.view === id ? 'page' : undefined,
         onClick: () => navigate(id),
-      }, element('span', { class: 'nav-label' }, label),
+      }, element('span', { class: 'nav-index', 'aria-hidden': 'true' }, String(++navIndex).padStart(2, '0')), element('span', { class: 'nav-label' }, label),
       id === 'candidates' && pending ? element('span', { class: 'nav-count', 'aria-label': `${pending} 条待审核` }, pending) : null))))),
     element('div', { class: 'sidebar-footer' },
       element('div', { class: 'connection' }, element('span', { class: 'status-dot', 'aria-hidden': 'true' }), state.service.remote ? '中央知识库已连接' : '本地知识库已连接'),
@@ -1079,7 +1131,7 @@ function renderSidebar() {
 }
 
 function renderCurrentView() {
-  if (state.loading) return loadingView()
+  if (state.loading) return loadingView(state.view, state.loadingPhase, state.loadingProgress)
   if (state.error) return errorView(state.error, () => navigate(state.view))
   if (state.view === 'overview') return renderOverview()
   if (state.view === 'bases') return renderKnowledgeBases()
@@ -1089,17 +1141,28 @@ function renderCurrentView() {
   return renderTokens()
 }
 
-function loadingView() {
-  return element('div', { class: 'loading-skeleton', role: 'status', 'aria-label': '正在加载' },
-    element('span', { class: 'visually-hidden' }, '正在加载'),
-    element('div', { class: 'skeleton-line skeleton-title', 'aria-hidden': 'true' }),
-    element('div', { class: 'skeleton-line skeleton-copy', 'aria-hidden': 'true' }),
-    element('div', { class: 'skeleton-grid', 'aria-hidden': 'true' },
-      element('div', { class: 'skeleton-block' }),
-      element('div', { class: 'skeleton-block' }),
-      element('div', { class: 'skeleton-block' }),
-    ),
+function loadingView(view = state.view, phase = '正在加载', progress = 0) {
+  const label = phase || loadingPhaseForView(view)
+  const header = element('div', { class: 'skeleton-heading' },
+    element('div', {}, element('div', { class: 'skeleton-line skeleton-title', 'aria-hidden': 'true' }), element('div', { class: 'skeleton-line skeleton-copy', 'aria-hidden': 'true' })),
+    element('span', { class: 'skeleton-phase' }, label),
   )
+  const content = view === 'entries'
+    ? element('div', { class: 'skeleton-workspace skeleton-workspace-documents', 'aria-hidden': 'true' },
+      element('div', { class: 'skeleton-pane skeleton-pane-tree' }, ...Array.from({ length: 7 }, (_, index) => element('div', { class: `skeleton-line skeleton-tree-row is-${index % 3}` }))),
+      element('div', { class: 'skeleton-pane skeleton-pane-paper' }, element('div', { class: 'skeleton-line skeleton-paper-title' }), ...Array.from({ length: 8 }, (_, index) => element('div', { class: `skeleton-line skeleton-paper-row is-${index % 4}` }))),
+    )
+    : view === 'notes'
+      ? element('div', { class: 'skeleton-workspace skeleton-workspace-notes', 'aria-hidden': 'true' },
+        element('div', { class: 'skeleton-pane skeleton-pane-tree' }, ...Array.from({ length: 8 }, (_, index) => element('div', { class: `skeleton-line skeleton-tree-row is-${index % 3}` }))),
+        element('div', { class: 'skeleton-pane skeleton-pane-list' }, ...Array.from({ length: 6 }, () => element('div', { class: 'skeleton-list-row' }, element('span', { class: 'skeleton-block' }), element('span', { class: 'skeleton-line' })))),
+      )
+      : element('div', { class: 'skeleton-grid', 'aria-hidden': 'true' },
+        element('div', { class: 'skeleton-block' }), element('div', { class: 'skeleton-block' }), element('div', { class: 'skeleton-block' }))
+  return element('div', {
+    class: `loading-skeleton loading-skeleton--${view}`, role: 'status', 'aria-label': label,
+    style: `--loading-progress: ${progress}`,
+  }, element('span', { class: 'visually-hidden' }, label), header, content)
 }
 
 function errorView(message, retry) {
@@ -1597,6 +1660,7 @@ function renderDocumentWorkspace(workspace, options = {}) {
 function renderNoteEditor(workspace, editor, base) {
   const view = workspace.view
   const readOnly = documentWorkspaceReadOnly(workspace)
+  if (view.editorLoading) return renderDocumentEditorLoading(base)
   if (!editor) return element('main', { class: 'note-editor note-editor-empty' },
     element('div', { class: 'note-empty-content' },
       element('span', { class: 'empty-document-mark', 'aria-hidden': 'true' }),
@@ -1639,8 +1703,8 @@ function renderNoteEditor(workspace, editor, base) {
         element('span', { 'aria-hidden': 'true' }, '/'),
         element('strong', {}, editor.isNew ? '新文档' : documentWorkspaceDocuments(workspace).find(item => item.id === editor.id)?.relPath || editor.title),
         element('span', { class: 'note-toolbar-meta' },
-          editor.isNew ? '尚未保存' : `更新于 ${formatDate(editor.updatedAt)}`,
-          editor.scope.kind === 'global' ? '全局知识' : `项目 ${editor.scope.id}`)),
+          element('span', {}, editor.isNew ? '尚未保存' : `更新于 ${formatDate(editor.updatedAt)}`),
+          element('span', {}, editor.scope.kind === 'global' ? '全局知识' : `项目 ${editor.scope.id}`))),
       element('div', { class: 'note-editor-actions' },
         finalized ? badge(DOCUMENT_STATE_LABELS[editor.documentState] || '已结束', 'success') : readOnly ? badge('只读') : null,
         element('span', { class: 'editor-save-status', role: 'status' }, editor.saveState),
@@ -1674,6 +1738,19 @@ function renderNoteEditor(workspace, editor, base) {
       })),
       editable ? element('span', { class: 'note-format-hint' }, 'Markdown · Ctrl/⌘ S 保存') : null,
     ),
+  )
+}
+
+function renderDocumentEditorLoading(base) {
+  return element('main', { class: 'note-editor note-editor-loading', role: 'status', 'aria-label': '正在打开知识文档' },
+    element('header', { class: 'note-editor-toolbar' },
+      element('div', { class: 'note-breadcrumb' }, element('span', {}, base?.name || '知识库'), element('span', { 'aria-hidden': 'true' }, '/'), element('strong', {}, '正在打开文档')),
+      element('span', { class: 'editor-load-label' }, '按需加载正文与关联笔记'),
+    ),
+    element('div', { class: 'note-editor-scroll' }, element('article', { class: 'note-paper editor-paper-skeleton', 'aria-hidden': 'true' },
+      element('div', { class: 'skeleton-line skeleton-paper-title' }),
+      ...Array.from({ length: 9 }, (_, index) => element('div', { class: `skeleton-line skeleton-paper-row is-${index % 4}` })),
+    )),
   )
 }
 
@@ -2004,9 +2081,23 @@ function renderNoteSearchResults() {
 function renderNoteContent() {
   const node = state.notes.selectedNode
   if (!node) return renderNoteFolderContent(null)
+  if (state.notes.loadingNodeId === node.id) return renderNoteSelectionLoading(node)
   if (node.kind === 'folder') return renderNoteFolderContent(node)
   if (node.kind === 'document') return renderNoteDocument(node)
   return renderNoteFile(node)
+}
+
+function renderNoteSelectionLoading(node) {
+  return element('main', { class: `notes-content notes-selection-loading is-${node.kind}`, role: 'status', 'aria-label': `正在打开 ${node.name}` },
+    element('header', { class: 'notes-content-header' },
+      element('div', { class: 'notes-breadcrumb' }, element('span', {}, '笔记文档'), element('span', { 'aria-hidden': 'true' }, '/'), element('strong', {}, node.name)),
+      element('div', { class: 'notes-content-title' }, element('div', {}, element('h2', {}, node.name), element('p', {}, node.kind === 'folder' ? '正在读取目录内容' : '正在按需读取文档内容'))),
+    ),
+    element('div', { class: 'notes-selection-skeleton', 'aria-hidden': 'true' },
+      element('div', { class: 'skeleton-line skeleton-paper-title' }),
+      ...Array.from({ length: node.kind === 'folder' ? 6 : 9 }, (_, index) => element('div', { class: `skeleton-line skeleton-paper-row is-${index % 4}` })),
+    ),
+  )
 }
 
 function renderNoteFolderContent(folder) {
@@ -2319,35 +2410,52 @@ function noteFilePreviewKind(node) {
 
 async function selectNoteNode(node, options = {}) {
   if (state.notes.dirty && !await saveNoteDocument()) return
+  const request = ++noteSelectionRequest
   releaseNoteAsset()
   state.notes.selectedId = node.id
   state.notes.selectedNode = node
-  await loadNoteBreadcrumbs(node)
-  if (node.kind === 'folder') {
-    Object.assign(state.notes, { content: '', draft: '', dirty: false })
-    state.notes.currentFolderId = node.id
-    if (options.toggleFolder) {
-      if (state.notes.expandedFolders.has(node.id)) state.notes.expandedFolders.delete(node.id)
-      else state.notes.expandedFolders.add(node.id)
+  Object.assign(state.notes, { content: '', draft: '', dirty: false })
+  state.notes.loadingNodeId = node.id
+  renderShell()
+  try {
+    const breadcrumbs = await loadNoteBreadcrumbs(node)
+    if (request !== noteSelectionRequest || state.notes.selectedId !== node.id) return
+    state.notes.breadcrumbs = breadcrumbs
+    if (node.kind === 'folder') {
+      Object.assign(state.notes, { content: '', draft: '', dirty: false })
+      state.notes.currentFolderId = node.id
+      if (options.toggleFolder) {
+        if (state.notes.expandedFolders.has(node.id)) state.notes.expandedFolders.delete(node.id)
+        else state.notes.expandedFolders.add(node.id)
+      }
+      await loadNoteChildren(node.id)
+    } else if (node.editable) {
+      const blob = await binaryRequest(`notes/${encodeURIComponent(node.id)}/content`, { responseType: 'blob', accept: node.mediaType || 'text/plain' })
+      const content = await blob.text()
+      if (request !== noteSelectionRequest || state.notes.selectedId !== node.id) return
+      state.notes.content = content
+      state.notes.draft = content
+      state.notes.dirty = false
+      state.notes.currentFolderId = node.parentId
+    } else {
+      state.notes.content = ''
+      state.notes.draft = ''
+      state.notes.dirty = false
+      state.notes.currentFolderId = node.parentId
+      if (noteFilePreviewKind(node) !== 'unavailable') {
+        const blob = await binaryRequest(`notes/${encodeURIComponent(node.id)}/content`, { responseType: 'blob', accept: node.mediaType || 'application/octet-stream' })
+        if (request !== noteSelectionRequest || state.notes.selectedId !== node.id) return
+        state.notes.assetUrl = URL.createObjectURL(blob)
+      }
     }
-    await loadNoteChildren(node.id)
-  } else if (node.editable) {
-    const blob = await binaryRequest(`notes/${encodeURIComponent(node.id)}/content`, { responseType: 'blob', accept: node.mediaType || 'text/plain' })
-    state.notes.content = await blob.text()
-    state.notes.draft = state.notes.content
-    state.notes.dirty = false
-    state.notes.currentFolderId = node.parentId
-  } else {
-    state.notes.content = ''
-    state.notes.draft = ''
-    state.notes.dirty = false
-    state.notes.currentFolderId = node.parentId
-    if (noteFilePreviewKind(node) !== 'unavailable') {
-      const blob = await binaryRequest(`notes/${encodeURIComponent(node.id)}/content`, { responseType: 'blob', accept: node.mediaType || 'application/octet-stream' })
-      state.notes.assetUrl = URL.createObjectURL(blob)
+  } catch (error) {
+    if (request === noteSelectionRequest) showToast(friendlyError(error), 'error')
+  } finally {
+    if (request === noteSelectionRequest && state.notes.loadingNodeId === node.id) {
+      state.notes.loadingNodeId = ''
+      renderShell()
     }
   }
-  renderShell()
 }
 
 async function loadNoteChildren(parentId, force = false) {
@@ -2369,7 +2477,7 @@ async function loadNoteBreadcrumbs(node) {
     parents.unshift(parent)
     parentId = parent.parentId
   }
-  state.notes.breadcrumbs = node.kind === 'folder' ? [...parents, node] : parents
+  return node.kind === 'folder' ? [...parents, node] : parents
 }
 
 function findCachedNote(id) {
@@ -2382,6 +2490,7 @@ function findCachedNote(id) {
 
 async function openNoteRoot() {
   if (state.notes.dirty && !await saveNoteDocument()) return
+  noteSelectionRequest += 1
   clearNoteSelection()
   await loadNoteChildren(null)
   renderShell()
@@ -2389,7 +2498,7 @@ async function openNoteRoot() {
 
 function clearNoteSelection() {
   releaseNoteAsset()
-  Object.assign(state.notes, { selectedId: '', selectedNode: null, currentFolderId: null, breadcrumbs: [], content: '', draft: '', dirty: false })
+  Object.assign(state.notes, { selectedId: '', selectedNode: null, currentFolderId: null, breadcrumbs: [], content: '', draft: '', dirty: false, loadingNodeId: '' })
 }
 
 function releaseNoteAsset() {
