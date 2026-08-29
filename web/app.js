@@ -1040,6 +1040,7 @@ function renderShell() {
     if (event.target === shell) { state.menuOpen = false; renderShell() }
   })
   app.replaceChildren(shell)
+  applySidebarVisibility(shell, state.documentView.sidebarHidden)
   refreshWorkspaceEffects(shell)
   restoreScrollPosition(currentScrollState())
 }
@@ -1106,7 +1107,33 @@ function setSidebarWidth(width, shell, handle) {
 function setSidebarHidden(hidden) {
   state.documentView.sidebarHidden = hidden
   saveDocumentLayout()
-  renderShell()
+  const shell = app.querySelector('.app-shell')
+  if (shell) applySidebarVisibility(shell, hidden)
+}
+
+function applySidebarVisibility(shell, hidden) {
+  shell.dataset.sidebarHidden = String(hidden)
+  const sidebar = shell.querySelector(':scope > .sidebar')
+  const resizer = shell.querySelector(':scope > .app-sidebar-resizer')
+  const toggle = shell.querySelector('.pane-toggle-button[data-pane="main"]')
+  sidebar?.toggleAttribute('inert', hidden)
+  resizer?.toggleAttribute('inert', hidden)
+  if (sidebar) {
+    if (hidden) sidebar.setAttribute('aria-hidden', 'true')
+    else sidebar.removeAttribute('aria-hidden')
+  }
+  if (resizer) {
+    resizer.tabIndex = hidden ? -1 : 0
+    if (hidden) resizer.setAttribute('aria-hidden', 'true')
+    else resizer.removeAttribute('aria-hidden')
+  }
+  if (toggle) {
+    const visible = !hidden
+    const action = `${visible ? '隐藏' : '显示'}主导航栏`
+    toggle.setAttribute('aria-pressed', String(visible))
+    toggle.setAttribute('aria-label', action)
+    toggle.title = action
+  }
 }
 
 function renderSidebar() {
@@ -1394,7 +1421,10 @@ function renderKnowledgeBaseCard(base) {
   const archived = base.status === 'archived'
   const visibleTags = base.defaultTags.slice(0, 4)
   const hiddenTagCount = Math.max(0, base.defaultTags.length - visibleTags.length)
-  return element('article', { class: `base-card${archived ? ' is-archived' : ''}` },
+  return element('article', {
+    class: `base-card${archived ? ' is-archived' : ''}`,
+    'data-knowledge-motion-key': `knowledge-library:${base.id}`,
+  },
     element('div', { class: 'base-card-header' },
       element('div', { class: 'base-card-identity' },
         element('span', { class: 'base-symbol', 'aria-hidden': 'true' }, base.name.trim().slice(0, 1).toLocaleUpperCase() || 'K'),
@@ -1526,7 +1556,11 @@ function renderMountListRow(base, view, targetKind, targetId) {
     },
   })
   const modelLabel = writebackRouteLabel(base)
-  return element('article', { class: `mount-list-row${selected ? ' is-selected' : ''}`, role: 'listitem' },
+  return element('article', {
+    class: `mount-list-row${selected ? ' is-selected' : ''}`,
+    role: 'listitem',
+    'data-knowledge-motion-key': `knowledge-mount:${targetKind}:${base.id}`,
+  },
     element('label', { class: 'mount-select' }, checkbox, element('span', { class: 'visually-hidden' }, `选择 ${base.name}`)),
     element('div', { class: 'mount-list-main' },
       element('div', { class: 'mount-list-title' }, element('strong', {}, base.name), badge(view.statusLabel, view.statusVariant), badge(modelLabel)),
@@ -1599,10 +1633,10 @@ function renderDocumentWorkspace(workspace, options = {}) {
     const documents = (query ? view.searchResults : workspaceDocuments).filter(document => document.knowledgeBaseId === base.id)
     return element('section', {
       class: 'note-tree-group', 'data-expanded': String(expanded),
-      'data-knowledge-motion-key': `knowledge-base:${workspace.kind}:${base.id}`,
     },
       element('button', {
         type: 'button', class: 'note-tree-base', 'aria-expanded': String(expanded),
+        'data-knowledge-motion-key': `knowledge-base:${workspace.kind}:${base.id}`,
         onClick: () => {
           if (query) { view.knowledgeBaseId = base.id; return renderShell() }
           void toggleDocumentBase(workspace, base.id)

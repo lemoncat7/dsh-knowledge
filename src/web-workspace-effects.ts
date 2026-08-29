@@ -29,9 +29,14 @@ const GLARE_SURFACE_SELECTOR = [
   '.notes-search-row',
   '.notes-file-main',
 ].join(',')
-const ANIMATED_LIST_SELECTOR = '.note-tree, .notes-tree'
+const ANIMATED_LIST_SELECTOR = [
+  '.note-tree',
+  '.notes-tree',
+  '.base-grid',
+  '.mount-table',
+].join(',')
 const MOTION_ITEM_SELECTOR = '[data-knowledge-motion-key]'
-const MAX_REMEMBERED_MOTION_KEYS = 4_000
+const MOTION_REPLAY_COOLDOWN = 700
 const EDGE_RESPONSE_RANGE = 38
 
 interface WorkspaceEffectsApi {
@@ -54,8 +59,7 @@ declare global {
 const glassSurfaces = new Map<HTMLElement, GlassSurfaceRecord>()
 const borderSurfaces = new Map<HTMLElement, () => void>()
 const animatedLists = new Map<HTMLElement, () => void>()
-const rememberedMotionKeys = new Set<string>()
-const motionKeyOrder: string[] = []
+const motionPlayedAt = new Map<string, number>()
 let filterSequence = 0
 let filterBank: SVGSVGElement | undefined
 
@@ -214,13 +218,20 @@ function installBorderSurface(surface: HTMLElement): void {
   })
 }
 
-function rememberMotionKey(key: string): void {
-  if (rememberedMotionKeys.has(key)) return
-  rememberedMotionKeys.add(key)
-  motionKeyOrder.push(key)
-  if (motionKeyOrder.length <= MAX_REMEMBERED_MOTION_KEYS) return
-  const expired = motionKeyOrder.shift()
-  if (expired !== undefined) rememberedMotionKeys.delete(expired)
+function motionWasJustPlayed(item: HTMLElement, now: number): boolean {
+  const key = item.dataset.knowledgeMotionKey
+  if (key === undefined) return false
+  const playedAt = motionPlayedAt.get(key)
+  return playedAt !== undefined && now - playedAt < MOTION_REPLAY_COOLDOWN
+}
+
+function rememberMotionPlay(item: HTMLElement, now: number): void {
+  const key = item.dataset.knowledgeMotionKey
+  if (key === undefined) return
+  motionPlayedAt.set(key, now)
+  if (motionPlayedAt.size <= 4_000) return
+  const oldestKey = motionPlayedAt.keys().next().value
+  if (oldestKey !== undefined) motionPlayedAt.delete(oldestKey)
 }
 
 function updateScrollEdges(list: HTMLElement): void {
@@ -231,7 +242,9 @@ function updateScrollEdges(list: HTMLElement): void {
 
 function installAnimatedList(list: HTMLElement): void {
   if (animatedLists.has(list)) return
+  const isCardGrid = list.matches('.base-grid')
   list.classList.add('knowledge-animated-list')
+  list.dataset.knowledgeListLayout = isCardGrid ? 'grid' : 'scroll'
   updateScrollEdges(list)
   const onScroll = (): void => updateScrollEdges(list)
   list.addEventListener('scroll', onScroll, { passive: true })
@@ -243,29 +256,45 @@ function installAnimatedList(list: HTMLElement): void {
     return
   }
 
+  const observerRoot = list.scrollHeight - list.clientHeight > 2 ? list : null
   const observer = new IntersectionObserver(entries => {
-    for (const entry of entries) {
-      if (!entry.isIntersecting) continue
+    const entering = entries
+      .filter(entry => entry.isIntersecting)
+      .sort((left, right) => left.boundingClientRect.top - right.boundingClientRect.top)
+    const now = performance.now()
+    entering.forEach((entry, index) => {
       const item = entry.target as HTMLElement
-      const key = item.dataset.knowledgeMotionKey
-      if (key !== undefined) rememberMotionKey(key)
+      const stagger = isCardGrid ? 52 : 38
+      item.style.setProperty('--knowledge-list-delay', `${Math.min(index, 7) * stagger}ms`)
       item.classList.add('is-visible')
-      observer.unobserve(item)
+      rememberMotionPlay(item, now)
+    })
+    for (const entry of entries) {
+      if (entry.isIntersecting) continue
+      const item = entry.target as HTMLElement
+      item.classList.remove('is-visible')
+      item.style.setProperty('--knowledge-list-delay', '0ms')
     }
-  }, { root: list, threshold: .08, rootMargin: '2px 0px' })
+  }, { root: observerRoot, threshold: .12, rootMargin: '-4px 0px' })
 
-  let newItemIndex = 0
+  const now = performance.now()
   for (const item of items) {
-    const key = item.dataset.knowledgeMotionKey ?? ''
     item.classList.add('knowledge-list-reveal')
-    if (rememberedMotionKeys.has(key)) {
-      item.classList.add('is-visible')
-      continue
-    }
-    item.style.setProperty('--knowledge-list-delay', `${Math.min(newItemIndex++, 7) * 24}ms`)
-    observer.observe(item)
+    if (!isCardGrid && motionWasJustPlayed(item, now)) item.classList.add('is-visible')
   }
+
+  let prepareFrame = 0
+  let settleFrame = 0
+  prepareFrame = requestAnimationFrame(() => {
+    prepareFrame = 0
+    settleFrame = requestAnimationFrame(() => {
+      settleFrame = 0
+      for (const item of items) observer.observe(item)
+    })
+  })
   animatedLists.set(list, () => {
+    if (prepareFrame !== 0) cancelAnimationFrame(prepareFrame)
+    if (settleFrame !== 0) cancelAnimationFrame(settleFrame)
     observer.disconnect()
     list.removeEventListener('scroll', onScroll)
   })
@@ -319,6 +348,7 @@ function destroy(): void {
   glassSurfaces.clear()
   borderSurfaces.clear()
   animatedLists.clear()
+  motionPlayedAt.clear()
   filterBank?.remove()
   filterBank = undefined
 }
