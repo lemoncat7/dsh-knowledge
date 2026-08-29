@@ -22,79 +22,42 @@ interface ComputedStyleLike {
   getPropertyValue(name: string): string
 }
 
-const TOKEN_SOURCES = {
-  '--bg': ['--xiaohei-plugin-workspace-fill', '--dsw-alias-bg-layer-1', '--dsw-alias-bg-base'],
-  '--surface': ['--xiaohei-plugin-pane-fill', '--dsw-alias-bg-layer-2', '--dsw-alias-bg-layer-1'],
-  '--surface-raised': ['--xiaohei-plugin-raised-fill', '--dsw-alias-bg-layer-3', '--dsw-alias-bg-overlay', '--dsw-alias-bg-layer-2'],
-  '--surface-soft': ['--xiaohei-plugin-control-fill', '--dsw-alias-bg-module-platform', '--dsw-alias-bg-layer-3', '--dsw-alias-bg-layer-2'],
-  '--surface-hover': ['--dsw-alias-interactive-bg-hover', '--dsw-alias-bg-layer-3'],
-  '--text': ['--dsw-alias-label-primary'],
-  '--text-secondary': ['--dsw-alias-label-secondary', '--dsw-alias-label-primary-dimmed'],
-  '--text-tertiary': ['--dsw-alias-label-tertiary', '--dsw-alias-label-caption'],
-  '--border': ['--dsw-alias-border-l2', '--dsw-alias-divider-primary', '--dsw-alias-border-l1'],
-  '--border-strong': ['--dsw-alias-border-l3', '--dsw-alias-border-l2'],
-  '--accent': ['--dsw-alias-button-primary-fill', '--dsw-alias-brand-primary'],
-  '--accent-hover': ['--dsw-alias-button-primary-hover', '--dsw-alias-brand-primary'],
-  '--accent-soft': ['--dsw-alias-interactive-bg-active', '--dsw-alias-interactive-bg-hover-accent'],
-  '--on-accent': ['--dsw-alias-label-primary-foreground', '--dsw-alias-brand-primary-invert'],
-  '--success': ['--dsw-alias-state-success-primary'],
-  '--success-soft': ['--dsw-alias-state-success-tertiary'],
-  '--warning': ['--dsw-alias-state-warn-primary', '--dsw-alias-state-warn-label'],
-  '--warning-soft': ['--dsw-alias-state-warn-tertiary'],
-  '--danger': ['--dsw-alias-state-error-primary'],
-  '--danger-soft': ['--dsw-alias-state-error-tertiary'],
-  '--shadow': ['--dsw-shadow-lv3', '--dsw-shadow-lv2'],
-} as const
-
-const FALLBACK_TOKENS: Record<KnowledgeColorScheme, Readonly<Record<string, string>>> = {
+/**
+ * The management console lives in its own iframe and therefore owns its
+ * component palette.  Only the host colour scheme crosses that boundary.
+ * Keeping these tokens stable prevents a branded host accent from changing
+ * editor selection, navigation and dialog hierarchy independently.
+ */
+const WORKSPACE_TOKENS: Record<KnowledgeColorScheme, Readonly<Record<string, string>>> = {
   light: {
-    '--bg': '#eef1f3', '--surface': '#f7f9fa', '--surface-raised': '#ffffff',
-    '--surface-soft': '#e8ecef', '--surface-hover': '#e3e8eb',
-    '--text': '#202629', '--text-secondary': '#4f595e', '--text-tertiary': '#667178',
-    '--border': '#d5dce0', '--border-strong': '#bcc6cb',
-    '--accent': '#4f7773', '--accent-hover': '#3e6561', '--accent-soft': '#dfeae8', '--on-accent': '#f8fbfa',
-    '--success': '#18794e', '--success-soft': '#e8f5ee', '--warning': '#986800', '--warning-soft': '#fff4cf',
-    '--danger': '#c9343a', '--danger-soft': '#fdebec', '--shadow': '0 1px 2px rgb(25 35 40 / 5%), 0 14px 36px rgb(25 35 40 / 9%)',
+    '--bg': '#e9e9ed', '--surface': '#f2f3f7', '--surface-raised': '#ffffff',
+    '--surface-soft': '#eceef1', '--surface-hover': '#e5e5e7',
+    '--text': '#1d1d1f', '--text-secondary': '#515154', '--text-tertiary': '#6e6e73',
+    '--border': 'rgb(60 60 67 / 14%)', '--border-strong': 'rgb(60 60 67 / 24%)',
+    '--accent': '#3a3a3c', '--accent-hover': '#1d1d1f', '--accent-soft': '#e2e2e5', '--on-accent': '#ffffff',
+    '--success': '#248a3d', '--success-soft': '#e8f5eb', '--warning': '#c93400', '--warning-soft': '#fff1e8',
+    '--danger': '#d70015', '--danger-soft': '#ffebed', '--shadow': '0 24px 64px rgb(0 0 0 / 20%)',
   },
   dark: {
-    '--bg': '#111719', '--surface': '#182022', '--surface-raised': '#20292c',
-    '--surface-soft': '#283235', '--surface-hover': '#303b3e',
-    '--text': '#edf2f1', '--text-secondary': '#bec9c7', '--text-tertiary': '#8e9b99',
-    '--border': '#334044', '--border-strong': '#48585c',
-    '--accent': '#78b5ad', '--accent-hover': '#91c8c1', '--accent-soft': '#213b39', '--on-accent': '#0d1e1b',
-    '--success': '#62c596', '--success-soft': '#163a2a', '--warning': '#e7bc62', '--warning-soft': '#423414',
-    '--danger': '#ff858a', '--danger-soft': '#4b2227', '--shadow': '0 2px 4px rgb(0 0 0 / 22%), 0 18px 46px rgb(0 0 0 / 32%)',
+    '--bg': '#1c1c1e', '--surface': '#242426', '--surface-raised': '#2c2c2e',
+    '--surface-soft': '#3a3a3c', '--surface-hover': '#414145',
+    '--text': '#f5f5f7', '--text-secondary': '#d1d1d6', '--text-tertiary': '#98989d',
+    '--border': 'rgb(255 255 255 / 10%)', '--border-strong': 'rgb(255 255 255 / 18%)',
+    '--accent': '#e5e5ea', '--accent-hover': '#ffffff', '--accent-soft': '#3a3a3c', '--on-accent': '#1d1d1f',
+    '--success': '#30d158', '--success-soft': '#173a22', '--warning': '#ff9f0a', '--warning-soft': '#422f10',
+    '--danger': '#ff453a', '--danger-soft': '#4a2020', '--shadow': '0 28px 72px rgb(0 0 0 / 48%)',
   },
 }
 
-/** Translate DSH's public semantic palette into the knowledge console's tokens. */
+/** Synchronise host light/dark mode while preserving one coherent workspace palette. */
 export function createKnowledgeHostTheme(
-  computed: ComputedStyleLike,
+  _computed: ComputedStyleLike,
   snapshot: ThemeSnapshotLike,
 ): KnowledgeHostThemeMessage {
-  const tokens: Record<string, string> = {}
-  for (const [target, sources] of Object.entries(TOKEN_SOURCES)) {
-    const value = firstDefinedToken(computed, snapshot.active.tokens, sources)
-    tokens[target] = value ?? FALLBACK_TOKENS[snapshot.active.colorScheme][target]!
-  }
   return {
     type: KNOWLEDGE_THEME_MESSAGE,
     version: KNOWLEDGE_THEME_PROTOCOL_VERSION,
     colorScheme: snapshot.active.colorScheme,
-    tokens,
+    tokens: { ...WORKSPACE_TOKENS[snapshot.active.colorScheme] },
   }
-}
-
-function firstDefinedToken(
-  computed: ComputedStyleLike,
-  snapshotTokens: Readonly<Record<string, string>>,
-  sources: readonly string[],
-): string | undefined {
-  for (const source of sources) {
-    const computedValue = computed.getPropertyValue(source).trim()
-    if (computedValue.length > 0) return computedValue
-    const snapshotValue = snapshotTokens[source]?.trim()
-    if (snapshotValue !== undefined && snapshotValue.length > 0) return snapshotValue
-  }
-  return undefined
 }

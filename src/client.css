@@ -2,10 +2,43 @@
 .dsh-knowledge-workspace,
 .dsh-knowledge-settings-card,
 .dsh-knowledge-writeback-status {
-  --knowledge-accent: var(--dsw-alias-interactive-primary, var(--dsw-alias-brand-primary, #547d78));
-  --knowledge-on-accent: var(--dsw-alias-label-primary-foreground, #fff);
-  --knowledge-danger: var(--dsw-alias-state-error-primary, #c9362b);
-  --knowledge-success: var(--dsw-alias-state-success-primary, #15803d);
+  --knowledge-accent: #3a3a3c;
+  --knowledge-on-accent: #fff;
+  --knowledge-danger: #d70015;
+  --knowledge-success: #248a3d;
+  --knowledge-pane: rgb(242 243 247 / 78%);
+  --knowledge-raised: #fff;
+  --knowledge-control: rgb(255 255 255 / 82%);
+  --knowledge-border: rgb(60 60 67 / 14%);
+  --knowledge-text: #1d1d1f;
+  --knowledge-text-secondary: #515154;
+  --knowledge-hover: rgba(118, 118, 128, .1);
+  --knowledge-glare-light: rgb(255 255 255 / 82%);
+  --knowledge-glare-rim: rgb(60 60 67 / 15%);
+  --knowledge-glass-filter: saturate(1.2) contrast(1.035) blur(20px);
+  --knowledge-glass-shadow: inset 0 1px 0 rgb(255 255 255 / 58%), inset 0 -1px 0 rgb(60 60 67 / 12%);
+}
+
+body[data-ds-dark-theme] :is(
+  .dsh-knowledge-trigger,
+  .dsh-knowledge-workspace,
+  .dsh-knowledge-settings-card,
+  .dsh-knowledge-writeback-status
+) {
+  --knowledge-accent: #e5e5ea;
+  --knowledge-on-accent: #1d1d1f;
+  --knowledge-danger: #ff453a;
+  --knowledge-success: #30d158;
+  --knowledge-pane: rgb(44 44 46 / 78%);
+  --knowledge-raised: #2c2c2e;
+  --knowledge-control: rgb(58 58 60 / 88%);
+  --knowledge-border: rgb(255 255 255 / 10%);
+  --knowledge-text: #f5f5f7;
+  --knowledge-text-secondary: #d1d1d6;
+  --knowledge-hover: rgb(255 255 255 / 8%);
+  --knowledge-glare-light: rgb(255 255 255 / 42%);
+  --knowledge-glare-rim: rgb(0 0 0 / 24%);
+  --knowledge-glass-shadow: inset 0 1px 0 rgb(255 255 255 / 18%), inset 0 -1px 0 rgb(0 0 0 / 30%);
 }
 
 .dsh-knowledge-trigger,
@@ -18,14 +51,17 @@
 }
 
 .dsh-knowledge-trigger {
+  position: relative;
   flex: none;
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   align-items: center;
   gap: 8px;
-  width: calc(100% + 8px);
+  width: 100%;
   height: 34px;
-  margin: 4px -4px;
-  padding: 6px 2px 6px 10px;
+  margin: 4px 0;
+  padding: 6px 8px 6px 10px;
   box-sizing: border-box;
   border: 0;
   border-radius: 12px;
@@ -37,10 +73,49 @@
   font-size: 14px;
   line-height: 22px;
   white-space: nowrap;
+  isolation: isolate;
+  transition:
+    color 120ms ease,
+    background-color 120ms ease,
+    box-shadow 160ms ease;
 }
 
 .dsh-knowledge-trigger:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
+  background: var(--knowledge-hover);
+}
+
+.dsh-knowledge-trigger > * {
+  position: relative;
+  z-index: 1;
+}
+
+.dsh-knowledge-trigger::before {
+  position: absolute;
+  z-index: 0;
+  top: -55%;
+  bottom: -55%;
+  left: -64%;
+  width: 52%;
+  border-radius: 45%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--knowledge-glare-light) 76%, transparent) 50%,
+    color-mix(in srgb, var(--knowledge-glare-rim) 18%, transparent) 63%,
+    transparent
+  );
+  opacity: 0;
+  transform: skewX(-18deg) translate3d(0, 0, 0);
+  pointer-events: none;
+  transition:
+    opacity 150ms ease-out,
+    transform 720ms cubic-bezier(.2, .72, .2, 1);
+  content: "";
+}
+
+.dsh-knowledge-trigger:hover::before {
+  opacity: .96;
+  transform: skewX(-18deg) translate3d(320%, 0, 0);
 }
 
 .dsh-knowledge-trigger:focus-visible,
@@ -50,8 +125,9 @@
 }
 
 .dsh-knowledge-trigger.is-active {
-  background: var(--dsw-alias-interactive-bg-selected, var(--dsw-alias-interactive-bg-hover));
-  color: var(--knowledge-accent);
+  background: var(--knowledge-control);
+  color: var(--knowledge-text);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 7%), inset 0 1px 0 rgb(255 255 255 / 28%);
 }
 
 .dsh-knowledge-trigger--rail {
@@ -64,10 +140,13 @@
   border-radius: 50%;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .dsh-knowledge-trigger,
+  .dsh-knowledge-trigger::before { transition: none; }
+  .dsh-knowledge-trigger::before { display: none; }
+}
+
 .dsh-knowledge-workspace {
-  --knowledge-pane: var(--xiaohei-plugin-pane-fill, var(--dsw-alias-bg-base, #f7f8f7));
-  --knowledge-raised: var(--xiaohei-plugin-raised-fill, var(--dsw-alias-bg-layer-2, #fff));
-  --knowledge-control: var(--xiaohei-plugin-control-fill, var(--dsw-alias-bg-layer-1, #fff));
   width: 100%;
   height: 100%;
   min-width: 0;
@@ -76,6 +155,8 @@
   flex-direction: column;
   overflow: hidden;
   background: var(--knowledge-pane);
+  -webkit-backdrop-filter: var(--knowledge-glass-filter);
+  backdrop-filter: var(--knowledge-glass-filter);
 }
 
 .dsh-knowledge-workspace-header {
@@ -87,8 +168,9 @@
   min-height: 56px;
   padding: 8px 16px 8px 20px;
   box-sizing: border-box;
-  border-bottom: 1px solid var(--dsw-alias-divider-primary, rgba(128, 128, 128, .18));
+  border-bottom: 1px solid var(--knowledge-border);
   background: var(--knowledge-pane);
+  box-shadow: var(--knowledge-glass-shadow);
 }
 
 .dsh-knowledge-workspace-header > div {
@@ -111,7 +193,7 @@
   padding: 0;
   border: 1px solid transparent;
   border-radius: 9px;
-  color: var(--dsw-alias-label-secondary, #68686f);
+  color: var(--knowledge-text-secondary);
   background: transparent;
   font: inherit;
   line-height: 1;
@@ -121,9 +203,9 @@
 }
 
 .dsh-knowledge-workspace-header [data-xiaohei-workspace-close]:hover {
-  border-color: var(--dsw-alias-divider-primary, rgba(128, 128, 128, .18));
-  color: var(--dsw-alias-label-primary, #171719);
-  background: var(--dsw-alias-interactive-bg-hover, rgba(128, 128, 128, .08));
+  border-color: var(--knowledge-border);
+  color: var(--knowledge-text);
+  background: var(--knowledge-control);
 }
 
 .dsh-knowledge-workspace-header [data-xiaohei-workspace-close]:active { transform: scale(.96); }
@@ -148,14 +230,14 @@
 }
 
 .dsh-knowledge-workspace-header h2 {
-  color: var(--dsw-alias-label-primary);
+  color: var(--knowledge-text);
   font-size: 15px;
   line-height: 22px;
   font-weight: 600;
 }
 
 .dsh-knowledge-workspace-header p {
-  color: var(--dsw-alias-label-secondary);
+  color: var(--knowledge-text-secondary);
   font-size: 11px;
   line-height: 16px;
 }

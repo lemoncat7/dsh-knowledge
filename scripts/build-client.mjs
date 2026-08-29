@@ -59,3 +59,13 @@ await build({
   target: 'es2022',
   minify: true,
 })
+
+await build({
+  entryPoints: ['src/web-workspace-effects.ts'],
+  outfile: 'web/workspace-effects.js',
+  bundle: true,
+  format: 'iife',
+  platform: 'browser',
+  target: 'es2022',
+  minify: true,
+})

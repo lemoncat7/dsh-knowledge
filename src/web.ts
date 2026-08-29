@@ -13,6 +13,7 @@ const STATIC_ASSETS = new Map<string, Asset>([
   ['change-review.js', loadAsset('../web/change-review.js', 'text/javascript; charset=utf-8')],
   ['markdown-preview.js', loadAsset('../web/markdown-preview.js', 'text/javascript; charset=utf-8')],
   ['note-editor.js', loadAsset('../web/note-editor.js', 'text/javascript; charset=utf-8')],
+  ['workspace-effects.js', loadAsset('../web/workspace-effects.js', 'text/javascript; charset=utf-8')],
   ['styles.css', loadAsset('../web/styles.css', 'text/css; charset=utf-8')],
 ])
 const ASSET_VERSION = createHash('sha256')

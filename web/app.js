@@ -242,6 +242,10 @@ function element(tag, attributes = {}, ...children) {
   return node
 }
 
+function refreshWorkspaceEffects(root = document) {
+  window.DshKnowledgeEffects?.refresh(root)
+}
+
 function actionButton(label, onClick, variant = '', attributes = {}) {
   return element('button', { type: 'button', class: `button ${variant}`.trim(), onClick, ...attributes }, label)
 }
@@ -434,6 +438,7 @@ function renderLogin(message = '') {
     element('p', {}, '管理对话中沉淀的长期知识与 AI 提取候选。'),
     form,
   )))
+  refreshWorkspaceEffects(app)
 }
 
 function signOut() {
@@ -1035,6 +1040,7 @@ function renderShell() {
     if (event.target === shell) { state.menuOpen = false; renderShell() }
   })
   app.replaceChildren(shell)
+  refreshWorkspaceEffects(shell)
   restoreScrollPosition(currentScrollState())
 }
 
@@ -1591,7 +1597,10 @@ function renderDocumentWorkspace(workspace, options = {}) {
     const expanded = view.expandedBases.has(base.id) || Boolean(query)
     const page = documentPageState(workspace, base.id)
     const documents = (query ? view.searchResults : workspaceDocuments).filter(document => document.knowledgeBaseId === base.id)
-    return element('section', { class: 'note-tree-group', 'data-expanded': String(expanded) },
+    return element('section', {
+      class: 'note-tree-group', 'data-expanded': String(expanded),
+      'data-knowledge-motion-key': `knowledge-base:${workspace.kind}:${base.id}`,
+    },
       element('button', {
         type: 'button', class: 'note-tree-base', 'aria-expanded': String(expanded),
         onClick: () => {
@@ -1610,6 +1619,8 @@ function renderDocumentWorkspace(workspace, options = {}) {
           actionButton('重试', () => { void loadDocumentPage(workspace, base.id, { reset: true }).then(renderShell) }, 'ghost small')) : null,
         documents.map(document => element('button', {
           type: 'button', class: 'note-tree-document', 'aria-current': document.id === view.documentId ? 'page' : undefined,
+          'data-document-id': document.id,
+          'data-knowledge-motion-key': `knowledge-document:${workspace.kind}:${document.id}`,
           onClick: () => { view.knowledgeBaseId = base.id; void selectDocument(workspace, document.id) },
         }, element('span', { class: 'tree-document-icon', 'aria-hidden': 'true' }), element('span', { class: 'tree-document-copy' },
           element('strong', {}, document.title), element('small', {}, document.relPath)),
@@ -2035,6 +2046,7 @@ function renderNoteTreeBranch(parentId, depth = 0) {
     const row = element('div', {
       class: 'notes-tree-item', 'data-kind': node.kind, 'data-selected': String(selected),
       'data-note-id': node.id,
+      'data-knowledge-motion-key': `note:${node.id}`,
       draggable: 'true',
       onDragStart: event => {
         event.dataTransfer.effectAllowed = 'move'
@@ -2074,7 +2086,8 @@ function renderNoteTreeBranch(parentId, depth = 0) {
 function renderNoteSearchResults() {
   if (!state.notes.searchResults.length) return element('div', { class: 'notes-tree-empty' }, '没有匹配的笔记文档。')
   return element('div', { class: 'notes-search-results' }, state.notes.searchResults.map(node => element('button', {
-    type: 'button', class: 'notes-search-row', onClick: () => { void selectNoteNode(node) },
+    type: 'button', class: 'notes-search-row', 'data-knowledge-motion-key': `note-search:${node.id}`,
+    onClick: () => { void selectNoteNode(node) },
   }, renderNoteIcon(node), element('span', {}, element('strong', {}, node.name), element('small', {}, noteKindLabel(node))))))
 }
 
@@ -3774,6 +3787,7 @@ function openModal({ title, description = '', body, primaryLabel, primaryVariant
     document.removeEventListener('keydown', onKeyDown)
     closed = true
     backdrop.remove()
+    refreshWorkspaceEffects()
     onClose?.()
     if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus()
   }
@@ -3815,6 +3829,7 @@ function openModal({ title, description = '', body, primaryLabel, primaryVariant
     body.addEventListener('change', () => { formDirty = true })
   }
   document.body.append(backdrop)
+  refreshWorkspaceEffects(backdrop)
   document.addEventListener('keydown', onKeyDown)
   window.setTimeout(() => (dialog.querySelector('input, textarea, select, button') || dialog).focus(), 0)
   return { close, dialog }
