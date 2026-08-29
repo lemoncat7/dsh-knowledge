@@ -140,6 +140,17 @@ body[data-ds-dark-theme] :is(
   border-radius: 50%;
 }
 
+/* Rail (collapsed) mode: the host footer seat is a horizontal row sized for a
+   single 36px circle per entry; with several entries it overflows the 56px
+   rail and the circles drift off the settings axis. Stack the entries
+   vertically, centered on the same axis as the settings circle. The --rail
+   class on the knowledge trigger is the collapsed-mode signal, so wide mode
+   is untouched. */
+div:has(> div[data-slot="sidebar.footer.action"] .dsh-knowledge-trigger--rail) {
+  flex-direction: column;
+  align-items: center;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dsh-knowledge-trigger,
   .dsh-knowledge-trigger::before { transition: none; }
