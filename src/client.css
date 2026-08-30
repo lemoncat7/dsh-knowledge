@@ -58,7 +58,7 @@ body[data-ds-dark-theme] :is(
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
+  width: auto;
   height: 34px;
   margin: 4px 0;
   padding: 6px 8px 6px 10px;
