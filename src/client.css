@@ -15,7 +15,7 @@
   --knowledge-hover: rgba(118, 118, 128, .1);
   --knowledge-glare-light: rgb(255 255 255 / 82%);
   --knowledge-glare-rim: rgb(60 60 67 / 15%);
-  --knowledge-glass-filter: saturate(1.2) contrast(1.035) blur(20px);
+  --knowledge-glass-filter: saturate(1.18) contrast(1.025) blur(28px);
   --knowledge-glass-shadow: inset 0 1px 0 rgb(255 255 255 / 58%), inset 0 -1px 0 rgb(60 60 67 / 12%);
 }
 
@@ -29,9 +29,9 @@ body[data-ds-dark-theme] :is(
   --knowledge-on-accent: #1d1d1f;
   --knowledge-danger: #ff453a;
   --knowledge-success: #30d158;
-  --knowledge-pane: rgb(44 44 46 / 78%);
-  --knowledge-raised: #2c2c2e;
-  --knowledge-control: rgb(58 58 60 / 88%);
+  --knowledge-pane: rgb(8 10 12 / 19%);
+  --knowledge-raised: rgb(10 12 15 / 44%);
+  --knowledge-control: rgb(255 255 255 / 7%);
   --knowledge-border: rgb(255 255 255 / 10%);
   --knowledge-text: #f5f5f7;
   --knowledge-text-secondary: #d1d1d6;
@@ -154,23 +154,29 @@ body[data-ds-dark-theme] :is(
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--knowledge-pane);
-  -webkit-backdrop-filter: var(--knowledge-glass-filter);
-  backdrop-filter: var(--knowledge-glass-filter);
+  background: transparent;
 }
 
 .dsh-knowledge-workspace-header {
+  position: relative;
+  z-index: 2;
   flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  min-height: 56px;
-  padding: 8px 16px 8px 20px;
+  min-height: 52px;
+  margin: 8px 10px 0;
+  padding: 7px 14px;
   box-sizing: border-box;
-  border-bottom: 1px solid var(--knowledge-border);
-  background: var(--knowledge-pane);
+  border: 1px solid var(--knowledge-border);
+  border-radius: 14px 14px 11px 11px;
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--knowledge-glare-light) 20%, transparent), transparent 58%),
+    var(--knowledge-pane);
   box-shadow: var(--knowledge-glass-shadow);
+  -webkit-backdrop-filter: var(--knowledge-glass-filter);
+  backdrop-filter: var(--knowledge-glass-filter);
 }
 
 .dsh-knowledge-workspace-header > div {
@@ -244,10 +250,14 @@ body[data-ds-dark-theme] :is(
 
 .dsh-knowledge-frame {
   flex: 1;
+  display: block;
   width: 100%;
   min-height: 0;
+  margin: 0;
   border: 0;
+  border-radius: 0;
   background: transparent;
+  box-shadow: none;
 }
 
 .dsh-knowledge-panel-state {
@@ -257,9 +267,15 @@ body[data-ds-dark-theme] :is(
   justify-content: center;
   gap: 16px;
   min-height: 0;
+  margin: 8px 10px 10px;
   padding: 32px;
   box-sizing: border-box;
-  background: transparent;
+  border: 1px solid var(--knowledge-border);
+  border-radius: 15px;
+  background: var(--knowledge-pane);
+  box-shadow: var(--knowledge-glass-shadow);
+  -webkit-backdrop-filter: var(--knowledge-glass-filter);
+  backdrop-filter: var(--knowledge-glass-filter);
   color: var(--dsw-alias-label-primary, #171719);
 }
 
@@ -300,14 +316,26 @@ body[data-ds-dark-theme] :is(
 .dsh-knowledge-settings-card {
   list-style: none;
   overflow: hidden;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 12px;
-  background: var(--dsw-alias-bg-layer-3);
+  border: 1px solid var(--knowledge-border);
+  border-radius: 14px;
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--knowledge-glare-light) 16%, transparent), transparent 58%),
+    var(--knowledge-pane);
   color: var(--dsw-alias-label-primary, #171719);
-  transition: border-color .16s, background .16s;
+  box-shadow: var(--knowledge-glass-shadow), 0 8px 24px rgb(0 0 0 / 5%);
+  -webkit-backdrop-filter: var(--knowledge-glass-filter);
+  backdrop-filter: var(--knowledge-glass-filter);
+  transition: border-color .16s, background .16s, box-shadow .2s, transform .2s cubic-bezier(.22, 1, .36, 1);
 }
-.dsh-knowledge-settings-card:hover { border-color: var(--dsw-alias-label-dimmed); }
-.dsh-knowledge-settings-card--open { border-color: var(--dsw-alias-label-dimmed); background: var(--dsw-alias-bg-layer-2); }
+.dsh-knowledge-settings-card:hover {
+  border-color: color-mix(in srgb, var(--knowledge-border) 68%, var(--knowledge-text-secondary));
+  box-shadow: var(--knowledge-glass-shadow), 0 12px 30px rgb(0 0 0 / 8%);
+  transform: translateY(-1px);
+}
+.dsh-knowledge-settings-card--open {
+  border-color: color-mix(in srgb, var(--knowledge-border) 68%, var(--knowledge-text-secondary));
+  background: var(--knowledge-pane);
+}
 .dsh-knowledge-settings-header { display: flex; width: 100%; align-items: center; gap: 12px; padding: 14px 16px; border: 0; border-radius: 12px; background: transparent; color: inherit; text-align: left; cursor: pointer; font: inherit; }
 .dsh-knowledge-settings-header:focus-visible {
   outline: 2px solid var(--knowledge-accent);

@@ -6,7 +6,7 @@ const HOST_THEME_MESSAGE = '@lemoncat7/dsh-knowledge/host-theme'
 const HOST_THEME_READY_MESSAGE = '@lemoncat7/dsh-knowledge/host-theme-ready'
 const HOST_THEME_PROTOCOL_VERSION = 1
 const HOST_THEME_COLOR_TOKENS = new Set([
-  '--bg', '--surface', '--surface-raised', '--surface-soft', '--surface-hover',
+  '--bg', '--surface', '--surface-raised', '--surface-soft', '--surface-hover', '--dialog-surface',
   '--text', '--text-secondary', '--text-tertiary', '--border', '--border-strong',
   '--accent', '--accent-hover', '--accent-soft', '--on-accent',
   '--success', '--success-soft', '--warning', '--warning-soft', '--danger', '--danger-soft',
@@ -138,8 +138,8 @@ function installHostThemeBridge() {
         else if (HOST_THEME_STYLE_TOKENS.has(name) && CSS.supports('box-shadow', value)) root.style.setProperty(name, value)
       }
       root.dataset.dshHostTheme = 'true'
+      root.dataset.colorScheme = message.colorScheme
       root.style.colorScheme = message.colorScheme
-      root.style.setProperty('--dialog-surface', root.style.getPropertyValue('--surface-raised') || root.style.getPropertyValue('--surface'))
       document.querySelector('meta[name="color-scheme"]')?.setAttribute('content', message.colorScheme)
       const background = root.style.getPropertyValue('--bg')
       if (background) document.querySelector('meta[name="theme-color"]')?.setAttribute('content', background)
@@ -1009,6 +1009,11 @@ function renderShell() {
   },
     renderSidebar(),
     renderAppSidebarResizer(),
+    state.menuOpen ? element('button', {
+      type: 'button', class: 'app-sidebar-scrim',
+      'aria-label': '关闭导航菜单',
+      onClick: () => { state.menuOpen = false; renderShell() },
+    }) : null,
     element('main', { class: 'main' },
       element('header', { class: 'topbar' },
         element('div', { class: 'topbar-title' },
@@ -1036,9 +1041,6 @@ function renderShell() {
       element('div', { class: 'page' }, element('div', { class: 'view-stage', 'data-view-stage': state.view }, renderCurrentView())),
     ),
   )
-  if (state.menuOpen) shell.addEventListener('click', (event) => {
-    if (event.target === shell) { state.menuOpen = false; renderShell() }
-  })
   app.replaceChildren(shell)
   applySidebarVisibility(shell, state.documentView.sidebarHidden)
   refreshWorkspaceEffects(shell)
@@ -1115,11 +1117,15 @@ function applySidebarVisibility(shell, hidden) {
   shell.dataset.sidebarHidden = String(hidden)
   const sidebar = shell.querySelector(':scope > .sidebar')
   const resizer = shell.querySelector(':scope > .app-sidebar-resizer')
+  const main = shell.querySelector(':scope > .main')
   const toggle = shell.querySelector('.pane-toggle-button[data-pane="main"]')
-  sidebar?.toggleAttribute('inert', hidden)
+  const compact = window.matchMedia('(max-width: 760px)').matches
+  const sidebarUnavailable = compact ? !state.menuOpen : hidden
+  sidebar?.toggleAttribute('inert', sidebarUnavailable)
   resizer?.toggleAttribute('inert', hidden)
+  main?.toggleAttribute('inert', compact && state.menuOpen)
   if (sidebar) {
-    if (hidden) sidebar.setAttribute('aria-hidden', 'true')
+    if (sidebarUnavailable) sidebar.setAttribute('aria-hidden', 'true')
     else sidebar.removeAttribute('aria-hidden')
   }
   if (resizer) {

@@ -9,13 +9,22 @@ const GLASS_SURFACE_SELECTOR = [
   '.note-editor-toolbar',
   '.dialog',
 ].join(',')
-const BORDER_SURFACE_SELECTOR = [
+const CARD_SURFACE_SELECTOR = [
   '.login-card',
+  '.metric',
   '.panel',
+  '.library-detail-header',
+  '.mount-manager',
+  '.knowledge-card',
+  '.candidate',
+  '.api-access-card',
+].join(',')
+const BORDER_SURFACE_SELECTOR = [
   '.mount-table',
   '.note-workspace',
   '.notes-workspace',
   '.dialog',
+  CARD_SURFACE_SELECTOR,
 ].join(',')
 const GLARE_SURFACE_SELECTOR = [
   '.button',
@@ -187,6 +196,8 @@ function installGlassSurface(surface: HTMLElement): void {
 function installBorderSurface(surface: HTMLElement): void {
   if (borderSurfaces.has(surface)) return
   surface.classList.add('knowledge-border-surface')
+  surface.style.setProperty('--knowledge-pointer-x', '50%')
+  surface.style.setProperty('--knowledge-pointer-y', '50%')
   let frame = 0
   let pointer: { x: number; y: number } | undefined
   const paint = (): void => {
@@ -198,6 +209,8 @@ function installBorderSurface(surface: HTMLElement): void {
     const edgeDistance = Math.min(x, rect.width - x, y, rect.height - y)
     const proximity = Math.min(1, Math.max(0, 1 - edgeDistance / EDGE_RESPONSE_RANGE))
     const angle = Math.atan2(y - rect.height / 2, x - rect.width / 2) * (180 / Math.PI) + 90
+    surface.style.setProperty('--knowledge-pointer-x', `${(x / Math.max(1, rect.width) * 100).toFixed(2)}%`)
+    surface.style.setProperty('--knowledge-pointer-y', `${(y / Math.max(1, rect.height) * 100).toFixed(2)}%`)
     surface.style.setProperty('--knowledge-border-proximity', proximity.toFixed(3))
     surface.style.setProperty('--knowledge-border-angle', `${angle.toFixed(2)}deg`)
   }
@@ -323,6 +336,7 @@ function cleanupDisconnected(): void {
 function refresh(root: ParentNode = document): void {
   cleanupDisconnected()
   for (const surface of queryIncludingRoot(root, GLASS_SURFACE_SELECTOR)) installGlassSurface(surface)
+  for (const surface of queryIncludingRoot(root, CARD_SURFACE_SELECTOR)) surface.classList.add('knowledge-card-surface')
   for (const surface of queryIncludingRoot(root, BORDER_SURFACE_SELECTOR)) installBorderSurface(surface)
   for (const surface of queryIncludingRoot(root, GLARE_SURFACE_SELECTOR)) surface.classList.add('knowledge-glare-surface')
   for (const list of queryIncludingRoot(root, ANIMATED_LIST_SELECTOR)) installAnimatedList(list)
@@ -340,6 +354,9 @@ function destroy(): void {
   for (const [surface, cleanup] of borderSurfaces) {
     cleanup()
     surface.classList.remove('knowledge-border-surface')
+    surface.classList.remove('knowledge-card-surface')
+    surface.style.removeProperty('--knowledge-pointer-x')
+    surface.style.removeProperty('--knowledge-pointer-y')
   }
   for (const [list, cleanup] of animatedLists) {
     cleanup()
