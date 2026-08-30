@@ -103,7 +103,7 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(application, /libraryDetail/)
   assert.doesNotMatch(application, /inspectedKnowledgeBaseId/)
   assert.match(application, /mounts\/resolve/)
-  assert.match(application, /当前会话未挂载知识库/)
+  assert.match(application, /未挂载到当前会话/)
   assert.match(application, /confirmDeleteDocument/)
   assert.match(application, /openFinalizeDocument/)
   assert.match(application, /reopenDocument/)

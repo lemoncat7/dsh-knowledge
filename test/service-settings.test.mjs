@@ -16,5 +16,5 @@ test('client-local service and write-back model settings persist in a private at
     writebackProvider: 'cli',
     writebackModel: 'gpt-5.6-luna',
   })
-  assert.equal((await stat(path)).mode & 0o777, 0o600)
+  if (process.platform !== 'win32') assert.equal((await stat(path)).mode & 0o777, 0o600)
 })

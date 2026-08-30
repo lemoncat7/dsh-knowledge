@@ -1,4 +1,5 @@
 import Schema from '@deepseek-ai/schemastery'
+import { dirname, join } from 'node:path'
 import { normalizeRemoteKnowledgeUrl } from './remote-url.js'
 
 export interface Config {
@@ -13,11 +14,16 @@ export interface Config {
   apiPrefix: string
   exposeWeb: boolean
   webPath: string
+  exportsDir?: string
   extractionEnabled: boolean
+  extractionMode: 'detached' | 'inline'
   extractionProvider?: string
   extractionModel?: string
   extractionMaxTokens: number
   extractionTimeoutMs: number
+  extractionRetryDelaysMs: number[]
+  extractionFinalRetryDelayMs: number
+  extractionFinalTimeoutMs: number
   extractionMaxInputChars: number
   defaultScope: 'project' | 'global'
   autoRecallLimit: number
@@ -37,11 +43,16 @@ export const Config: Schema<Config> = Schema.object({
   apiPrefix: Schema.string().default('/knowledge-api/v1'),
   exposeWeb: Schema.boolean().default(true),
   webPath: Schema.string().default('/knowledge'),
+  exportsDir: Schema.string(),
   extractionEnabled: Schema.boolean().default(true),
+  extractionMode: Schema.union(['detached', 'inline']).default('detached'),
   extractionProvider: Schema.string(),
   extractionModel: Schema.string(),
   extractionMaxTokens: Schema.number().min(128).max(8192).default(4096),
-  extractionTimeoutMs: Schema.number().min(1000).max(300_000).default(90_000),
+  extractionTimeoutMs: Schema.number().min(0).max(300_000).default(300_000),
+  extractionRetryDelaysMs: Schema.array(Schema.number().min(0)).default([20_000, 60_000]),
+  extractionFinalRetryDelayMs: Schema.number().min(0).max(600_000).default(60_000),
+  extractionFinalTimeoutMs: Schema.number().min(1000).max(3_600_000).default(1_800_000),
   extractionMaxInputChars: Schema.number().min(1000).max(200_000).default(30_000),
   defaultScope: Schema.union(['project', 'global']).default('project'),
   autoRecallLimit: Schema.number().min(0).max(10).default(3),
@@ -54,8 +65,13 @@ export interface ResolvedConfig extends Config {
   apiPrefix: string
   exposeWeb: boolean
   webPath: string
+  exportsDir?: string
+  extractionMode: 'detached' | 'inline'
   extractionMaxTokens: number
   extractionTimeoutMs: number
+  extractionRetryDelaysMs: number[]
+  extractionFinalRetryDelayMs: number
+  extractionFinalTimeoutMs: number
   extractionMaxInputChars: number
   defaultScope: 'project' | 'global'
   autoRecallLimit: number
@@ -65,6 +81,7 @@ export interface ResolvedConfig extends Config {
 
 export function resolveConfig(config: Config): ResolvedConfig {
   const connectionPath = config.connectionPath ?? deriveConnectionPath(config.databasePath)
+  const exportsDir = resolveExportsDir(config.exportsDir, config.backend, config.databasePath)
   const resolved: ResolvedConfig = {
     ...config,
     remoteTimeoutMs: config.remoteTimeoutMs ?? 10_000,
@@ -72,8 +89,13 @@ export function resolveConfig(config: Config): ResolvedConfig {
     apiPrefix: normalizePrefix(config.apiPrefix ?? '/knowledge-api/v1'),
     exposeWeb: config.exposeWeb ?? true,
     webPath: normalizePrefix(config.webPath ?? '/knowledge'),
+    ...exportsDir === undefined ? {} : { exportsDir },
+    extractionMode: config.extractionMode === 'inline' ? 'inline' : 'detached',
     extractionMaxTokens: config.extractionMaxTokens ?? 4096,
-    extractionTimeoutMs: config.extractionTimeoutMs ?? 90_000,
+    extractionTimeoutMs: config.extractionTimeoutMs ?? 300_000,
+    extractionRetryDelaysMs: normalizeRetryDelays(config.extractionRetryDelaysMs),
+    extractionFinalRetryDelayMs: config.extractionFinalRetryDelayMs ?? 60_000,
+    extractionFinalTimeoutMs: config.extractionFinalTimeoutMs ?? 1_800_000,
     extractionMaxInputChars: config.extractionMaxInputChars ?? 30_000,
     defaultScope: config.defaultScope ?? 'project',
     autoRecallLimit: config.autoRecallLimit ?? 3,
@@ -107,6 +129,25 @@ export function resolveConfig(config: Config): ResolvedConfig {
 
 function deriveConnectionPath(databasePath: string | undefined): string | undefined {
   return databasePath === undefined || databasePath.trim().length === 0 ? undefined : `${databasePath}.connection.json`
+}
+
+function resolveExportsDir(value: string | undefined, backend: Config['backend'], databasePath: string | undefined): string | undefined {
+  const trimmed = value?.trim()
+  if (trimmed !== undefined && trimmed.length > 0) return trimmed
+  if (backend === 'local' && databasePath !== undefined && databasePath.trim().length > 0) {
+    return join(dirname(databasePath), 'exports')
+  }
+  return undefined
+}
+
+function normalizeRetryDelays(value: unknown): number[] {
+  const delays = (Array.isArray(value) ? value : [])
+    .map(item => typeof item === 'number' && Number.isFinite(item) && item >= 0 ? item : -1)
+    .filter(delay => delay >= 0)
+    .slice(0, 2)
+  const fallbacks = [20_000, 60_000]
+  while (delays.length < 2) delays.push(fallbacks[delays.length] ?? 60_000)
+  return delays
 }
 
 function normalizePrefix(value: string): string {

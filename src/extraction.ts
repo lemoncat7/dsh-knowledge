@@ -16,9 +16,18 @@ interface TurnSnapshot {
   route?: { provider: string; model: string }
 }
 
+/** Per-attempt overrides threaded from the writeback retry chain. */
+export interface ExtractionRunOptions {
+  timeoutMs?: number
+  leaseMs?: number
+}
+
+const EXTRACTION_CLOSE_GRACE_MS = 30_000
+
 export class ExtractionCoordinator {
   private closing = false
   private readonly shutdown = new AbortController()
+  private readonly inflight = new Set<Promise<unknown>>()
 
   constructor(
     private readonly ctx: RuntimeContextLike,
@@ -27,30 +36,60 @@ export class ExtractionCoordinator {
     private readonly clientRoute: () => { provider: string; model: string } | undefined = () => undefined,
   ) {}
 
-  async run(session: SessionLike, turn: number, parentSignal: AbortSignal): Promise<ExtractionResult> {
+  async run(
+    session: SessionLike,
+    turn: number,
+    parentSignal: AbortSignal,
+    options: ExtractionRunOptions = {},
+  ): Promise<ExtractionResult> {
     if (this.closing) return emptyResult('skipped')
     const snapshot = snapshotTurn(session, turn, this.config.extractionMaxInputChars)
     if (snapshot === undefined) return emptyResult('skipped')
     const mounts = (await this.provider.resolveMounts(session.id, snapshot.projectId, parentSignal))
       .filter(mount => mount.writeMode !== 'none')
     if (mounts.length === 0) return emptyResult('unmounted')
-    return this.process(snapshot, mounts, AbortSignal.any([parentSignal, this.shutdown.signal]))
+    // Detached mode decouples extraction from the turn lifecycle: the work
+    // signal only carries the timeout budget and the plugin shutdown signal,
+    // so a user follow-up can no longer abort the running writeback.
+    const detached = this.config.extractionMode !== 'inline'
+    const workSignal = detached
+      ? AbortSignal.any([this.shutdown.signal])
+      : AbortSignal.any([parentSignal, this.shutdown.signal])
+    const attempt: Promise<ExtractionResult> = this.process(snapshot, mounts, workSignal, options)
+      .finally(() => { this.inflight.delete(attempt) })
+    this.inflight.add(attempt)
+    return attempt
+  }
+
+  isClosing(): boolean {
+    return this.closing
   }
 
   async close(): Promise<void> {
     this.closing = true
     this.shutdown.abort(new Error('dsh-knowledge is shutting down'))
+    if (this.inflight.size === 0) return
+    const grace = new Promise<void>(resolve => {
+      const timer = setTimeout(resolve, EXTRACTION_CLOSE_GRACE_MS)
+      if (typeof timer.unref === 'function') timer.unref()
+    })
+    await Promise.race([Promise.allSettled([...this.inflight]), grace])
   }
 
   private async process(
     snapshot: TurnSnapshot,
     mounts: ResolvedKnowledgeMount[],
     signal: AbortSignal,
+    options: ExtractionRunOptions,
   ): Promise<ExtractionResult> {
-    if (!await this.provider.claimExtraction(snapshot.sourceKey, signal)) return emptyResult('duplicate')
+    if (!await this.provider.claimExtraction(snapshot.sourceKey, signal, options.leaseMs)) return emptyResult('duplicate')
     try {
       const groups = groupMountsByRoute(mounts, this.config, snapshot, this.clientRoute())
       const proposals: CandidateProposal[] = []
+      const timeoutMs = options.timeoutMs ?? this.config.extractionTimeoutMs
+      const abortReason = this.config.extractionMode === 'inline'
+        ? '回合已中断，知识提取已取消'
+        : '知识提取被中止（插件正在关闭）'
       for (const group of groups) {
         const query = `${snapshot.userText}\n${snapshot.assistantText}`.slice(0, 4000)
         const existing = await findExistingEntries(
@@ -69,6 +108,8 @@ export class ExtractionCoordinator {
           group.route,
           group.writebackPolicy,
           signal,
+          timeoutMs,
+          abortReason,
         ))
       }
       const uniqueProposals = coalesceDocumentProposals(proposals)
@@ -192,8 +233,7 @@ function emptyResult(status: ExtractionResult['status']): ExtractionResult {
   return { status, candidateCount: 0, directCount: 0, auditCount: 0, bases: [] }
 }
 
-function snapshotTurn(session: SessionLike, turn: number, maxChars: number): TurnSnapshot | undefined {
-  let start = -1
+function snapshotTurn(session: SessionLike, turn: number, maxChars: number): TurnSnapshot | undefined {  let start = -1
   for (let index = session.events.length - 1; index >= 0; index -= 1) {
     const event = session.events[index]
     if (event?.type === 'turn/start' && event.data.turn === turn) { start = index; break }
@@ -232,6 +272,42 @@ function snapshotTurn(session: SessionLike, turn: number, maxChars: number): Tur
   }
 }
 
+/**
+ * Renders the pending extraction payload of a failed turn as a standalone
+ * Markdown rescue file. Intentionally uses an HTML comment for provenance
+ * (not YAML front matter) so the file can be re-imported as a knowledge
+ * document without tripping parseKnowledgeMarkdown validation.
+ */
+export function buildTurnExportMarkdown(session: SessionLike, turn: number, maxChars: number): string | undefined {
+  const snapshot = snapshotTurn(session, turn, maxChars)
+  if (snapshot === undefined) return undefined
+  const heading = firstNonEmptyLine(snapshot.userText).slice(0, 60).trim() || '回写失败导出'
+  const exportedAt = new Date().toISOString().slice(0, 19).replace('T', ' ')
+  return [
+    `<!-- dsh-knowledge: session=${snapshot.sessionId} turn=${snapshot.turn} exportedAt=${exportedAt} -->`,
+    `# ${heading}`,
+    '',
+    `> 来源：DSH 会话 ${snapshot.sessionId.slice(0, 8)} 第 ${snapshot.turn} 轮（${exportedAt}）· dsh-knowledge 导出`,
+    '',
+    '## 用户提问',
+    '',
+    snapshot.userText,
+    '',
+    '## 助手回答',
+    '',
+    snapshot.assistantText,
+    '',
+  ].join('\n')
+}
+
+function firstNonEmptyLine(text: string): string {
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim().replace(/^#{1,6}\s+/u, '')
+    if (trimmed.length > 0) return trimmed
+  }
+  return ''
+}
+
 async function extractWithLlm(
   ctx: RuntimeContextLike,
   config: ResolvedConfig,
@@ -241,6 +317,8 @@ async function extractWithLlm(
   route: { provider: string; model: string },
   writebackPolicy: KnowledgeWritebackPolicy,
   parentSignal: AbortSignal,
+  timeoutMs: number,
+  abortReason: string,
 ): Promise<CandidateProposal[]> {
   const defaultScope: KnowledgeScope = config.defaultScope === 'project' && snapshot.projectId !== undefined
     ? { kind: 'project', id: snapshot.projectId }
@@ -279,8 +357,8 @@ async function extractWithLlm(
   }
   const output = await callStructuredModel(
     ctx, route, message, snapshot.sessionId, config.extractionMaxTokens,
-    config.extractionTimeoutMs, parentSignal,
-    extractionSystemPrompt(writebackPolicy), extractionRetrySystemPrompt(writebackPolicy), 'extraction',
+    timeoutMs, parentSignal,
+    extractionSystemPrompt(writebackPolicy), extractionRetrySystemPrompt(writebackPolicy), 'extraction', abortReason,
   )
   const parsed = parseJsonOutput(output)
   const items = Array.isArray(parsed) ? parsed : isRecord(parsed) && Array.isArray(parsed.candidates) ? parsed.candidates : []
@@ -367,9 +445,17 @@ async function callExtractionModel(
   parentSignal: AbortSignal,
   system: string,
   reasoningEffort?: 'low',
+  abortReason = '知识提取被中止',
 ): Promise<{ text: string; finish?: { kind: string; failure?: { message?: string } } }> {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(new Error('knowledge extraction timed out')), timeoutMs)
+  let timedOut = false
+  const timeout = timeoutMs > 0
+    ? setTimeout(() => {
+      timedOut = true
+      controller.abort(new Error(`knowledge extraction timed out after ${timeoutMs}ms`))
+    }, timeoutMs)
+    : undefined
+  if (timeout !== undefined && typeof timeout.unref === 'function') timeout.unref()
   const signal = AbortSignal.any([parentSignal, controller.signal])
   let deltas = ''
   let completedText = ''
@@ -390,8 +476,16 @@ async function callExtractionModel(
       if (chunk.type === 'block-end' && 'block' in chunk && chunk.block.type === 'text') completedText += chunk.block.text ?? ''
       if (chunk.type === 'finish' && 'reason' in chunk) finish = chunk.reason
     }
+  } catch (error) {
+    // pi-ai collapses every abort into a generic error and drops signal.reason,
+    // so the timeout budget and the interrupt path are re-derived here.
+    if (timedOut && controller.signal.aborted && !parentSignal.aborted) {
+      throw new Error(`知识提取超时（预算 ${Math.round(timeoutMs / 1000)} 秒）`)
+    }
+    if (parentSignal.aborted) throw new Error(abortReason)
+    throw error
   } finally {
-    clearTimeout(timeout)
+    if (timeout !== undefined) clearTimeout(timeout)
   }
   return {
     text: deltas.length > 0 ? deltas : completedText,
@@ -410,9 +504,11 @@ async function callStructuredModel(
   system: string,
   retrySystem: string,
   operation: string,
+  abortReason: string,
 ): Promise<string> {
   const first = await callExtractionModel(
     ctx, route, message, sessionId, maxTokens, timeoutMs, parentSignal, system,
+    undefined, abortReason,
   )
   if (first.finish === undefined || first.finish.kind === 'stop') return first.text
   if (first.finish.kind !== 'max-tokens') {
@@ -421,7 +517,7 @@ async function callStructuredModel(
   const retryBudget = Math.min(8192, Math.max(maxTokens, maxTokens * 2))
   ctx.logger.warn(`dsh-knowledge: ${route.provider}/${route.model} hit ${maxTokens} tokens during ${operation}; retrying with low reasoning and ${retryBudget}`)
   const retry = await callWithLowReasoningFallback(
-    ctx, route, message, sessionId, retryBudget, timeoutMs, parentSignal, retrySystem,
+    ctx, route, message, sessionId, retryBudget, timeoutMs, parentSignal, retrySystem, abortReason,
   )
   if (retry.finish !== undefined && retry.finish.kind !== 'stop') {
     throw new Error(retry.finish.failure?.message ?? `${operation} model ended with ${retry.finish.kind}`)
@@ -438,11 +534,12 @@ async function callWithLowReasoningFallback(
   timeoutMs: number,
   parentSignal: AbortSignal,
   system: string,
+  abortReason: string,
 ): Promise<{ text: string; finish?: { kind: string; failure?: { message?: string } } }> {
   try {
     return await callExtractionModel(
       ctx, route, message, sessionId, maxTokens, timeoutMs, parentSignal,
-      system, 'low',
+      system, 'low', abortReason,
     )
   } catch (error) {
     const messageText = error instanceof Error ? error.message : String(error)
@@ -450,7 +547,7 @@ async function callWithLowReasoningFallback(
     ctx.logger.warn(`dsh-knowledge: ${route.provider}/${route.model} does not accept reasoningEffort; retrying without it`)
     return callExtractionModel(
       ctx, route, message, sessionId, maxTokens, timeoutMs, parentSignal,
-      system,
+      system, undefined, abortReason,
     )
   }
 }

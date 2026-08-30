@@ -53,12 +53,17 @@ test('real Cordis context dynamically mounts API and Web routes', async (t) => {
     ['prefix', '/knowledge-api/v1'],
     ['exact', '/knowledge-control/v1/connection'],
     ['exact', '/knowledge-control/v1/writeback-status'],
+    ['exact', '/knowledge-control/v1/writeback-export'],
     ['exact', '/knowledge-control/v1/models'],
   ])
 
   const server = createServer((req, res) => {
     const pathname = new URL(req.url, 'http://localhost').pathname
+    // Mirror the real webServer dispatch: exact routes win, then the longest
+    // registered prefix route serves the request (e.g. the /knowledge assets).
     const route = routes.find(candidate => candidate.kind === 'exact' && candidate.path === pathname)
+      ?? routes.filter(candidate => candidate.kind === 'prefix' && pathname.startsWith(candidate.path))
+        .sort((a, b) => b.path.length - a.path.length)[0]
     if (route === undefined) return res.writeHead(404).end()
     void route.handler(req, res)
   })
@@ -79,4 +84,12 @@ test('real Cordis context dynamically mounts API and Web routes', async (t) => {
   assert.equal((await fetch(endpoint('/knowledge-control/v1/writeback-status?sessionId=s&turn=1'), {
     headers: { 'x-dsh-knowledge-client': 'conversation-web' },
   })).status, 404)
+
+  // The markdown-import helper is loaded at runtime via dynamic import(); it
+  // must be served as a real static module or the 导入文件 button breaks.
+  const importUtils = await fetch(endpoint('/knowledge/import-utils.js?v=test'))
+  assert.equal(importUtils.status, 200)
+  assert.match(importUtils.headers.get('content-type') ?? '', /text\/javascript/)
+  assert.match(await importUtils.text(), /splitMarkdownByH2/)
+  assert.equal((await fetch(endpoint('/knowledge/missing-asset.js'))).status, 404)
 })

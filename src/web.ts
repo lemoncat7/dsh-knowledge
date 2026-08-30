@@ -11,6 +11,7 @@ interface Asset {
 const STATIC_ASSETS = new Map<string, Asset>([
   ['app.js', loadAsset('../web/app.js', 'text/javascript; charset=utf-8')],
   ['change-review.js', loadAsset('../web/change-review.js', 'text/javascript; charset=utf-8')],
+  ['import-utils.js', loadAsset('../web/import-utils.js', 'text/javascript; charset=utf-8')],
   ['markdown-preview.js', loadAsset('../web/markdown-preview.js', 'text/javascript; charset=utf-8')],
   ['note-editor.js', loadAsset('../web/note-editor.js', 'text/javascript; charset=utf-8')],
   ['workspace-effects.js', loadAsset('../web/workspace-effects.js', 'text/javascript; charset=utf-8')],

@@ -641,8 +641,13 @@ async function loadNotes(signal, onPhase = () => {}) {
 function documentKnowledgeBases(bases = state.knowledgeBases) {
   const active = bases.filter(base => base.status === 'active')
   if (!state.mountContext.sessionId) return active
+  // Session context: mounted bases stay on top; unmounted ones remain
+  // browsable (marked 未挂载 in the tree) instead of being hidden entirely.
   const mountedIds = new Set(state.resolvedMounts.map(mount => mount.knowledgeBaseId))
-  return active.filter(base => mountedIds.has(base.id))
+  return [
+    ...active.filter(base => mountedIds.has(base.id)),
+    ...active.filter(base => !mountedIds.has(base.id)),
+  ]
 }
 
 function sessionDocumentWorkspace() {
@@ -882,6 +887,89 @@ async function startBlankDocument(workspace, baseId) {
   const emptyDraft = editor?.isNew && !editor.title.trim() && !editor.body.trim()
   if (editor?.dirty && !emptyDraft && !await saveDocumentEditor(workspace)) return
   createBlankDocument(workspace, baseId)
+}
+
+async function startMarkdownImport(workspace, baseId) {
+  let utils
+  try { utils = await loadImportUtils() } catch (error) {
+    return showToast('导入组件加载失败，请刷新页面重试。', 'error')
+  }
+  const picker = element('input', { type: 'file', accept: utils.IMPORT_ACCEPT, style: 'display: none' })
+  document.body.append(picker)
+  picker.addEventListener('change', () => {
+    const file = picker.files && picker.files[0]
+    picker.remove()
+    if (!file) return
+    if (!/\.(markdown|md)$/i.test(file.name)) return showToast('仅支持 .md / .markdown 文件。', 'error')
+    if (file.size > 32 * 1024 * 1024) return showToast('文件超过 32MB，无法导入。', 'error')
+    void importMarkdownFile(workspace, baseId, file, utils)
+  })
+  picker.click()
+}
+
+async function importMarkdownFile(workspace, baseId, file, utils) {
+  let text
+  try { text = await file.text() } catch (error) { return showToast('读取文件失败。', 'error') }
+  const chunks = utils.splitMarkdownByH2(text, utils.IMPORT_MAX_BODY_CHARS)
+  if (chunks.length === 0) return showToast('文件内容为空。', 'error')
+  const activeBases = state.knowledgeBases.filter(item => item.status === 'active')
+  const preferred = activeBases.find(item => item.id === baseId)
+    || activeBases.find(item => item.id === workspace.view.knowledgeBaseId)
+    || activeBases[0]
+  if (!preferred) return showToast('请先创建或选择一个可用知识库。', 'error')
+  const defaultTitle = utils.titleFromMarkdown(file.name, text)
+  const multi = chunks.length > 1
+  const titleField = formField('文档标题', 'text', multi ? `${defaultTitle}（1/${chunks.length}）` : defaultTitle, { maxlength: 200 })
+  const baseSelect = selectField('目标知识库', activeBases.map(item => ({ value: item.id, label: item.name })), preferred.id)
+  const typeSelect = selectField('类型', TYPES.map(type => ({ value: type, label: TYPE_LABELS[type] })), 'fact')
+  const tagsField = formField('标签（逗号分隔）', 'text', '', { placeholder: '可选' })
+  const scopeOptions = [{ value: 'global', label: '全局' }]
+  if (mountContext.projectId) scopeOptions.push({ value: 'project', label: `当前项目（${mountContext.projectId}）` })
+  const scopeSelect = selectField('范围', scopeOptions, mountContext.projectId ? 'project' : 'global')
+  openSheet({
+    title: multi ? `导入 Markdown（将拆分为 ${chunks.length} 篇）` : '导入 Markdown 文档',
+    description: `文件：${file.name} · 正文超过 5 万字符时按 H2 标题拆分为多篇`,
+    body: element('form', { class: 'form-grid' },
+      baseSelect.wrapper, titleField.wrapper, typeSelect.wrapper, tagsField.wrapper, scopeSelect.wrapper),
+    primaryLabel: '导入',
+    onPrimary: async () => {
+      const title = titleField.input.value.trim()
+      if (!title) { showToast('请填写文档标题。', 'error'); return false }
+      const knowledgeBaseId = baseSelect.input.value
+      const scope = scopeSelect.input.value === 'project' && mountContext.projectId
+        ? { kind: 'project', id: mountContext.projectId }
+        : { kind: 'global' }
+      const tags = parseTags(tagsField.input.value)
+      const baseTitle = title.replace(/（\d+\/\d+）\s*$/u, '').trim() || title
+      const created = []
+      try {
+        for (const [index, body] of chunks.entries()) {
+          const entryTitle = (index === 0 ? title : `${baseTitle}（${index + 1}/${chunks.length}）`).slice(0, 200)
+          created.push(await api('entries', { method: 'POST', body: { draft: {
+            knowledgeBaseId, title: entryTitle, body, type: typeSelect.input.value, tags, scope, confidence: 0.9,
+          } } }))
+        }
+      } catch (error) {
+        showToast(`已导入 ${created.length}/${chunks.length} 篇后失败：${friendlyError(error)}`, 'error')
+        return false
+      }
+      showToast(multi ? `已导入 ${chunks.length} 篇文档。` : '已导入文档。')
+      workspace.view.knowledgeBaseId = knowledgeBaseId
+      workspace.view.expandedBases.add(knowledgeBaseId)
+      await loadDocumentPage(workspace, knowledgeBaseId, { reset: true }).catch(() => {})
+      renderShell()
+      if (created.length === 1 && created[0]?.id) await selectDocument(workspace, created[0].id).catch(() => {})
+      return true
+    },
+  })
+  titleField.input.focus()
+}
+
+function loadImportUtils() {
+  if (!loadImportUtils.promise) {
+    loadImportUtils.promise = import(`./import-utils.js${ASSET_VERSION ? `?v=${encodeURIComponent(ASSET_VERSION)}` : ''}`)
+  }
+  return loadImportUtils.promise
 }
 
 async function selectDocument(workspace, id) {
@@ -1381,6 +1469,7 @@ function renderKnowledgeBaseDetail() {
       element('div', { class: 'library-detail-actions' },
         archived ? actionButton('恢复知识库', () => confirmRestoreKnowledgeBase(base), 'small') : actionButton('编辑知识库', () => openKnowledgeBaseEditor(base), 'small'),
         !archived ? actionButton('+ 新建文档', () => { void startBlankDocument(workspace, base.id) }, 'primary small') : null,
+        !archived ? actionButton('导入文件', () => { void startMarkdownImport(workspace, base.id) }, 'small') : null,
       ),
     ),
     archived ? element('div', { class: 'library-detail-notice', role: 'status' }, '这个知识库已经归档。文档仍可阅读，但恢复知识库后才能新建或修改。') : null,
@@ -1651,6 +1740,9 @@ function renderDocumentWorkspace(workspace, options = {}) {
       element('span', { class: 'tree-disclosure', 'aria-hidden': 'true' }),
       element('span', { class: 'tree-folder-icon', 'aria-hidden': 'true' }),
       element('span', { class: 'tree-base-name' }, base.name),
+      workspace.kind === 'session' && state.mountContext.sessionId
+        && !state.resolvedMounts.some(mount => mount.knowledgeBaseId === base.id)
+        ? badge('未挂载到当前会话') : null,
       element('span', { class: 'tree-count' }, query ? documents.length : page.loaded ? page.total : '—')),
       expanded ? element('div', { class: 'note-tree-documents', role: 'group', 'aria-label': `${base.name}文档` },
         !query && page.loading && documents.length === 0 ? element('div', { class: 'note-tree-status', role: 'status' }, '正在读取目录…') : null,
@@ -1686,7 +1778,7 @@ function renderDocumentWorkspace(workspace, options = {}) {
         onClick: () => { void loadDocumentSearch(workspace, false) },
       }, view.searchLoading ? '正在加载…' : `继续加载搜索结果（${view.searchResults.length} / ${view.searchTotal}）`) : null,
     ]
-    : tree.length ? tree : [element('div', { class: 'note-tree-empty' }, workspace.kind === 'session' && state.mountContext.sessionId ? '当前会话未挂载知识库' : '还没有知识库')]
+    : tree.length ? tree : [element('div', { class: 'note-tree-empty' }, '还没有知识库')]
   return element('section', {
     class: `note-workspace note-workspace--${workspace.kind}`, 'aria-labelledby': `${workspace.kind}-documents-heading`,
     'data-tree-open': String(view.treeOpen),
@@ -1695,6 +1787,7 @@ function renderDocumentWorkspace(workspace, options = {}) {
       element('header', { class: 'note-tree-header' },
         element('div', {}, element('h2', { id: `${workspace.kind}-documents-heading` }, options.heading || '知识目录'), element('span', {}, query ? `${view.searchTotal} 条搜索结果` : `${workspaceDocuments.length} 篇已加载`)),
         !readOnly ? actionButton('+', () => { void startBlankDocument(workspace, view.knowledgeBaseId || activeBases[0]?.id) }, 'ghost note-add-button', { 'aria-label': '新建文档', title: '新建文档' }) : null,
+        !readOnly ? actionButton('导入', () => { void startMarkdownImport(workspace, view.knowledgeBaseId || activeBases[0]?.id) }, 'ghost small', { 'aria-label': '导入 Markdown 文件', title: '导入 .md 文件' }) : null,
       ),
       element('div', { class: 'note-tree-search-wrap' }, interfaceIcon('search', 'search-symbol'), search),
       element('nav', { class: 'note-tree', 'data-scroll-key': `${workspace.kind}-note-tree` }, treeContent),

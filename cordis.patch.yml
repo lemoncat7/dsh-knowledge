@@ -7,6 +7,7 @@
         backend: local
         databasePath: !!js dshHomePath('knowledge/knowledge.sqlite')
         connectionPath: !!js dshHomePath('knowledge/connection.json')
+        exportsDir: !!js dshHomePath('knowledge/exports')
         exposeApi: false
         exposeWeb: true
         extractionEnabled: true

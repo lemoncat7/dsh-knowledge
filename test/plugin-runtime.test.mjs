@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import test from 'node:test'
-import { apply, LocalKnowledgeProvider } from '../lib/index.js'
+import { apply, LocalKnowledgeProvider, resolveConfig } from '../lib/index.js'
+import { IMPORT_MAX_BODY_CHARS, splitMarkdownByH2, titleFromMarkdown } from '../web/import-utils.js'
 
 test('plugin gates completed-turn extraction and keeps knowledge surface messages out of model input', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-knowledge-runtime-'))
@@ -61,10 +62,22 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
     backend: 'local', databasePath, remoteTimeoutMs: 5000, exposeApi: false,
     apiPrefix: '/knowledge-api/v1', extractionEnabled: true, extractionMaxTokens: 1000,
     extractionTimeoutMs: 5000, extractionMaxInputChars: 10000, defaultScope: 'project',
+    extractionMode: 'inline',
   })
   t.after(async () => {
+    // node:test after-hooks run in registration order (FIFO): close the
+    // harness observer before rm() tries to unlink the WAL database files.
+    try { await observer.close() } catch {}
     for (const dispose of disposers.reverse()) await dispose()
-    await rm(root, { recursive: true, force: true })
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await rm(root, { recursive: true, force: true })
+        break
+      } catch (error) {
+        if (attempt >= 10 || error?.code !== 'EBUSY') throw error
+        await new Promise(resolve => setTimeout(resolve, 50))
+      }
+    }
   })
 
   const user = { id: 'u1', role: 'user', content: [{ type: 'text', text: 'How do I install a DSH plugin?' }], source: { kind: 'user' } }
@@ -310,10 +323,21 @@ test('conservative write-back accepts durable source-backed GitHub research with
     backend: 'local', databasePath, remoteTimeoutMs: 5000, exposeApi: false,
     apiPrefix: '/knowledge-api/v1', extractionEnabled: true, extractionMaxTokens: 1200,
     extractionTimeoutMs: 5000, extractionMaxInputChars: 10000, defaultScope: 'global',
+    extractionMode: 'inline',
   })
   t.after(async () => {
+    // FIFO after-hooks: close the harness observer before rm() unlinks the WAL db.
+    try { await observer.close() } catch {}
     for (const dispose of disposers.reverse()) await dispose()
-    await rm(root, { recursive: true, force: true })
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await rm(root, { recursive: true, force: true })
+        break
+      } catch (error) {
+        if (attempt >= 10 || error?.code !== 'EBUSY') throw error
+        await new Promise(resolve => setTimeout(resolve, 50))
+      }
+    }
   })
 
   const observer = new LocalKnowledgeProvider(databasePath)
@@ -375,7 +399,15 @@ test('content write-back is not exposed to the main agent tool surface', async (
   })
   t.after(async () => {
     for (const dispose of disposers.reverse()) await dispose()
-    await rm(root, { recursive: true, force: true })
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await rm(root, { recursive: true, force: true })
+        break
+      } catch (error) {
+        if (attempt >= 10 || error?.code !== 'EBUSY') throw error
+        await new Promise(resolve => setTimeout(resolve, 50))
+      }
+    }
   })
 
   assert.equal(tools.has('knowledge_write'), false)
@@ -462,10 +494,21 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
     backend: 'local', databasePath, remoteTimeoutMs: 5000, exposeApi: false,
     apiPrefix: '/knowledge-api/v1', extractionEnabled: true, extractionMaxTokens: 1200,
     extractionTimeoutMs: 5000, extractionMaxInputChars: 10000, defaultScope: 'project',
+    extractionMode: 'inline',
   })
   t.after(async () => {
+    // FIFO after-hooks: close the harness observer before rm() unlinks the WAL db.
+    try { await observer.close() } catch {}
     for (const dispose of disposers.reverse()) await dispose()
-    await rm(root, { recursive: true, force: true })
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await rm(root, { recursive: true, force: true })
+        break
+      } catch (error) {
+        if (attempt >= 10 || error?.code !== 'EBUSY') throw error
+        await new Promise(resolve => setTimeout(resolve, 50))
+      }
+    }
   })
 
   const sessionFor = (id, turn) => ({
@@ -522,4 +565,293 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
   assert.equal(updatedExisting.type, 'decision')
   assert.match(updatedExisting.body, /Operational note/)
   assert.equal(direct.events.at(-1).type, 'assistant/message')
+})
+
+const WRITEBACK_SUCCESS_CANDIDATES = { candidates: [{
+  action: 'create', knowledgeBaseId: 'default', title: 'Durable writeback conclusion',
+  body: 'The durable conclusion is confirmed for reuse.', type: 'fact', tags: ['wb'],
+  scope: { kind: 'project', id: '/workspace/demo' }, confidence: 0.93,
+  retention: { durable: true, evidence: 'explicit' }, reason: 'Confirmed durable conclusion.',
+}] }
+
+function createControlResponse() {
+  const response = { status: 0, headers: {}, body: '' }
+  response.writeHead = (status, headers) => {
+    response.status = status
+    response.headers = headers ?? {}
+    return { end: body => { response.body = body ?? '' } }
+  }
+  response.end = body => { response.body = body ?? '' }
+  return response
+}
+
+async function controlCall(routes, path, { method = 'GET', url = '/', headers = {}, parseJson = true } = {}) {
+  const route = routes.get(path)
+  assert.ok(route, `missing registered route ${path}`)
+  const response = createControlResponse()
+  await route.handler({ method, url, headers }, response)
+  const body = parseJson ? JSON.parse(response.body || '{}') : response.body
+  return { status: response.status, headers: response.headers, body }
+}
+
+const writebackStatusCall = (routes, sessionId, turn, method = 'GET') => controlCall(routes, '/knowledge-control/v1/writeback-status', {
+  method,
+  url: `/knowledge-control/v1/writeback-status?sessionId=${sessionId}&turn=${turn}`,
+  headers: { 'x-dsh-knowledge-client': 'conversation-web' },
+})
+
+async function waitFor(predicate, timeoutMs = 8000) {
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    if (await predicate()) return true
+    await new Promise(resolve => setTimeout(resolve, 25))
+  }
+  return false
+}
+
+function writebackSession(id, turn) {
+  return {
+    id, header: { cwd: '/workspace/demo' }, events: [
+      { type: 'turn/start', seq: 0, data: { turn } },
+      { type: 'user/message', seq: 1, data: { id: `u-${id}`, role: 'user', content: [{ type: 'text', text: 'Record the durable conclusion for the knowledge base.' }], source: { kind: 'user' } } },
+      { type: 'assistant/message', seq: 2, data: { turn, message: {
+        id: `a-${id}`, role: 'assistant', content: [{ type: 'text', text: 'The durable conclusion is confirmed for reuse.' }],
+        source: { kind: 'model', provider: 'mock', model: 'extractor' },
+      } } },
+    ],
+    append(type, data, options) { const event = { type, seq: this.events.length, data, ...options }; this.events.push(event); return event },
+  }
+}
+
+async function startWritebackHarness(t, { llm, extractionMode = 'detached', extractionTimeoutMs = 5000, retryDelays = [10, 10], finalDelay = 10, finalTimeoutMs = 5000 } = {}) {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-knowledge-wb-'))
+  const databasePath = join(root, 'knowledge.sqlite')
+  const listeners = new Map()
+  const disposers = []
+  const routes = new Map()
+  const ctx = {
+    logger: { debug() {}, info() {}, warn() {}, error() {} },
+    llm,
+    tools: { register() { return () => {} } },
+    on(name, listener) { listeners.set(name, listener); return () => listeners.delete(name) },
+    effect(factory) { disposers.push(factory()) },
+    get() { return undefined },
+    webServer: { register(route) { routes.set(route.path, route); return () => routes.delete(route.path) } },
+  }
+  apply(ctx, {
+    backend: 'local', databasePath, remoteTimeoutMs: 5000, exposeApi: false,
+    apiPrefix: '/knowledge-api/v1', extractionEnabled: true, extractionMaxTokens: 1000,
+    extractionTimeoutMs, extractionMaxInputChars: 10000, defaultScope: 'project',
+    extractionMode,
+    extractionRetryDelaysMs: retryDelays,
+    extractionFinalRetryDelayMs: finalDelay,
+    extractionFinalTimeoutMs: finalTimeoutMs,
+  })
+  t.after(async () => {
+    // node:test after-hooks run in registration order (FIFO): close the
+    // harness observer before the disposers' rm() tries to unlink the WAL db.
+    try { await observer.close() } catch {}
+    for (const dispose of disposers.reverse()) await dispose()
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await rm(root, { recursive: true, force: true })
+        break
+      } catch (error) {
+        if (attempt >= 10 || error?.code !== 'EBUSY') throw error
+        await new Promise(resolve => setTimeout(resolve, 50))
+      }
+    }
+  })
+  const observer = new LocalKnowledgeProvider(databasePath)
+  t.after(() => observer.close())
+  await observer.patchKnowledgeBase('default', { description: 'Reusable writeback harness knowledge.' })
+  await observer.upsertMount({
+    targetKind: 'project', targetId: '/workspace/demo', knowledgeBaseId: 'default',
+    enabled: true, recallEnabled: true, writeMode: 'audit', includeTags: [], excludeTags: [], extractionInstructions: '',
+  })
+  return { root, databasePath, listeners, routes, observer }
+}
+
+const successStream = counter => ({
+  async *stream() {
+    counter.calls += 1
+    yield { type: 'text-delta', text: JSON.stringify(WRITEBACK_SUCCESS_CANDIDATES) }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  },
+})
+
+test('detached writeback survives an aborted turn signal (user follow-up no longer kills writeback)', async (t) => {
+  const counter = { calls: 0 }
+  const { listeners, routes, observer } = await startWritebackHarness(t, { llm: successStream(counter) })
+  const controller = new AbortController()
+  listeners.get('agent/turn-stopping')({ agent: { session: writebackSession('detach-1', 1) }, turn: 1, signal: controller.signal })
+  controller.abort(new Error('user follow-up canceled the turn'))
+  assert.equal(await waitFor(async () => (await observer.extractionJob('detach-1:1'))?.status === 'completed'), true)
+  const state = await writebackStatusCall(routes, 'detach-1', 1)
+  assert.equal(state.body.status, 'completed')
+  assert.match(state.body.summary, /直写|待审|无需收录|已处理/)
+  assert.equal(counter.calls, 1)
+})
+
+test('failed writeback auto-retries once in the background and completes', async (t) => {
+  const counter = { calls: 0 }
+  const llm = {
+    async *stream() {
+      counter.calls += 1
+      if (counter.calls === 1) throw new Error('Request was aborted')
+      yield { type: 'text-delta', text: JSON.stringify(WRITEBACK_SUCCESS_CANDIDATES) }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+  }
+  const { listeners, routes, observer } = await startWritebackHarness(t, { llm })
+  listeners.get('agent/turn-stopping')({ agent: { session: writebackSession('retry-1', 1) }, turn: 1, signal: new AbortController().signal })
+  assert.equal(await waitFor(async () => (await observer.extractionJob('retry-1:1'))?.status === 'completed'), true)
+  const job = await observer.extractionJob('retry-1:1')
+  assert.equal(job.attempts, 2)
+  const state = await writebackStatusCall(routes, 'retry-1', 1)
+  assert.equal(state.body.status, 'completed')
+  assert.match(state.body.summary, /自动重试后成功/)
+})
+
+test('inline writeback terminalizes failed+retryable when the turn signal is already aborted', async (t) => {
+  const llm = { async *stream() { throw new Error('Request was aborted') } }
+  const { listeners, routes, observer } = await startWritebackHarness(t, { llm, extractionMode: 'inline' })
+  const controller = new AbortController()
+  controller.abort(new Error('interrupt'))
+  await listeners.get('agent/turn-stopping')({ agent: { session: writebackSession('inline-1', 1) }, turn: 1, signal: controller.signal })
+  const state = await writebackStatusCall(routes, 'inline-1', 1)
+  assert.equal(state.body.status, 'failed')
+  assert.equal(state.body.retryable, true)
+  assert.match(state.body.summary, /回合已中断/)
+  const job = await observer.extractionJob('inline-1:1')
+  assert.equal(job?.status, 'failed')
+})
+
+test('automatic chain exhausts 2 backoff retries plus the final attempt, then fails retryable and exports the payload', async (t) => {
+  const counter = { calls: 0 }
+  const llm = { async *stream() { counter.calls += 1; throw new Error('Request was aborted') } }
+  const { root, listeners, routes, observer } = await startWritebackHarness(t, { llm })
+  listeners.get('agent/turn-stopping')({ agent: { session: writebackSession('chain-1', 1) }, turn: 1, signal: new AbortController().signal })
+  assert.equal(await waitFor(async () => (await writebackStatusCall(routes, 'chain-1', 1)).body.status === 'failed'), true)
+  const state = await writebackStatusCall(routes, 'chain-1', 1)
+  assert.equal(state.body.retryable, true)
+  assert.match(state.body.summary, /自动重试后仍失败/)
+  assert.equal(counter.calls, 4)
+  assert.equal((await observer.extractionJob('chain-1:1'))?.attempts, 1)
+  assert.ok(state.body.export?.fileName.startsWith('回写失败-1-'))
+  const exportsDir = join(root, 'exports')
+  const files = await readdir(exportsDir)
+  assert.equal(files.length, 1)
+  const markdown = await readFile(join(exportsDir, files[0]), 'utf8')
+  assert.match(markdown, /dsh-knowledge: session=chain-1 turn=1/)
+  assert.match(markdown, /## 用户提问/)
+  assert.match(markdown, /## 助手回答/)
+  const download = await controlCall(routes, '/knowledge-control/v1/writeback-export', {
+    url: '/knowledge-control/v1/writeback-export?sessionId=chain-1&turn=1',
+    headers: { 'x-dsh-knowledge-client': 'conversation-web' },
+    parseJson: false,
+  })
+  assert.equal(download.status, 200)
+  assert.match(String(download.headers['content-disposition']), /attachment/)
+  assert.match(String(download.body), /## 助手回答/)
+  const unauthorized = await controlCall(routes, '/knowledge-control/v1/writeback-export', {
+    url: '/knowledge-control/v1/writeback-export?sessionId=chain-1&turn=1',
+    headers: {},
+  })
+  assert.equal(unauthorized.status, 401)
+
+  // Manual retry restarts the full chain; the export file is reused, not duplicated.
+  const post = await writebackStatusCall(routes, 'chain-1', 1, 'POST')
+  assert.equal(post.body.status, 'running')
+  assert.equal(await waitFor(async () => (await writebackStatusCall(routes, 'chain-1', 1)).body.status === 'failed'), true)
+  const retried = await writebackStatusCall(routes, 'chain-1', 1)
+  assert.equal(retried.body.retryable, true)
+  assert.equal((await readdir(exportsDir)).length, 1)
+  assert.equal(retried.body.export?.fileName, state.body.export?.fileName)
+})
+
+test('extraction timeout surfaces a semantic timeout error instead of a generic abort', async (t) => {
+  const llm = {
+    async *stream(request) {
+      await new Promise((resolve, reject) => {
+        const signal = request.signal
+        if (signal?.aborted) { reject(new Error('Request was aborted')); return }
+        signal?.addEventListener('abort', () => reject(new Error('Request was aborted')), { once: true })
+      })
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+  }
+  const { listeners, routes, observer } = await startWritebackHarness(t, {
+    llm, extractionMode: 'inline', extractionTimeoutMs: 700, retryDelays: [10, 10], finalDelay: 10, finalTimeoutMs: 700,
+  })
+  listeners.get('agent/turn-stopping')({ agent: { session: writebackSession('timeout-1', 1) }, turn: 1, signal: new AbortController().signal })
+  assert.equal(await waitFor(async () => (await writebackStatusCall(routes, 'timeout-1', 1)).body.status === 'failed', 15000), true)
+  const state = await writebackStatusCall(routes, 'timeout-1', 1)
+  assert.match(state.body.error, /知识提取超时（预算 1 秒）/)
+  assert.equal((await observer.extractionJob('timeout-1:1'))?.status, 'failed')
+})
+
+test('inline mode keeps the synchronous writeback semantics for successful turns', async (t) => {
+  const counter = { calls: 0 }
+  const { listeners, observer, routes } = await startWritebackHarness(t, { llm: successStream(counter), extractionMode: 'inline' })
+  await listeners.get('agent/turn-stopping')({ agent: { session: writebackSession('inline-ok', 1) }, turn: 1, signal: new AbortController().signal })
+  assert.equal(counter.calls, 1)
+  assert.equal((await observer.extractionJob('inline-ok:1'))?.status, 'completed')
+  const state = await writebackStatusCall(routes, 'inline-ok', 1)
+  assert.equal(state.body.status, 'completed')
+})
+
+test('writeback chain configuration resolves detached mode, 300s budget, and export fallbacks', () => {
+  const base = {
+    backend: 'local', databasePath: join('x', 'knowledge.sqlite'), remoteTimeoutMs: 5000,
+    exposeApi: false, apiPrefix: '/knowledge-api/v1',
+  }
+  const defaults = resolveConfig(base)
+  assert.equal(defaults.extractionMode, 'detached')
+  assert.equal(defaults.extractionTimeoutMs, 300_000)
+  assert.equal(defaults.extractionFinalTimeoutMs, 1_800_000)
+  assert.equal(defaults.extractionFinalRetryDelayMs, 60_000)
+  assert.deepEqual(defaults.extractionRetryDelaysMs, [20_000, 60_000])
+  assert.equal(defaults.exportsDir, join('x', 'exports'))
+  const custom = resolveConfig({
+    ...base,
+    extractionRetryDelaysMs: [5, 'bad', 10, 999],
+    extractionFinalRetryDelayMs: 15,
+    extractionFinalTimeoutMs: 1200,
+    exportsDir: '  ',
+  })
+  assert.deepEqual(custom.extractionRetryDelaysMs, [5, 10])
+  assert.equal(custom.extractionFinalRetryDelayMs, 15)
+  assert.equal(custom.extractionFinalTimeoutMs, 1200)
+  assert.equal(custom.exportsDir, join('x', 'exports'))
+  const remote = resolveConfig({
+    backend: 'remote', remoteUrl: 'https://example.com/knowledge-api/v1',
+    remoteToken: 'x'.repeat(24), remoteTimeoutMs: 5000,
+  })
+  assert.equal(remote.exportsDir, undefined)
+  assert.equal(remote.extractionMode, 'detached')
+  const zero = resolveConfig({ ...base, extractionTimeoutMs: 0 })
+  assert.equal(zero.extractionTimeoutMs, 0)
+})
+
+test('markdown import helpers derive titles and split oversized bodies by H2 boundaries', () => {
+  assert.equal(titleFromMarkdown('deployment.md', ''), 'deployment')
+  assert.equal(titleFromMarkdown('note.markdown', '前言\n\n# 真标题\n'), 'note')
+  assert.equal(titleFromMarkdown('', '## H2 first'), 'H2 first')
+  assert.equal(titleFromMarkdown('x.md', '   \n# spaced\n'), 'spaced')
+  assert.equal(titleFromMarkdown('a/b/c.md', ''), 'a/b/c')
+
+  const body = `## A\n\n${'x'.repeat(30_000)}\n\n## B\n\n${'y'.repeat(30_000)}`
+  const chunks = splitMarkdownByH2(body)
+  assert.equal(chunks.length, 2)
+  assert.ok(chunks[0].startsWith('## A'))
+  assert.ok(chunks[1].startsWith('## B'))
+  assert.ok(chunks.every(chunk => chunk.length <= IMPORT_MAX_BODY_CHARS))
+
+  const exact = 'z'.repeat(IMPORT_MAX_BODY_CHARS)
+  assert.deepEqual(splitMarkdownByH2(exact), [exact])
+  const hardChunks = splitMarkdownByH2('w'.repeat(IMPORT_MAX_BODY_CHARS + 100))
+  assert.ok(hardChunks.length >= 2)
+  assert.ok(hardChunks.every(chunk => chunk.length <= IMPORT_MAX_BODY_CHARS))
+  assert.deepEqual(splitMarkdownByH2('   '), [])
 })

@@ -12,7 +12,17 @@ async function fixture(t) {
   provider.fixtureRoot = root
   t.after(async () => {
     await provider.close()
-    await rm(root, { recursive: true, force: true })
+    // Windows releases SQLite file handles asynchronously after close(); a
+    // plain immediate rm() races with that and fails with EBUSY.
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await rm(root, { recursive: true, force: true })
+        break
+      } catch (error) {
+        if (attempt >= 10 || error?.code !== 'EBUSY') throw error
+        await new Promise(resolve => setTimeout(resolve, 50))
+      }
+    }
   })
   return provider
 }
@@ -332,6 +342,9 @@ test('audit approval merges a same-topic candidate into its document', async (t)
   assert.match(afterRestart?.body || '', /## 兼容性风险/)
   assert.equal((await reopened.search({ text: '旧版配置兼容性风险', limit: 10 }))[0]?.entry.id, existing.id)
   assert.equal((await reopened.listDocuments('default')).length, 1)
+  // The fixture's FIFO after-hook rm() runs before reopened's own t.after,
+  // so close the second connection here to release the database files.
+  await reopened.close()
 })
 
 test('concurrent review treats distinct document sections as compatible additions', async (t) => {

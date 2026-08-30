@@ -73,23 +73,41 @@ export function apply(ctx: ClientContext): void {
 }
 
 function KnowledgeWritebackStatus({ sessionId, turn }: { sessionId: string; turn: number }) {
-  type Status = { status: 'running' | 'completed' | 'failed'; summary: string; error?: string; retryable: boolean }
+  type Status = {
+    status: 'running' | 'completed' | 'failed'
+    summary: string
+    error?: string
+    retryable: boolean
+    export?: { fileName: string }
+  }
   const [state, setState] = useState<Status>()
-  const [retrying, setRetrying] = useState(false)
+  const [busy, setBusy] = useState<'' | 'retry' | 'download'>('')
+  const basePath = `/knowledge-control/v1/writeback-status?sessionId=${encodeURIComponent(sessionId)}&turn=${turn}`
+  const load = useCallback(async (): Promise<void> => {
+    const response = await fetch(basePath, {
+      headers: { accept: 'application/json', 'x-dsh-knowledge-client': 'conversation-web' },
+    })
+    if (!response.ok) return
+    const value = await response.json() as Status
+    if (value?.summary) setState(value)
+  }, [basePath])
   useEffect(() => {
     const controller = new AbortController()
-    void fetch(`/knowledge-control/v1/writeback-status?sessionId=${encodeURIComponent(sessionId)}&turn=${turn}`, {
-      headers: { accept: 'application/json', 'x-dsh-knowledge-client': 'conversation-web' }, signal: controller.signal,
-    }).then(async response => response.ok ? response.json() as Promise<Status> : undefined)
-      .then(value => { if (value?.summary) setState(value) })
-      .catch(() => {})
+    void load().catch(() => {})
     return () => { controller.abort() }
-  }, [sessionId, turn])
+  }, [load])
+  // The automatic retry chain keeps the status 'running' for minutes; poll so
+  // the stage text and the retry button appear without a page reload.
+  useEffect(() => {
+    if (state?.status !== 'running') return
+    const timer = window.setInterval(() => { void load().catch(() => {}) }, 5000)
+    return () => { window.clearInterval(timer) }
+  }, [state?.status, load])
   if (state === undefined) return null
   const retry = async (): Promise<void> => {
-    setRetrying(true)
+    setBusy('retry')
     try {
-      const response = await fetch(`/knowledge-control/v1/writeback-status?sessionId=${encodeURIComponent(sessionId)}&turn=${turn}`, {
+      const response = await fetch(basePath, {
         method: 'POST', headers: { accept: 'application/json', 'x-dsh-knowledge-client': 'conversation-web' },
       })
       if (!response.ok) throw new Error(`retry failed with HTTP ${response.status}`)
@@ -98,11 +116,37 @@ function KnowledgeWritebackStatus({ sessionId, turn }: { sessionId: string; turn
       setState(previous => previous === undefined ? previous : {
         ...previous, error: error instanceof Error ? error.message : String(error), retryable: true,
       })
-    } finally { setRetrying(false) }
+    } finally { setBusy('') }
+  }
+  const download = async (): Promise<void> => {
+    if (state?.export === undefined) return
+    setBusy('download')
+    try {
+      const response = await fetch(`/knowledge-control/v1/writeback-export?sessionId=${encodeURIComponent(sessionId)}&turn=${turn}`, {
+        headers: { accept: 'text/markdown', 'x-dsh-knowledge-client': 'conversation-web' },
+      })
+      if (!response.ok) throw new Error(`导出下载失败（HTTP ${response.status}）`)
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = state.export.fileName
+      document.body.append(anchor)
+      anchor.click()
+      anchor.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (error) {
+      setState(previous => previous === undefined ? previous : {
+        ...previous, error: error instanceof Error ? error.message : String(error),
+      })
+    } finally { setBusy('') }
   }
   return <div className="dsh-knowledge-writeback-status">
     <span>上下文注入</span><strong>dsh-knowledge</strong><span title={state.error}>{state.summary}</span>
-    {state.status === 'failed' && state.retryable && <button type="button" disabled={retrying} onClick={() => { void retry() }}>{retrying ? '重试中…' : '重试'}</button>}
+    {state.status === 'failed' && state.export !== undefined
+      && <button type="button" disabled={busy !== ''} onClick={() => { void download() }}>{busy === 'download' ? '下载中…' : '下载 Markdown'}</button>}
+    {state.status === 'failed' && state.retryable
+      && <button type="button" disabled={busy !== ''} onClick={() => { void retry() }}>{busy === 'retry' ? '重试中…' : '重试'}</button>}
   </div>
 }
 

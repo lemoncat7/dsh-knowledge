@@ -1,6 +1,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { randomBytes } from 'node:crypto'
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { join as joinPath, sep as pathSep } from 'node:path'
 import { assertKnowledgeBrowserRequest, LOCAL_MANAGEMENT_API_PREFIX, registerKnowledgeApi } from './api.js'
 import {
   connectionSettingsBase,
@@ -14,7 +16,7 @@ import {
 import { Config as ConfigSchema, resolveConfig, type Config as KnowledgeConfig } from './config.js'
 import { KNOWLEDGE_SETTINGS_NAMESPACE } from './constants.js'
 import { registerKnowledgeControl, type KnowledgeConnectionUpdate } from './control.js'
-import { ExtractionCoordinator } from './extraction.js'
+import { ExtractionCoordinator, buildTurnExportMarkdown } from './extraction.js'
 import { LocalKnowledgeProvider } from './local-provider.js'
 import { registerRemoteManagementProxy } from './management-proxy.js'
 import type { KnowledgeProvider } from './provider.js'
@@ -31,6 +33,7 @@ import { registerKnowledgeWeb } from './web.js'
 
 export const Config = ConfigSchema
 export type Config = KnowledgeConfig
+export { resolveConfig } from './config.js'
 export * from './domain.js'
 export * from './provider.js'
 export * from './notes/domain.js'
@@ -88,10 +91,74 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
       ? { provider: clientSettings.writebackProvider, model: clientSettings.writebackModel }
       : undefined
   ))
-  type WritebackStatus = { status: 'running' | 'completed' | 'failed'; summary: string; error?: string; retryable: boolean }
+  type WritebackStatus = {
+    status: 'running' | 'completed' | 'failed'
+    summary: string
+    error?: string
+    retryable: boolean
+    export?: { fileName: string }
+  }
+  type WritebackPhase = 'initial' | 'auto' | 'final'
+  type WritebackRunOptions = { phase?: WritebackPhase; timeoutMs?: number; leaseMs?: number }
   const writebackStatuses = new Map<string, WritebackStatus>()
   const writebackSources = new Map<string, { agent: AgentLike; turn: number }>()
-  let runWriteback: (agent: AgentLike, turn: number, signal: AbortSignal) => Promise<WritebackStatus>
+  const writebackRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const writebackAutoRetries = new Map<string, number>()
+  let runWriteback: (agent: AgentLike, turn: number, signal: AbortSignal, options?: WritebackRunOptions) => Promise<WritebackStatus>
+
+  const clearWritebackRetry = (key: string): void => {
+    const timer = writebackRetryTimers.get(key)
+    if (timer !== undefined) {
+      clearTimeout(timer)
+      writebackRetryTimers.delete(key)
+    }
+  }
+  const scheduleWritebackRetry = (key: string, delayMs: number, phase: 'auto' | 'final'): void => {
+    clearWritebackRetry(key)
+    const timer = setTimeout(() => {
+      writebackRetryTimers.delete(key)
+      void executeWritebackRetry(key, phase).catch(error => {
+        runtime.logger.warn(`dsh-knowledge: writeback retry chain error: ${error instanceof Error ? error.message : String(error)}`)
+      })
+    }, delayMs)
+    if (typeof timer.unref === 'function') timer.unref()
+    writebackRetryTimers.set(key, timer)
+  }
+  const executeWritebackRetry = async (key: string, phase: 'auto' | 'final'): Promise<void> => {
+    const source = writebackSources.get(key)
+    if (source === undefined || coordinator.isClosing()) return
+    if (phase === 'final') {
+      // The DB attempts<3 claim ceiling would block the fourth attempt; the
+      // reset mirrors the manual retry path before the final claim.
+      try { await provider.resetExtraction(key) } catch {}
+    }
+    const job = await provider.extractionJob(key).catch(() => undefined)
+    if (job?.status === 'completed') {
+      writebackStatuses.set(key, { status: 'completed', summary: '知识库回写 · 已处理', retryable: false })
+      writebackSources.delete(key)
+      writebackAutoRetries.delete(key)
+      return
+    }
+    if (job?.status === 'running') {
+      writebackStatuses.set(key, { status: 'running', summary: '知识库回写 · 正在其他路径处理', retryable: false })
+      return
+    }
+    await runWriteback(source.agent, source.turn, new AbortController().signal, {
+      phase,
+      ...(phase === 'final' ? { timeoutMs: resolved.extractionFinalTimeoutMs, leaseMs: resolved.extractionFinalTimeoutMs + 300_000 } : {}),
+    })
+  }
+  const exportFailedTurn = async (agent: AgentLike, turn: number): Promise<{ fileName?: string; skipped?: string }> => {
+    if (resolved.exportsDir === undefined) return { skipped: '未配置导出目录' }
+    const markdown = buildTurnExportMarkdown(agent.session, turn, resolved.extractionMaxInputChars)
+    if (markdown === undefined) return { skipped: '回合内容为空' }
+    await mkdir(resolved.exportsDir, { recursive: true })
+    const prefix = `回写失败-${turn}-`
+    const existing = await readdir(resolved.exportsDir).catch(() => [] as string[])
+    const fileName = existing.find(name => name.startsWith(prefix) && name.endsWith('.md')) ?? `${prefix}${exportTimestamp()}.md`
+    if (!existing.includes(fileName)) await writeFile(joinPath(resolved.exportsDir, fileName), markdown, 'utf8')
+    return { fileName }
+  }
   const handleCodec = new KnowledgeHandleCodec(randomBytes(32))
   const noteHandleCodec = new KnowledgeNoteHandleCodec(randomBytes(32))
   const managementEmbedToken = randomBytes(32).toString('base64url')
@@ -281,15 +348,15 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
             if (state?.status !== 'failed' || !state.retryable || source === undefined) {
               throw connectionError(409, 'writeback is not retryable')
             }
-            writebackStatuses.set(key, { status: 'running', summary: '知识库回写 · 正在重试', retryable: false })
-            try {
-              await provider.resetExtraction(key)
-              state = await runWriteback(source.agent, source.turn, new AbortController().signal)
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error)
-              state = { status: 'failed', summary: '知识库回写 · 重试失败', error: message, retryable: true }
-              writebackStatuses.set(key, state)
-            }
+            clearWritebackRetry(key)
+            writebackAutoRetries.set(key, 0)
+            try { await provider.resetExtraction(key) } catch {}
+            writebackStatuses.set(key, { status: 'running', summary: '知识库回写 · 正在重试（手动）', retryable: false })
+            // The manual retry restarts the full chain (2 timed backoff
+            // attempts + the extended-budget final attempt) in the background;
+            // the client polls GET writeback-status for progression.
+            void runWriteback(source.agent, source.turn, new AbortController().signal).catch(() => {})
+            state = writebackStatuses.get(key)
           }
           res.writeHead(state === undefined ? 404 : 200, {
             'content-type': 'application/json; charset=utf-8',
@@ -301,6 +368,39 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
       },
     })
     if (disposeWritebackStatus !== undefined) httpRuntime.effect(() => disposeWritebackStatus, 'dsh-knowledge.writeback-status')
+    const disposeWritebackExport = httpRuntime.webServer?.register({
+      kind: 'exact',
+      path: '/knowledge-control/v1/writeback-export',
+      async handler(req, res) {
+        try {
+          if (req.method !== 'GET') { res.writeHead(405, { allow: 'GET' }).end(); return }
+          assertKnowledgeBrowserRequest(req, 'conversation-web')
+          const url = new URL(req.url ?? '/', 'http://localhost')
+          const sessionId = url.searchParams.get('sessionId')?.trim()
+          const turn = Number(url.searchParams.get('turn'))
+          if (!sessionId || !Number.isInteger(turn) || turn < 0) throw connectionError(400, 'sessionId and a non-negative integer turn are required')
+          const fileName = writebackStatuses.get(`${sessionId}:${turn}`)?.export?.fileName
+          if (resolved.exportsDir === undefined || fileName === undefined) {
+            throw connectionError(404, '没有可下载的失败导出文件')
+          }
+          const directory = joinPath(resolved.exportsDir)
+          const target = joinPath(directory, fileName)
+          if (fileName.includes('/') || fileName.includes('\\') || fileName.includes('..') || !target.startsWith(`${directory}${pathSep}`)) {
+            throw connectionError(400, '无效的导出文件名')
+          }
+          const content = await readFile(target).catch(() => undefined)
+          if (content === undefined) throw connectionError(404, '导出文件已不存在')
+          res.writeHead(200, {
+            'content-type': 'text/markdown; charset=utf-8',
+            'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+            'cache-control': 'no-store',
+          }).end(content)
+        } catch (error) {
+          sendControlError(res, error)
+        }
+      },
+    })
+    if (disposeWritebackExport !== undefined) httpRuntime.effect(() => disposeWritebackExport, 'dsh-knowledge.writeback-export')
     const disposeModelCatalog = httpRuntime.webServer?.register({
       kind: 'exact', path: '/knowledge-control/v1/models',
       async handler(req, res) {
@@ -328,54 +428,117 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   }
 
   if (resolved.extractionEnabled) {
-    runWriteback = async (agent: AgentLike, turn: number, signal: AbortSignal): Promise<WritebackStatus> => {
+    runWriteback = async (agent, turn, signal, options = {}) => {
       const key = `${agent.session.id}:${turn}`
-      writebackStatuses.set(key, { status: 'running', summary: '知识库回写 · 正在重试', retryable: false })
+      const phase = options.phase ?? 'initial'
+      const runningSummary = phase === 'initial'
+        ? '知识库回写 · 正在回写'
+        : phase === 'auto'
+          ? `知识库回写 · 自动重试（${writebackAutoRetries.get(key) ?? 0}/2）`
+          : '知识库回写 · 最后一次尝试（30 分钟预算）'
+      writebackStatuses.set(key, { status: 'running', summary: runningSummary, retryable: false })
       let state: WritebackStatus
       try {
-        const result = await coordinator.run(agent.session, turn, signal)
+        const result = await coordinator.run(agent.session, turn, signal, options)
         let summary: string
         if (result.status === 'duplicate') {
           const job = await provider.extractionJob(key, signal)
           if (job?.status === 'failed') throw new Error(job.lastError ?? '知识库回写失败')
           summary = '知识库回写 · 已处理'
         } else if (result.status === 'unmounted') summary = '知识库回写 · 未挂载可写知识库'
-        else if (result.status === 'skipped') summary = '知识库回写 · 当前回答无可提取内容'
-        else if (result.candidateCount === 0) summary = '知识库回写 · 无需收录'
+        else if (result.status === 'skipped') {
+          // During shutdown run() short-circuits to 'skipped'; that must not
+          // be reported as a successful no-op writeback.
+          if (coordinator.isClosing()) throw new Error('插件正在关闭，回写中止')
+          summary = '知识库回写 · 当前回答无可提取内容'
+        } else if (result.candidateCount === 0) summary = '知识库回写 · 无需收录'
         else summary = `知识库回写 · ${result.bases.map(base => {
           const parts = [base.directCount > 0 ? `直写 ${base.directCount}` : '', base.auditCount > 0 ? `待审 ${base.auditCount}` : ''].filter(Boolean)
           return `${base.name}：${parts.join('、')}`
         }).join('；')}`
+        if (phase !== 'initial') summary = `${summary}（自动重试后成功）`
         state = { status: 'completed', summary, retryable: false }
+        clearWritebackRetry(key)
         writebackSources.delete(key)
+        writebackAutoRetries.delete(key)
       } catch (error) {
-        if (signal.aborted) throw error
         const message = error instanceof Error ? error.message : String(error)
-        runtime.logger.warn(`dsh-knowledge: synchronous writeback failed: ${message}`)
+        runtime.logger.warn(`dsh-knowledge: writeback attempt failed (phase ${phase}): ${message}`)
         const job = await provider.extractionJob(key).catch(() => undefined)
         const retryable = job?.status === 'failed'
-        const summary = message.includes('max-tokens')
-          ? '知识库回写 · 失败：提取结果超过模型输出上限'
-          : '知识库回写 · 失败'
-        state = { status: 'failed', summary, error: message, retryable }
         if (retryable) writebackSources.set(key, { agent: snapshotAgent(agent), turn })
         else writebackSources.delete(key)
+        // Terminalize first in every path: an aborted or closing run must
+        // never leave the UI status stuck on 'running' (the historical bug).
+        const interrupted = signal.aborted
+        const chainActive = retryable && !interrupted && !coordinator.isClosing()
+        if (chainActive && phase !== 'final') {
+          const autoRetries = writebackAutoRetries.get(key) ?? 0
+          if (autoRetries < resolved.extractionRetryDelaysMs.length) {
+            writebackAutoRetries.set(key, autoRetries + 1)
+            const delayMs = resolved.extractionRetryDelaysMs[autoRetries] ?? 60_000
+            state = { status: 'running', summary: `知识库回写 · 将在 ${Math.round(delayMs / 1000)} 秒后自动重试（${autoRetries + 1}/2）`, retryable: false }
+            scheduleWritebackRetry(key, delayMs, 'auto')
+          } else {
+            state = { status: 'running', summary: `知识库回写 · 将在 ${Math.round(resolved.extractionFinalRetryDelayMs / 1000)} 秒后进行最后一次尝试（30 分钟预算）`, retryable: false }
+            scheduleWritebackRetry(key, resolved.extractionFinalRetryDelayMs, 'final')
+          }
+        } else if (chainActive && phase === 'final') {
+          // The whole automatic chain is exhausted: persist the pending
+          // extraction payload as a rescue Markdown file, then surface the
+          // retry button.
+          const exported = await exportFailedTurn(agent, turn).catch((exportError): { fileName?: string; skipped?: string } => ({
+            skipped: exportError instanceof Error ? exportError.message : String(exportError),
+          }))
+          state = {
+            status: 'failed',
+            summary: message.includes('max-tokens')
+              ? '知识库回写 · 自动重试后仍失败：提取结果超过模型输出上限'
+              : '知识库回写 · 自动重试后仍失败',
+            error: exported.skipped !== undefined ? `${message}（导出跳过：${exported.skipped}）` : message,
+            retryable: true,
+            ...exported.fileName !== undefined ? { export: { fileName: exported.fileName } } : {},
+          }
+        } else {
+          state = {
+            status: 'failed',
+            summary: interrupted
+              ? '知识库回写 · 失败：回合已中断，可手动重试'
+              : message.includes('max-tokens')
+                ? '知识库回写 · 失败：提取结果超过模型输出上限'
+                : '知识库回写 · 失败',
+            error: message,
+            retryable,
+          }
+        }
       }
       writebackStatuses.set(key, state)
       if (writebackStatuses.size > 1000) {
         const oldest = writebackStatuses.keys().next().value as string
         writebackStatuses.delete(oldest)
         writebackSources.delete(oldest)
+        clearWritebackRetry(oldest)
+        writebackAutoRetries.delete(oldest)
       }
       runtime.logger.info(`dsh-knowledge: ${state.summary}`)
       return state
     }
     runtime.on('agent/turn-stopping', async ({ agent, turn, signal }) => {
-      await runWriteback(agent, turn, signal).catch(() => {})
+      if (resolved.extractionMode === 'inline') {
+        // Legacy behavior: keep awaiting so the turn completes only after the
+        // synchronous writeback attempt settles.
+        await runWriteback(agent, turn, signal).then(() => undefined, () => {})
+        return
+      }
+      // Detached: the writeback is fire-and-forget with its own signal, so a
+      // user follow-up that cancels the turn cannot abort the extraction.
+      void runWriteback(agent, turn, new AbortController().signal).catch(() => {})
     })
   }
 
   runtime.effect(() => async () => {
+    for (const timer of writebackRetryTimers.values()) clearTimeout(timer)
+    writebackRetryTimers.clear()
     await coordinator.close()
     await providerRouter.close()
     await managementProvider?.close()
@@ -392,6 +555,12 @@ function snapshotAgent(agent: AgentLike): AgentLike {
       events: [...agent.session.events],
     },
   }
+}
+
+function exportTimestamp(): string {
+  const now = new Date()
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  return `${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
 }
 
 function publicConnectionError(error: unknown): Error {

@@ -66,6 +66,6 @@ test('connection settings survive restart in a private atomic file', async (t) =
   }
   await storeConnection(path, settings)
   assert.deepEqual(loadStoredConnection(path), settings)
-  assert.equal((await stat(path)).mode & 0o777, 0o600)
+  if (process.platform !== 'win32') assert.equal((await stat(path)).mode & 0o777, 0o600)
   assert.match(await readFile(path, 'utf8'), /restart_remote_token/)
 })

@@ -1370,10 +1370,10 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     return reviewed
   }
 
-  async claimExtraction(sourceKey: string): Promise<boolean> {
+  async claimExtraction(sourceKey: string, signal?: AbortSignal, leaseMs: number = EXTRACTION_LEASE_MS): Promise<boolean> {
     this.assertOpen()
     const claimedAt = nowIso()
-    const staleBefore = new Date(Date.now() - EXTRACTION_LEASE_MS).toISOString()
+    const staleBefore = new Date(Date.now() - leaseMs).toISOString()
     const result = this.db.prepare(`
       INSERT INTO extraction_jobs(source_key,status,attempts,candidate_count,updated_at)
       VALUES(?,'running',1,0,?)
