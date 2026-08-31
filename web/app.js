@@ -3087,6 +3087,7 @@ function renderCandidateCard(candidate) {
         element('div', {},
           badge(knowledgeBaseName(candidate.draft.knowledgeBaseId)), ' ',
           badge(ACTION_LABELS[candidate.action], candidate.action === 'conflict' ? 'warning' : 'accent'), ' ',
+          candidate.change?.kind === 'revise' ? badge('原文修订', 'warning') : candidate.change?.kind === 'append' ? badge('内容补充') : null, ' ',
           badge(TYPE_LABELS[candidate.draft.type]), ' ',
           candidate.draft.source?.evidence ? badge(EVIDENCE_LABELS[candidate.draft.source.evidence] || candidate.draft.source.evidence) : null),
         element('h3', {}, candidate.draft.title),
@@ -3100,7 +3101,7 @@ function renderCandidateCard(candidate) {
           element('strong', {}, '写入位置'),
           element('span', { class: 'candidate-target' }, candidate.action === 'create'
             ? `创建“${candidate.draft.title}”`
-            : target ? `合并到“${target.title}”` : `目标 ${candidate.targetId || '不可用'}`),
+            : target ? `${candidate.change?.kind === 'revise' ? '修订' : '补充到'}“${target.title}”` : `目标 ${candidate.targetId || '不可用'}`),
         ),
         renderCandidateMetadataChanges(candidate, target),
         element('section', {},
@@ -3121,7 +3122,7 @@ function renderCandidateCard(candidate) {
           disabled: !targetAvailable,
           title: targetAvailable ? action.editLabel : '目标文档不可用，无法安全编辑合并结果',
         }),
-        actionButton(action.label, () => reviewCandidate(candidate, 'approve', action.resolution), 'primary small', {
+        action.manualOnly ? null : actionButton(action.label, () => reviewCandidate(candidate, 'approve', action.resolution), 'primary small', {
           disabled: !targetAvailable,
           title: targetAvailable ? action.label : '目标文档不可用，刷新后再审核',
         }),
@@ -3137,8 +3138,10 @@ function renderCandidateDiff(candidate, target) {
       element('p', {}, '目标文档暂时不可用。为避免盲目覆盖，刷新并确认当前版本后再审核。'),
     )
   }
-  const review = window.DshKnowledgeReview.createReviewChange(candidate.action, target?.body || '', candidate.draft.body)
-  const title = candidate.action === 'create' ? '新文档内容' : candidate.action === 'conflict' ? '冲突合并预览' : '文档合并预览'
+  const review = window.DshKnowledgeReview.createReviewChange(candidate.action, target?.body || '', candidate.draft.body, candidate.change?.kind)
+  const title = candidate.action === 'create'
+    ? '新文档内容'
+    : candidate.action === 'conflict' ? '冲突处理预览' : candidate.change?.kind === 'revise' ? '原文修订预览' : '内容补充预览'
   const targetLabel = candidate.action === 'create'
     ? candidate.draft.title
     : `${target.title} · 当前版本 ${target.version}`
@@ -3205,8 +3208,15 @@ function renderCandidateMetadataChanges(candidate, target) {
 
 function candidatePrimaryAction(candidate) {
   if (candidate.action === 'create') return { label: '写入新文档', editLabel: '编辑后写入' }
-  if (candidate.action === 'conflict') return { label: '确认合并', editLabel: '编辑合并内容', resolution: 'merge' }
-  return { label: '合并到文档', editLabel: '编辑后合并' }
+  if (candidate.action === 'conflict' && candidate.change?.kind !== 'revise') {
+    return { label: '需要手动解决', editLabel: '手动解决', resolution: 'merge', manualOnly: true }
+  }
+  if (candidate.action === 'conflict') return {
+    label: candidate.change?.kind === 'revise' ? '应用冲突修订' : '确认补充',
+    editLabel: '手动解决', resolution: 'merge',
+  }
+  if (candidate.change?.kind === 'revise') return { label: '应用修订', editLabel: '编辑修订结果' }
+  return { label: '补充到文档', editLabel: '编辑后补充' }
 }
 
 function renderTokens() {
@@ -3576,7 +3586,7 @@ function openEntryEditor(entry, candidate) {
   const activeWorkspace = activeDocumentWorkspace()
   const candidateTarget = candidate?.targetId ? state.candidateTargets.get(candidate.targetId) : null
   const candidateReview = candidate && (candidate.action === 'create' || candidateTarget)
-    ? window.DshKnowledgeReview.createReviewChange(candidate.action, candidateTarget?.body || '', candidate.draft.body)
+    ? window.DshKnowledgeReview.createReviewChange(candidate.action, candidateTarget?.body || '', candidate.draft.body, candidate.change?.kind)
     : null
   const source = candidate ? { ...candidate.draft, body: candidateReview?.after || candidate.draft.body } : entry || {
     knowledgeBaseId: activeWorkspace?.view.knowledgeBaseId || undefined,
@@ -3612,13 +3622,13 @@ function openEntryEditor(entry, candidate) {
   body.wrapper.classList.add('span-2')
   tags.wrapper.classList.add('span-2')
   const modeTitle = candidate
-    ? candidate.action === 'create' ? '编辑新文档' : '编辑合并内容'
+    ? candidate.action === 'create' ? '编辑新文档' : '编辑最终文档'
     : entry ? '编辑知识文档' : '新建知识文档'
   const candidateDescription = candidate?.action === 'create'
     ? '确认后将创建文档并立即参与后续召回。'
-    : '正文已载入完整合并预览；保存前可以处理重复内容或冲突。'
+    : '正文是审核后的最终版本；可以直接修改、删除过时内容。若原文已变化，会要求重新打开后处理。'
   const primaryLabel = candidate
-    ? candidate.action === 'create' ? '写入新文档' : '保存并合并'
+    ? candidate.action === 'create' ? '写入新文档' : '保存最终版本'
     : '保存文档'
   const modal = openSheet({ title: modeTitle, description: candidate ? candidateDescription : '文档保存后会立即参与后续召回。', body: form, primaryLabel, onPrimary: async () => {
     if (!form.reportValidity()) return false
@@ -3631,11 +3641,15 @@ function openEntryEditor(entry, candidate) {
       ...(source.source ? { source: source.source } : {}),
     }
     if (candidate) await api(`candidates/${encodeURIComponent(candidate.id)}/review`, {
-      method: 'POST', body: { decision: 'approve', draft, ...(candidate.action === 'conflict' ? { resolution: 'merge' } : {}) },
+      method: 'POST', body: {
+        decision: 'approve', draft,
+        ...(candidateTarget?.version ? { expectedVersion: candidateTarget.version } : {}),
+        ...(candidate.action === 'conflict' ? { resolution: 'merge' } : {}),
+      },
     })
     else if (entry) await api(`entries/${encodeURIComponent(entry.id)}`, { method: 'PUT', body: { draft } })
     else await api('entries', { method: 'POST', body: { draft } })
-    showToast(candidate ? candidate.action === 'create' ? '新文档已写入。' : '候选内容已合并。' : '知识已保存。')
+    showToast(candidate ? candidate.action === 'create' ? '新文档已写入。' : '文档修订已保存。' : '知识已保存。')
     state.stats = null
     await navigate(candidate ? 'candidates' : state.view)
     return true
@@ -3701,8 +3715,12 @@ async function reviewCandidate(candidate, decision, resolution) {
     : candidate.action === 'create'
       ? '确认后将创建新文档，并立即参与后续对话召回。'
       : candidate.action === 'conflict'
-        ? '确认后将保留当前文档内容，并把候选内容合入同一文档。'
-        : '确认后将按预览结果合入目标文档；若审核期间文档发生变化，会转为冲突项。'
+        ? candidate.change?.kind === 'revise'
+          ? '确认后会按预览替换或删除原文。请重点核对红色删除行和绿色新增行。'
+          : '确认后会保留当前文档，并补充候选内容。'
+        : candidate.change?.kind === 'revise'
+          ? '确认后会按预览修订原文；无关的并发补充会被保留，同一区域变化会转为冲突。'
+          : '确认后将按预览补充目标文档；若出现矛盾会转为冲突项。'
   openConfirm({
     title,
     message,
@@ -3717,7 +3735,7 @@ async function reviewCandidate(candidate, decision, resolution) {
         await navigate('candidates')
         return
       }
-      showToast(approve ? candidate.action === 'create' ? '新文档已写入。' : '候选内容已合并。' : '候选已拒绝。')
+      showToast(approve ? candidate.action === 'create' ? '新文档已写入。' : candidate.change?.kind === 'revise' ? '原文已修订。' : '内容已补充。' : '候选已拒绝。')
       state.stats = null
       await navigate('candidates')
     },

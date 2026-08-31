@@ -440,9 +440,13 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
           },
           {
             action: 'update', knowledgeBaseId: 'default', targetId, title: 'Existing policy',
-            body: '## Operational note\n\nKeep the compatible operational note with the existing policy.',
+            change: {
+              kind: 'revise',
+              edits: [{ oldText: 'Keep the existing behavior.', newText: 'Use the revised behavior.' }],
+              append: '## Operational note\n\nThe revised behavior has been verified.',
+            },
             type: 'lesson', tags: ['operations'], scope: { kind: 'global' }, confidence: 0.95,
-            retention: { durable: true, evidence: 'explicit' }, reason: 'Adds compatible operational context.',
+            retention: { durable: true, evidence: 'explicit' }, reason: 'Replaces the obsolete policy and records verification.',
           },
         ] }) }
         yield { type: 'finish', reason: { kind: 'stop' } }
@@ -520,6 +524,8 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
   assert.equal((await observer.list({ status: 'active', limit: 10 })).items.length, 2)
   const updatedExisting = await observer.get(existing.id)
   assert.equal(updatedExisting.type, 'decision')
+  assert.doesNotMatch(updatedExisting.body, /Keep the existing behavior/)
+  assert.match(updatedExisting.body, /Use the revised behavior/)
   assert.match(updatedExisting.body, /Operational note/)
   assert.equal(direct.events.at(-1).type, 'assistant/message')
 })

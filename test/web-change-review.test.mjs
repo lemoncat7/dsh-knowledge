@@ -21,6 +21,20 @@ test('update review previews the same append merge used by the provider', () => 
   assert.equal(review.diff.unchanged, 3)
 })
 
+test('revision review shows actual replacement and deletion lines', () => {
+  const review = createReviewChange(
+    'update',
+    '# Runtime\n\nVersion 1.2 is supported.\n\nLegacy fallback is enabled.',
+    '# Runtime\n\nVersion 1.3 is supported.',
+    'revise',
+  )
+  assert.equal(review.after, '# Runtime\n\nVersion 1.3 is supported.')
+  assert.equal(review.diff.additions, 1)
+  assert.equal(review.diff.deletions, 3)
+  assert.ok(review.displayLines.some(line => line.kind === 'remove'))
+  assert.ok(review.displayLines.some(line => line.kind === 'add'))
+})
+
 test('line diff reports replacements with old and new line numbers', () => {
   const diff = createLineDiff('alpha\nbeta\ngamma', 'alpha\nupdated\ngamma')
   assert.equal(diff.additions, 1)

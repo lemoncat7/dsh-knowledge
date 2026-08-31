@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
+import { contentHash } from '../lib/domain.js'
 import { LocalKnowledgeProvider } from '../lib/local-provider.js'
 
 async function fixture(t) {
@@ -212,6 +213,99 @@ test('direct writes merge compatible knowledge, skip duplicates, and hold confli
   assert.equal(created.outcome, 'created')
   assert.equal(created.candidate?.status, 'approved')
   assert.equal((await provider.list({ status: 'active', limit: 10 })).items.length, 2)
+})
+
+test('explicit revisions replace obsolete knowledge instead of appending contradictory text', async (t) => {
+  const provider = await fixture(t)
+  const existing = await provider.create({
+    knowledgeBaseId: 'default', title: 'Release policy',
+    body: '## Current version\n\nThe supported release is 1.2.\n\n## Installation\n\nUse the stable channel.',
+    type: 'procedure', tags: ['release'], scope: { kind: 'global' }, confidence: .94,
+  })
+  const result = await provider.writeDirect({
+    action: 'update', targetId: existing.id,
+    change: {
+      kind: 'revise', baseVersion: existing.version, baseHash: contentHash(existing),
+      edits: [{ oldText: 'The supported release is 1.2.', newText: 'The supported release is 1.3.' }],
+    },
+    draft: {
+      ...existing,
+      body: 'This untrusted preview is intentionally ignored by the provider.',
+      confidence: .98,
+      source: { evidence: 'verified' },
+    },
+    reason: 'The verified supported release changed.',
+  }, 'direct-revision:1')
+
+  assert.equal(result.outcome, 'merged')
+  assert.match(result.entry?.body || '', /supported release is 1\.3/)
+  assert.doesNotMatch(result.entry?.body || '', /supported release is 1\.2/)
+  assert.match(result.entry?.body || '', /Use the stable channel/)
+  assert.doesNotMatch(result.entry?.body || '', /untrusted preview/)
+})
+
+test('revisions rebase over unrelated additions and surface overlapping edits as real conflicts', async (t) => {
+  const provider = await fixture(t)
+  const existing = await provider.create({
+    knowledgeBaseId: 'default', title: 'Runtime status',
+    body: '## Version\n\nCurrent version: 1.0.\n\n## Platform\n\nRuns on macOS.',
+    type: 'fact', tags: ['runtime'], scope: { kind: 'global' }, confidence: .93,
+  })
+  const rebased = await provider.propose({
+    action: 'update', targetId: existing.id,
+    change: {
+      kind: 'revise', baseVersion: existing.version, baseHash: contentHash(existing),
+      edits: [{ oldText: 'Runs on macOS.', newText: 'Runs on macOS and Linux.' }],
+    },
+    draft: { ...existing, body: 'preview', confidence: .96 },
+    reason: 'Platform support expanded.',
+  }, 'revision-rebase:1')
+  await provider.writeDirect({
+    action: 'update', targetId: existing.id, change: { kind: 'append' },
+    draft: { ...existing, body: '## Verification\n\nSmoke tests passed.', confidence: .97 },
+    reason: 'Adds an independent verification section.',
+  }, 'revision-rebase:2')
+  await provider.review(rebased.id, { decision: 'approve' })
+  const afterRebase = await provider.get(existing.id)
+  assert.match(afterRebase?.body || '', /macOS and Linux/)
+  assert.match(afterRebase?.body || '', /Smoke tests passed/)
+
+  const current = afterRebase
+  assert.ok(current)
+  const overlapping = await provider.propose({
+    action: 'update', targetId: current.id,
+    change: {
+      kind: 'revise', baseVersion: current.version, baseHash: contentHash(current),
+      edits: [{ oldText: 'Current version: 1.0.', newText: 'Current version: 1.1.' }],
+    },
+    draft: { ...current, body: 'preview', confidence: .98 },
+    reason: 'Candidate update.',
+  }, 'revision-overlap:1')
+  await provider.writeDirect({
+    action: 'update', targetId: current.id,
+    change: {
+      kind: 'revise', baseVersion: current.version, baseHash: contentHash(current),
+      edits: [{ oldText: 'Current version: 1.0.', newText: 'Current version: 2.0.' }],
+    },
+    draft: { ...current, body: 'preview', confidence: .99, source: { evidence: 'verified' } },
+    reason: 'A newer verified update won the race.',
+  }, 'revision-overlap:2')
+
+  const changed = await provider.review(overlapping.id, { decision: 'approve' })
+  assert.equal(changed.status, 'pending')
+  assert.equal(changed.action, 'conflict')
+  await assert.rejects(
+    () => provider.review(overlapping.id, { decision: 'approve', resolution: 'merge' }),
+    /no longer matches.*edit the current document/i,
+  )
+  const latest = await provider.get(current.id)
+  assert.ok(latest)
+  await provider.review(overlapping.id, {
+    decision: 'approve', resolution: 'merge', expectedVersion: latest.version,
+    draft: { ...latest, body: latest.body.replace('Current version: 2.0.', 'Current version: 2.1.') },
+  })
+  assert.match((await provider.get(current.id))?.body || '', /Current version: 2\.1/)
+  assert.doesNotMatch((await provider.get(current.id))?.body || '', /Current version: 2\.0/)
 })
 
 test('document type drift does not turn a compatible append into a conflict', async (t) => {

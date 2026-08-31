@@ -36,9 +36,12 @@ export function createReviewChange(
   action: 'create' | 'update' | 'conflict',
   currentBody: string,
   candidateBody: string,
+  changeKind: 'append' | 'revise' = 'append',
 ): ReviewChange {
   const before = action === 'create' ? '' : currentBody
-  const after = action === 'create' ? candidateBody : mergeKnowledgeBodies(currentBody, candidateBody)
+  const after = action === 'create' || changeKind === 'revise'
+    ? candidateBody.trim()
+    : mergeKnowledgeBodies(currentBody, candidateBody)
   const diff = createLineDiff(before, after)
   return { before, after, diff, displayLines: compactDiffLines(diff.lines) }
 }

@@ -35,7 +35,7 @@ test('remote provider interoperates with the authenticated local API', async (t)
   })
 
   const health = await fetch(`http://127.0.0.1:${address.port}/knowledge-api/v1/health`).then(response => response.json())
-  assert.deepEqual(health, { ok: true, service: 'dsh-knowledge', schemaVersion: 10 })
+  assert.deepEqual(health, { ok: true, service: 'dsh-knowledge', schemaVersion: 11 })
 
   assert.equal((await remote.getSettings()).writebackPolicy, 'conservative')
   assert.equal((await remote.updateSettings({ writebackPolicy: 'proactive' })).writebackPolicy, 'proactive')

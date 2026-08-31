@@ -19,6 +19,23 @@ export type KnowledgeWriteMode = 'none' | 'audit' | 'direct'
 export type KnowledgeWritebackPolicy = 'conservative' | 'proactive'
 export type KnowledgeEvidence = 'explicit' | 'verified' | 'inferred'
 
+export interface KnowledgeTextEdit {
+  /** Exact text from the target document. It must occur exactly once. */
+  oldText: string
+  /** Replacement text. An empty value removes oldText. */
+  newText: string
+}
+
+export type CandidateChange =
+  | { kind: 'append' }
+  | {
+    kind: 'revise'
+    baseVersion: number
+    baseHash: string
+    edits: KnowledgeTextEdit[]
+    append?: string
+  }
+
 export interface KnowledgeSettings {
   writebackPolicy: KnowledgeWritebackPolicy
   writebackProvider?: string
@@ -172,6 +189,8 @@ export interface KnowledgeVersion {
 export interface CandidateProposal {
   action: CandidateAction
   targetId?: string
+  /** Missing on legacy candidates and treated as an append. */
+  change?: CandidateChange
   draft: KnowledgeDraft
   reason: string
 }
@@ -227,6 +246,8 @@ export interface ReviewDecision {
   resolution?: 'merge'
   note?: string
   draft?: KnowledgeDraft
+  /** Version shown to the reviewer when an edited full document is submitted. */
+  expectedVersion?: number
 }
 
 export interface ExtractionJobRecord {

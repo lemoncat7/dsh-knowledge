@@ -13,6 +13,7 @@ import {
   normalizeKnowledgeSettings,
   nowIso,
   type CandidateProposal,
+  type CandidateChange,
   type ApiTokenRecord,
   type ExtractionJobRecord,
   type KnowledgeCandidate,
@@ -49,7 +50,7 @@ import { renderKnowledgeMarkdown } from './documents/markdown.js'
 import { knowledgeDocumentPath } from './documents/path.js'
 import { KnowledgeDocumentStore } from './documents/store.js'
 import { enqueueDocumentProjection } from './documents/projection-queue.js'
-import { mergeKnowledgeBodies } from './knowledge-merge.js'
+import { applyKnowledgeTextEdits, mergeKnowledgeBodies } from './knowledge-merge.js'
 import { NoteStore } from './notes/store.js'
 import {
   type KnowledgeNoteReference,
@@ -102,7 +103,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   private migrate(): void {
     let version = Number((this.db.prepare('PRAGMA user_version').get() as SqlRow).user_version ?? 0)
-    if (version > 10) throw new Error(`knowledge database schema ${version} is newer than this plugin supports`)
+    if (version > 11) throw new Error(`knowledge database schema ${version} is newer than this plugin supports`)
     if (version === 0) this.db.exec(`
       BEGIN IMMEDIATE;
       CREATE TABLE knowledge_entries (
@@ -310,6 +311,23 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
         `)
         this.backfillLegacyNoteReferences()
         this.db.exec('PRAGMA user_version = 10; COMMIT')
+      } catch (error) {
+        this.db.exec('ROLLBACK')
+        throw error
+      }
+    }
+    if (version <= 9) version = 10
+    if (version === 10) {
+      this.db.exec('BEGIN IMMEDIATE')
+      try {
+        const candidateTable = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_candidates'").get()
+        const candidateColumns = candidateTable === undefined
+          ? []
+          : this.db.prepare('PRAGMA table_info(knowledge_candidates)').all() as SqlRow[]
+        if (candidateTable !== undefined && !candidateColumns.some(column => String(column.name) === 'change_json')) {
+          this.db.exec('ALTER TABLE knowledge_candidates ADD COLUMN change_json TEXT')
+        }
+        this.db.exec('PRAGMA user_version = 11; COMMIT')
       } catch (error) {
         this.db.exec('ROLLBACK')
         throw error
@@ -1216,7 +1234,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   }
 
   private insertCandidate(proposal: CandidateProposal, sourceKey?: string): KnowledgeCandidate {
-    const hash = contentHash(proposal.draft) + `:${proposal.action}:${proposal.targetId ?? ''}`
+    const hash = contentHash(proposal.draft) + `:${proposal.action}:${proposal.targetId ?? ''}:${JSON.stringify(proposal.change ?? null)}`
     if (sourceKey !== undefined) {
       const existing = this.db.prepare('SELECT * FROM knowledge_candidates WHERE source_key = ? AND proposal_hash = ?').get(sourceKey, hash) as SqlRow | undefined
       if (existing !== undefined) return rowToCandidate(existing)
@@ -1229,9 +1247,9 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       createdAt: nowIso(),
     }
     this.db.prepare(`
-      INSERT INTO knowledge_candidates(id,action,target_id,draft_json,reason,status,source_key,proposal_hash,created_at)
-      VALUES(?,?,?,?,?,'pending',?,?,?)
-    `).run(candidate.id, candidate.action, candidate.targetId ?? null, JSON.stringify(candidate.draft), candidate.reason, sourceKey ?? null, hash, candidate.createdAt)
+      INSERT INTO knowledge_candidates(id,action,target_id,change_json,draft_json,reason,status,source_key,proposal_hash,created_at)
+      VALUES(?,?,?,?,?,?,'pending',?,?,?)
+    `).run(candidate.id, candidate.action, candidate.targetId ?? null, candidate.change === undefined ? null : JSON.stringify(candidate.change), JSON.stringify(candidate.draft), candidate.reason, sourceKey ?? null, hash, candidate.createdAt)
     return candidate
   }
 
@@ -1246,10 +1264,11 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       if (!sameScope(target.scope, proposal.draft.scope)) {
         return { outcome: 'conflict', proposal: { ...proposal, action: 'conflict' } }
       }
-      if (potentiallyConflicts(target, proposal.draft)) {
+      const applied = applyCandidateToTarget(target, proposal, true)
+      if (!applied.ok) {
         return { outcome: 'conflict', proposal: { ...proposal, action: 'conflict' } }
       }
-      const draft = mergeKnowledgeDraft(target, proposal.draft, true)
+      const draft = applied.draft
       if (contentHash(draft) === contentHash(target)) return { outcome: 'duplicate', entry: target }
       return { outcome: 'merged', proposal: { ...proposal, action: 'update', draft } }
     }
@@ -1307,7 +1326,15 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   async listCandidates(status: 'pending' | 'approved' | 'rejected', limit: number): Promise<KnowledgeCandidate[]> {
     this.assertOpen()
     return (this.db.prepare('SELECT * FROM knowledge_candidates WHERE status = ? ORDER BY created_at DESC LIMIT ?')
-      .all(status, Math.max(1, Math.min(limit, 100))) as SqlRow[]).map(rowToCandidate)
+      .all(status, Math.max(1, Math.min(limit, 100))) as SqlRow[]).map(rowToCandidate).map(candidate => {
+        if (candidate.status !== 'pending' || candidate.targetId === undefined || candidate.change?.kind !== 'revise') return candidate
+        try {
+          const applied = applyCandidateToTarget(this.activeEntry(candidate.targetId), candidate, true)
+          return applied.ok ? { ...candidate, draft: applied.draft } : candidate
+        } catch {
+          return candidate
+        }
+      })
   }
 
   async review(id: string, decision: ReviewDecision): Promise<KnowledgeCandidate> {
@@ -1320,7 +1347,18 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       if (candidate.status !== 'pending') throw conflict(`candidate ${id} was already ${candidate.status}`)
       let draft = decision.draft === undefined ? candidate.draft : normalizeDraft(decision.draft)
       if (decision.decision === 'approve') {
-        if (candidate.action === 'conflict') {
+        if (candidate.action !== 'create' && decision.draft !== undefined) {
+          if (candidate.action === 'conflict' && decision.resolution !== 'merge') {
+            throw conflict('conflict candidate requires an explicit merge resolution')
+          }
+          if (candidate.targetId === undefined) throw new Error('candidate target is missing')
+          const target = this.activeEntry(candidate.targetId)
+          if (draft.knowledgeBaseId !== target.knowledgeBaseId) {
+            throw conflict('candidate approval cannot move a document between knowledge bases')
+          }
+          assertExpectedReviewVersion(target, decision.expectedVersion)
+          this.updateEntry(candidate.targetId, editedKnowledgeDraft(target, draft), 'update')
+        } else if (candidate.action === 'conflict') {
           if (decision.resolution !== 'merge') {
             throw conflict('conflict candidate requires an explicit merge resolution')
           }
@@ -1329,11 +1367,14 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
           if (draft.knowledgeBaseId !== target.knowledgeBaseId) {
             throw conflict('candidate approval cannot move a document between knowledge bases')
           }
-          this.updateEntry(candidate.targetId, mergeKnowledgeDraft(target, draft, true), 'update')
+          const applied = applyCandidateToTarget(target, candidate, true)
+          if (!applied.ok) throw conflict(`${applied.reason}; edit the current document to resolve this conflict`)
+          this.updateEntry(candidate.targetId, applied.draft, 'update')
         } else {
           const resolution = this.resolveDirectProposal({
             action: candidate.action,
             ...candidate.targetId === undefined ? {} : { targetId: candidate.targetId },
+            ...candidate.change === undefined ? {} : { change: candidate.change },
             draft,
             reason: candidate.reason,
           })
@@ -1341,9 +1382,9 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
             const proposal = resolution.proposal
             this.db.prepare(`
               UPDATE knowledge_candidates
-              SET action='conflict', target_id=?, draft_json=?, reason=?
+              SET action='conflict', target_id=?, change_json=?, draft_json=?, reason=?
               WHERE id=? AND status='pending'
-            `).run(proposal.targetId ?? null, JSON.stringify(proposal.draft), proposal.reason, id)
+            `).run(proposal.targetId ?? null, proposal.change === undefined ? null : JSON.stringify(proposal.change), JSON.stringify(proposal.draft), proposal.reason, id)
             return {
               ...candidate,
               action: 'conflict',
@@ -1691,11 +1732,13 @@ function rowToCandidate(row: SqlRow): KnowledgeCandidate {
   const reviewedAt = row.reviewed_at == null ? undefined : String(row.reviewed_at)
   const reviewNote = row.review_note == null ? undefined : String(row.review_note)
   const draft = JSON.parse(String(row.draft_json)) as KnowledgeDraft
+  const change = row.change_json == null ? undefined : normalizeCandidateChange(JSON.parse(String(row.change_json)))
   if (draft.knowledgeBaseId === undefined) draft.knowledgeBaseId = DEFAULT_KNOWLEDGE_BASE_ID
   return {
     id: String(row.id),
     action: String(row.action) as KnowledgeCandidate['action'],
     ...targetId === undefined ? {} : { targetId },
+    ...change === undefined ? {} : { change },
     draft,
     reason: String(row.reason),
     status: String(row.status) as KnowledgeCandidate['status'],
@@ -1712,16 +1755,45 @@ type DirectProposalResolution =
   | { outcome: 'created' | 'merged' | 'conflict'; proposal: CandidateProposal }
 
 function normalizeProposal(input: CandidateProposal): CandidateProposal {
+  const change = normalizeCandidateChange(input.change)
   const proposal: CandidateProposal = {
     action: input.action,
     ...input.targetId === undefined ? {} : { targetId: input.targetId },
+    ...change === undefined ? {} : { change },
     draft: normalizeDraft(input.draft),
     reason: input.reason.trim().slice(0, 2000),
   }
   if (proposal.action !== 'create' && proposal.targetId === undefined) {
     throw new Error(`${proposal.action} candidate requires targetId`)
   }
+  if (proposal.action === 'create' && proposal.change !== undefined) {
+    throw new Error('create candidate cannot contain a document change')
+  }
   return proposal
+}
+
+function normalizeCandidateChange(input: CandidateChange | undefined): CandidateChange | undefined {
+  if (input === undefined) return undefined
+  if (input.kind === 'append') return { kind: 'append' }
+  if (input.kind !== 'revise') throw new Error('unsupported candidate change kind')
+  if (!Number.isSafeInteger(input.baseVersion) || input.baseVersion < 1) {
+    throw new Error('revision baseVersion must be a positive integer')
+  }
+  const baseHash = input.baseHash.trim().toLocaleLowerCase()
+  if (!/^[a-f0-9]{64}$/u.test(baseHash)) throw new Error('revision baseHash must be a SHA-256 hash')
+  if (!Array.isArray(input.edits) || input.edits.length < 1 || input.edits.length > 20) {
+    throw new Error('revision must contain 1-20 text edits')
+  }
+  const edits = input.edits.map((edit, index) => {
+    const oldText = edit.oldText.replace(/\r\n?/gu, '\n')
+    const newText = edit.newText.replace(/\r\n?/gu, '\n')
+    if (oldText.length === 0 || oldText.length > 12_000) throw new Error(`revision edit ${index + 1} anchor must contain 1-12000 characters`)
+    if (newText.length > 12_000) throw new Error(`revision edit ${index + 1} replacement must contain at most 12000 characters`)
+    return { oldText, newText }
+  })
+  const append = input.append?.trim()
+  if (append !== undefined && append.length > 12_000) throw new Error('revision append must contain at most 12000 characters')
+  return { kind: 'revise', baseVersion: input.baseVersion, baseHash, edits, ...append ? { append } : {} }
 }
 
 function mergeKnowledgeDraft(current: KnowledgeEntry, incoming: KnowledgeDraft, preferIncomingTitle: boolean): KnowledgeDraft {
@@ -1737,6 +1809,49 @@ function mergeKnowledgeDraft(current: KnowledgeEntry, incoming: KnowledgeDraft, 
       ? current.source === undefined ? {} : { source: current.source }
       : { source: incoming.source },
   })
+}
+
+function applyCandidateToTarget(
+  current: KnowledgeEntry,
+  proposal: Pick<CandidateProposal, 'change' | 'draft'>,
+  preferIncomingTitle: boolean,
+): { ok: true; draft: KnowledgeDraft } | { ok: false; reason: string } {
+  if (proposal.change?.kind !== 'revise') {
+    if (potentiallyConflicts(current, proposal.draft)) return { ok: false, reason: 'candidate contradicts the current document' }
+    return { ok: true, draft: mergeKnowledgeDraft(current, proposal.draft, preferIncomingTitle) }
+  }
+  const revised = applyKnowledgeTextEdits(current.body, proposal.change.edits, proposal.change.append)
+  if (!revised.ok) return revised
+  return {
+    ok: true,
+    draft: normalizeDraft({
+      knowledgeBaseId: current.knowledgeBaseId,
+      title: preferIncomingTitle ? proposal.draft.title : current.title,
+      body: revised.body,
+      type: current.type,
+      tags: [...current.tags, ...proposal.draft.tags],
+      scope: current.scope,
+      confidence: Math.max(current.confidence, proposal.draft.confidence),
+      ...proposal.draft.source === undefined
+        ? current.source === undefined ? {} : { source: current.source }
+        : { source: proposal.draft.source },
+    }),
+  }
+}
+
+function editedKnowledgeDraft(current: KnowledgeEntry, incoming: KnowledgeDraft): KnowledgeDraft {
+  return normalizeDraft({
+    ...incoming,
+    knowledgeBaseId: current.knowledgeBaseId,
+    type: current.type,
+    scope: current.scope,
+  })
+}
+
+function assertExpectedReviewVersion(current: KnowledgeEntry, expectedVersion: number | undefined): void {
+  if (expectedVersion !== undefined && current.version !== expectedVersion) {
+    throw conflict(`knowledge changed during review (expected version ${expectedVersion}, current version ${current.version}); reopen the editor and resolve the current document`)
+  }
 }
 
 function potentiallyConflicts(current: KnowledgeEntry, incoming: KnowledgeDraft): boolean {

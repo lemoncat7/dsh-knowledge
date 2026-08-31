@@ -57,7 +57,7 @@ SQLite is authoritative in local mode. Schema version 10 contains:
 - `knowledge_entries`: current materialized entry state.
 - `knowledge_versions`: immutable snapshots for every create, update, archive or restore.
 - `knowledge_fts`: FTS5 index containing only active entries.
-- `knowledge_candidates`: proposed create/update/conflict decisions and review state.
+- `knowledge_candidates`: proposed create/update/conflict decisions, explicit append/revise change data, base revision metadata and review state.
 - `extraction_jobs`: one idempotency record per `sessionId:turn`.
 - `api_tokens`: token metadata, permissions and SHA-256 token digests.
 - `knowledge_settings`: the authoritative global conservative/proactive writeback policy shared by local and remote clients.
@@ -98,7 +98,7 @@ An active content hash unique index blocks byte-equivalent duplicate knowledge. 
 7. Each route group searches its mounted bases for related existing documents, globally ranks the results and caps the comparison set.
 8. One bounded model call decides destination relevance and extracts strict document-mutation JSON together. It returns a stable `documentTitle`, optional `sectionTitle`, Markdown body and an existing `targetId` whenever relevant. This avoids a second routing-model call and prevents an overly conservative first gate from discarding valid destination-specific knowledge. Model selection is explicit and deterministic: a client-local override wins first, then a knowledge-base-specific route, then the completed assistant turn's actual model, and finally the legacy static extraction route.
 9. Runtime validation rejects unknown destinations, non-durable retention, types, targets, arbitrary project IDs and malformed output. It then coalesces same-base, same-scope and same-title mutations into one document proposal, merging sections, tags and provenance. Ambiguous proposals that point at different existing documents become conflicts instead of silently choosing a target.
-10. Audit mounts keep valid proposals pending. Direct mounts automatically write high-confidence non-conflicting candidates; lower-confidence and conflicting candidates go to audit instead. Both direct write and audit approval reconcile against current documents again, atomically skipping duplicates, merging compatible same-topic content with a new version, and protecting possible contradictions from overwrite.
+10. Audit mounts keep valid proposals pending. Direct mounts automatically write high-confidence non-conflicting candidates; lower-confidence and conflicting candidates go to audit instead. Additions use the lossless append path. Revisions carry exact single-match old-text anchors plus the target version/hash and are replayed against the complete current document. Unrelated concurrent additions survive that replay; missing or ambiguous anchors become a conflict. Both paths create an immutable previous version before committing the new entry.
 11. Per-base direct and pending counts are written to the service log and exposed through the completed-turn UI extension. The plugin never appends a synthetic `user/message`, so write-back cannot change model context, the conversation tail, or branching semantics.
 12. Before every later model request, legacy plugin notices and prior recall snapshots are removed from the final request message list. Extraction snapshots accept only direct user messages.
 

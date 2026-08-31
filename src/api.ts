@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
   DEFAULT_KNOWLEDGE_BASE_ID, isKnowledgeType, normalizeDraft, normalizeKnowledgeBaseDraft,
   normalizeKnowledgeMountDraft, type CandidateProposal, type KnowledgeBaseDraft, type KnowledgeDraft,
-  type ApiTokenRecord, type KnowledgeBasePatch, type KnowledgeMountDraft, type ReviewDecision, type TokenPermission,
+  type ApiTokenRecord, type CandidateChange, type KnowledgeBasePatch, type KnowledgeMountDraft, type ReviewDecision, type TokenPermission,
 } from './domain.js'
 import { LocalKnowledgeProvider } from './local-provider.js'
 import type { RuntimeContextLike } from './runtime.js'
@@ -59,7 +59,7 @@ async function dispatch(
   const method = req.method ?? 'GET'
 
   if (method === 'GET' && segments[0] === 'health') {
-    return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 10 })
+    return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 11 })
   }
 
   const actor = options.authMode === 'same-origin' ? authenticateSameOrigin(req) : authenticateBearer(provider, req)
@@ -707,9 +707,11 @@ function parseProposal(value: unknown): CandidateProposal {
   }
   const targetId = optionalString(value.targetId)
   if (value.action !== 'create' && targetId === undefined) throw httpError(400, `${value.action} proposal requires targetId`)
+  if (value.action === 'create' && value.change !== undefined) throw httpError(400, 'create proposal cannot contain a document change')
   return {
     action: value.action,
     ...targetId === undefined ? {} : { targetId },
+    ...value.change === undefined ? {} : { change: parseCandidateChange(value.change) },
     draft: parseDraft(value.draft),
     reason: typeof value.reason === 'string' ? value.reason : '',
   }
@@ -719,11 +721,45 @@ function parseReview(value: Record<string, unknown>): ReviewDecision {
   if (value.decision !== 'approve' && value.decision !== 'reject') throw httpError(400, 'review decision is invalid')
   if (value.resolution !== undefined && value.resolution !== 'merge') throw httpError(400, 'review resolution is invalid')
   const note = optionalString(value.note)
+  const expectedVersion = value.expectedVersion === undefined ? undefined : Number(value.expectedVersion)
+  if (expectedVersion !== undefined && (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1)) {
+    throw httpError(400, 'review expectedVersion must be a positive integer')
+  }
   return {
     decision: value.decision,
     ...value.resolution === 'merge' ? { resolution: value.resolution } : {},
     ...note === undefined ? {} : { note },
     ...value.draft === undefined ? {} : { draft: parseDraft(value.draft) },
+    ...expectedVersion === undefined ? {} : { expectedVersion },
+  }
+}
+
+function parseCandidateChange(value: unknown): CandidateChange {
+  if (!isRecord(value)) throw httpError(400, 'proposal change is invalid')
+  if (value.kind === 'append') return { kind: 'append' }
+  if (value.kind !== 'revise' || !Array.isArray(value.edits)) throw httpError(400, 'proposal change is invalid')
+  const baseVersion = Number(value.baseVersion)
+  const baseHash = typeof value.baseHash === 'string' ? value.baseHash.trim().toLocaleLowerCase() : ''
+  if (!Number.isSafeInteger(baseVersion) || baseVersion < 1 || !/^[a-f0-9]{64}$/u.test(baseHash)) {
+    throw httpError(400, 'proposal revision base is invalid')
+  }
+  if (value.edits.length < 1 || value.edits.length > 20) throw httpError(400, 'proposal revision must contain 1-20 edits')
+  const edits = value.edits.map((edit): { oldText: string; newText: string } => {
+    if (!isRecord(edit) || typeof edit.oldText !== 'string' || typeof edit.newText !== 'string') {
+      throw httpError(400, 'proposal revision edit is invalid')
+    }
+    if (edit.oldText.length < 1 || edit.oldText.length > 12_000 || edit.newText.length > 12_000) {
+      throw httpError(400, 'proposal revision edit is too large or has an empty anchor')
+    }
+    return { oldText: edit.oldText, newText: edit.newText }
+  })
+  if (typeof value.append === 'string' && value.append.length > 12_000) throw httpError(400, 'proposal revision append is too large')
+  return {
+    kind: 'revise',
+    baseVersion,
+    baseHash,
+    edits,
+    ...typeof value.append === 'string' ? { append: value.append } : {},
   }
 }
 
