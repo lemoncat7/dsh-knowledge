@@ -1,5 +1,6 @@
 import type {
   CandidateProposal,
+  ExtractionJobCompletion,
   ExtractionJobRecord,
   KnowledgeCandidate,
   KnowledgeBase,
@@ -320,8 +321,11 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     return result.claimed
   }
 
-  async completeExtraction(sourceKey: string, candidateCount: number, signal?: AbortSignal): Promise<void> {
-    await this.request<unknown>(`extraction-jobs/${encodeURIComponent(sourceKey)}/complete`, { method: 'POST', body: { candidateCount }, signal })
+  async completeExtraction(sourceKey: string, completion: ExtractionJobCompletion | number, signal?: AbortSignal): Promise<void> {
+    const candidateCount = typeof completion === 'number' ? completion : completion.candidateCount
+    await this.request<unknown>(`extraction-jobs/${encodeURIComponent(sourceKey)}/complete`, {
+      method: 'POST', body: { candidateCount, ...typeof completion === 'number' ? {} : { completion } }, signal,
+    })
   }
 
   async failExtraction(sourceKey: string, error: string, signal?: AbortSignal): Promise<void> {

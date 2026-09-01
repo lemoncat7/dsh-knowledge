@@ -1,5 +1,6 @@
 import type {
   CandidateProposal,
+  ExtractionJobCompletion,
   ExtractionJobRecord,
   KnowledgeCandidate,
   KnowledgeBase,
@@ -86,7 +87,7 @@ export interface KnowledgeProvider {
   listCandidates(status: 'pending' | 'approved' | 'rejected', limit: number, signal?: AbortSignal): Promise<KnowledgeCandidate[]>
   review(id: string, decision: ReviewDecision, signal?: AbortSignal): Promise<KnowledgeCandidate>
   claimExtraction(sourceKey: string, signal?: AbortSignal): Promise<boolean>
-  completeExtraction(sourceKey: string, candidateCount: number, signal?: AbortSignal): Promise<void>
+  completeExtraction(sourceKey: string, completion: ExtractionJobCompletion | number, signal?: AbortSignal): Promise<void>
   failExtraction(sourceKey: string, error: string, signal?: AbortSignal): Promise<void>
   resetExtraction(sourceKey: string, signal?: AbortSignal): Promise<void>
   extractionJob(sourceKey: string, signal?: AbortSignal): Promise<ExtractionJobRecord | undefined>

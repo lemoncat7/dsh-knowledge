@@ -15,6 +15,7 @@ import {
   type CandidateProposal,
   type CandidateChange,
   type ApiTokenRecord,
+  type ExtractionJobCompletion,
   type ExtractionJobRecord,
   type KnowledgeCandidate,
   type KnowledgeBase,
@@ -104,7 +105,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   private migrate(): void {
     let version = Number((this.db.prepare('PRAGMA user_version').get() as SqlRow).user_version ?? 0)
-    if (version > 12) throw new Error(`knowledge database schema ${version} is newer than this plugin supports`)
+    if (version > 13) throw new Error(`knowledge database schema ${version} is newer than this plugin supports`)
     if (version === 0) this.db.exec(`
       BEGIN IMMEDIATE;
       CREATE TABLE knowledge_entries (
@@ -346,6 +347,35 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       PRAGMA user_version = 12;
       COMMIT;
     `)
+    if (version <= 11) version = 12
+    if (version === 12) {
+      this.db.exec('BEGIN IMMEDIATE')
+      try {
+        const extractionTable = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='extraction_jobs'").get()
+        if (extractionTable === undefined) {
+          this.db.exec(`
+            CREATE TABLE extraction_jobs (
+              source_key TEXT PRIMARY KEY,
+              status TEXT NOT NULL CHECK(status IN ('running','completed','failed')),
+              attempts INTEGER NOT NULL,
+              candidate_count INTEGER NOT NULL DEFAULT 0,
+              last_error TEXT,
+              completion_json TEXT,
+              updated_at TEXT NOT NULL
+            )
+          `)
+        } else {
+          const extractionColumns = this.db.prepare('PRAGMA table_info(extraction_jobs)').all() as SqlRow[]
+          if (!extractionColumns.some(column => String(column.name) === 'completion_json')) {
+            this.db.exec('ALTER TABLE extraction_jobs ADD COLUMN completion_json TEXT')
+          }
+        }
+        this.db.exec('PRAGMA user_version = 13; COMMIT')
+      } catch (error) {
+        this.db.exec('ROLLBACK')
+        throw error
+      }
+    }
     // Alpha v2 used a migration note as the default base's routing description.
     // Clear only that exact placeholder so existing user-authored descriptions stay untouched.
     this.db.prepare("UPDATE knowledge_bases SET description='' WHERE id=? AND description=?")
@@ -1509,7 +1539,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       VALUES(?,'running',1,0,?)
       ON CONFLICT(source_key) DO UPDATE SET
         status='running', attempts=extraction_jobs.attempts+1, candidate_count=0,
-        last_error=NULL, updated_at=excluded.updated_at
+        last_error=NULL, completion_json=NULL, updated_at=excluded.updated_at
       WHERE extraction_jobs.attempts < 3 AND (
         extraction_jobs.status='failed'
         OR (extraction_jobs.status='running' AND extraction_jobs.updated_at < ?)
@@ -1518,12 +1548,13 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     return result.changes === 1
   }
 
-  async completeExtraction(sourceKey: string, candidateCount: number): Promise<void> {
+  async completeExtraction(sourceKey: string, value: ExtractionJobCompletion | number): Promise<void> {
     this.assertOpen()
+    const completion = normalizeExtractionCompletion(value)
     const result = this.db.prepare(`
-      UPDATE extraction_jobs SET status='completed', candidate_count=?, last_error=NULL, updated_at=?
+      UPDATE extraction_jobs SET status='completed', candidate_count=?, last_error=NULL, completion_json=?, updated_at=?
       WHERE source_key=? AND status='running'
-    `).run(candidateCount, nowIso(), sourceKey)
+    `).run(completion.candidateCount, JSON.stringify(completion), nowIso(), sourceKey)
     if (result.changes === 0) {
       const current = await this.extractionJob(sourceKey)
       if (current?.status !== 'completed') throw conflict(`extraction job "${sourceKey}" is not running`)
@@ -1544,7 +1575,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   async resetExtraction(sourceKey: string): Promise<void> {
     this.assertOpen()
-    this.db.prepare(`UPDATE extraction_jobs SET status='failed', attempts=0, candidate_count=0, last_error=NULL, updated_at=? WHERE source_key=?`)
+    this.db.prepare(`UPDATE extraction_jobs SET status='failed', attempts=0, candidate_count=0, last_error=NULL, completion_json=NULL, updated_at=? WHERE source_key=?`)
       .run(nowIso(), sourceKey)
   }
 
@@ -2133,13 +2164,58 @@ function rowToMount(row: SqlRow): KnowledgeMount {
 
 function rowToExtractionJob(row: SqlRow): ExtractionJobRecord {
   const lastError = row.last_error == null ? undefined : String(row.last_error)
+  const completion = row.completion_json == null
+    ? undefined
+    : normalizeExtractionCompletion(JSON.parse(String(row.completion_json)) as ExtractionJobCompletion)
   return {
     sourceKey: String(row.source_key),
     status: String(row.status) as ExtractionJobRecord['status'],
     attempts: Number(row.attempts),
     candidateCount: Number(row.candidate_count),
     ...lastError === undefined ? {} : { lastError },
+    ...completion === undefined ? {} : { completion },
     updatedAt: String(row.updated_at),
+  }
+}
+
+function normalizeExtractionCompletion(value: ExtractionJobCompletion | number): ExtractionJobCompletion {
+  if (typeof value === 'number') {
+    const candidateCount = Math.max(0, Math.floor(value))
+    return { outcome: 'completed', candidateCount, directCount: 0, auditCount: candidateCount, destinations: [] }
+  }
+  if (value.outcome !== 'completed' && value.outcome !== 'skipped' && value.outcome !== 'unmounted') {
+    throw new Error('extraction completion outcome is invalid')
+  }
+  const count = (input: number, field: string): number => {
+    if (!Number.isInteger(input) || input < 0 || input > 10_000) throw new Error(`extraction completion ${field} is invalid`)
+    return input
+  }
+  if (!Array.isArray(value.destinations) || value.destinations.length > 100) {
+    throw new Error('extraction completion destinations are invalid')
+  }
+  const text = (input: string, field: string, limit: number): string => {
+    const normalized = typeof input === 'string' ? input.trim() : ''
+    if (normalized.length === 0 || normalized.length > limit) throw new Error(`extraction completion ${field} is invalid`)
+    return normalized
+  }
+  return {
+    outcome: value.outcome,
+    candidateCount: count(value.candidateCount, 'candidateCount'),
+    directCount: count(value.directCount, 'directCount'),
+    auditCount: count(value.auditCount, 'auditCount'),
+    destinations: value.destinations.map(destination => {
+      if (destination.disposition !== 'written' && destination.disposition !== 'pending-review') {
+        throw new Error('extraction completion disposition is invalid')
+      }
+      return {
+        knowledgeBaseId: text(destination.knowledgeBaseId, 'knowledgeBaseId', 200),
+        knowledgeBaseName: text(destination.knowledgeBaseName, 'knowledgeBaseName', 200),
+        ...destination.documentId === undefined ? {} : { documentId: text(destination.documentId, 'documentId', 200) },
+        documentTitle: text(destination.documentTitle, 'documentTitle', 500),
+        ...destination.documentPath === undefined ? {} : { documentPath: text(destination.documentPath, 'documentPath', 1000) },
+        disposition: destination.disposition,
+      }
+    }),
   }
 }
 

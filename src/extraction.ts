@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import type { ResolvedConfig } from './config.js'
 import { inspectSensitiveContent } from './content-safety.js'
-import { contentHash, isKnowledgeType, normalizeTags, type CandidateAction, type CandidateChange, type CandidateProposal, type KnowledgeDraft, type KnowledgeEntry, type KnowledgeEvidence, type KnowledgeScope, type KnowledgeTextEdit, type KnowledgeType, type KnowledgeWritebackPolicy, type ResolvedKnowledgeMount } from './domain.js'
+import { contentHash, isKnowledgeType, normalizeTags, type CandidateAction, type CandidateChange, type CandidateProposal, type ExtractionJobCompletion, type ExtractionWriteDestination, type KnowledgeCandidate, type KnowledgeDraft, type KnowledgeEntry, type KnowledgeEvidence, type KnowledgeScope, type KnowledgeTextEdit, type KnowledgeType, type KnowledgeWritebackPolicy, type ResolvedKnowledgeMount } from './domain.js'
 import { applyKnowledgeTextEdits } from './knowledge-merge.js'
+import { knowledgeDocumentPath } from './documents/path.js'
 import type { KnowledgeProvider } from './provider.js'
 import { mapConcurrent } from './async-pool.js'
 import { messageText, type MessageLike, type RuntimeContextLike, type SessionLike } from './runtime.js'
@@ -31,17 +32,36 @@ export class ExtractionCoordinator {
 
   async run(session: SessionLike, turn: number, parentSignal: AbortSignal): Promise<ExtractionResult> {
     if (this.closing) return emptyResult('skipped')
+    const sourceKey = `${session.id}:${turn}`
     const snapshot = snapshotTurn(session, turn, this.config.extractionMaxInputChars)
-    if (snapshot === undefined) return emptyResult('skipped')
+    if (snapshot === undefined) return this.completeEmpty(sourceKey, 'skipped', parentSignal)
     const mounts = (await this.provider.resolveMounts(session.id, snapshot.projectId, parentSignal))
       .filter(mount => mount.writeMode !== 'none')
-    if (mounts.length === 0) return emptyResult('unmounted')
+    if (mounts.length === 0) return this.completeEmpty(sourceKey, 'unmounted', parentSignal)
     return this.process(snapshot, mounts, AbortSignal.any([parentSignal, this.shutdown.signal]))
   }
 
   async close(): Promise<void> {
     this.closing = true
     this.shutdown.abort(new Error('dsh-knowledge is shutting down'))
+  }
+
+  private async completeEmpty(
+    sourceKey: string,
+    status: 'skipped' | 'unmounted',
+    signal: AbortSignal,
+  ): Promise<ExtractionResult> {
+    const result = emptyResult(status)
+    try {
+      if (!await this.provider.claimExtraction(sourceKey, signal)) return emptyResult('duplicate')
+      await this.provider.completeExtraction(sourceKey, completionFromResult(result), signal)
+    } catch (error) {
+      // A read-only remote token can still provide recall while being unable to
+      // persist a no-op extraction record. Keep the user-facing result correct;
+      // actual write attempts continue to fail loudly in process().
+      this.ctx.logger.debug(`dsh-knowledge: could not persist ${status} extraction ${sourceKey}: ${errorMessage(error)}`)
+    }
+    return result
   }
 
   private async process(
@@ -77,6 +97,7 @@ export class ExtractionCoordinator {
       let candidateCount = 0
       let directCount = 0
       let auditCount = 0
+      const destinations: ExtractionWriteDestination[] = []
       const byBase = new Map(mounts.map(mount => [mount.knowledgeBaseId, {
         knowledgeBaseId: mount.knowledgeBaseId,
         name: mount.base.name,
@@ -99,6 +120,7 @@ export class ExtractionCoordinator {
             candidateCount += 1
             auditCount += 1
             if (counts !== undefined) counts.auditCount += 1
+            destinations.push(pendingDestination(mount, proposed))
           } else {
             const result = await this.provider.writeDirect(proposal, snapshot.sourceKey, signal)
             if (result.outcome === 'duplicate' || result.outcome === 'finalized') continue
@@ -106,9 +128,18 @@ export class ExtractionCoordinator {
             if (result.outcome === 'conflict') {
               auditCount += 1
               if (counts !== undefined) counts.auditCount += 1
+              if (result.candidate !== undefined) destinations.push(pendingDestination(mount, result.candidate))
             } else {
               directCount += 1
               if (counts !== undefined) counts.directCount += 1
+              if (result.entry !== undefined) destinations.push({
+                knowledgeBaseId: mount.knowledgeBaseId,
+                knowledgeBaseName: mount.base.name,
+                documentId: result.entry.id,
+                documentTitle: result.entry.title,
+                documentPath: knowledgeDocumentPath(result.entry),
+                disposition: 'written',
+              })
             }
           }
         } else {
@@ -117,14 +148,17 @@ export class ExtractionCoordinator {
           candidateCount += 1
           auditCount += 1
           if (counts !== undefined) counts.auditCount += 1
+          destinations.push(pendingDestination(mount, proposed))
         }
       }
-      await this.provider.completeExtraction(snapshot.sourceKey, candidateCount, signal)
-      this.ctx.logger.debug(`dsh-knowledge: extracted ${candidateCount} candidate(s) from ${snapshot.sourceKey}`)
-      return {
+      const result: ExtractionResult = {
         status: 'completed', candidateCount, directCount, auditCount,
         bases: [...byBase.values()].filter(base => base.directCount + base.auditCount > 0),
+        destinations,
       }
+      await this.provider.completeExtraction(snapshot.sourceKey, completionFromResult(result), signal)
+      this.ctx.logger.debug(`dsh-knowledge: extracted ${candidateCount} candidate(s) from ${snapshot.sourceKey}`)
+      return result
     } catch (error) {
       const message = errorMessage(error)
       try { await this.provider.failExtraction(snapshot.sourceKey, message) } catch {}
@@ -188,10 +222,37 @@ export interface ExtractionResult {
   directCount: number
   auditCount: number
   bases: Array<{ knowledgeBaseId: string; name: string; directCount: number; auditCount: number }>
+  destinations: ExtractionWriteDestination[]
 }
 
 function emptyResult(status: ExtractionResult['status']): ExtractionResult {
-  return { status, candidateCount: 0, directCount: 0, auditCount: 0, bases: [] }
+  return { status, candidateCount: 0, directCount: 0, auditCount: 0, bases: [], destinations: [] }
+}
+
+function completionFromResult(result: ExtractionResult): ExtractionJobCompletion {
+  return {
+    outcome: result.status === 'unmounted' ? 'unmounted' : result.status === 'skipped' ? 'skipped' : 'completed',
+    candidateCount: result.candidateCount,
+    directCount: result.directCount,
+    auditCount: result.auditCount,
+    destinations: result.destinations,
+  }
+}
+
+function pendingDestination(
+  mount: ResolvedKnowledgeMount,
+  candidate: { targetId?: string; draft: KnowledgeDraft },
+): ExtractionWriteDestination {
+  return {
+    knowledgeBaseId: mount.knowledgeBaseId,
+    knowledgeBaseName: mount.base.name,
+    ...candidate.targetId === undefined ? {} : {
+      documentId: candidate.targetId,
+      documentPath: knowledgeDocumentPath({ id: candidate.targetId, title: candidate.draft.title }),
+    },
+    documentTitle: candidate.draft.title,
+    disposition: 'pending-review',
+  }
 }
 
 function snapshotTurn(session: SessionLike, turn: number, maxChars: number): TurnSnapshot | undefined {
@@ -790,12 +851,11 @@ async function proposeUnlessFinalized(
   proposal: CandidateProposal,
   sourceKey: string,
   signal: AbortSignal,
-): Promise<boolean> {
+): Promise<KnowledgeCandidate | undefined> {
   try {
-    await provider.propose(proposal, sourceKey, signal)
-    return true
+    return await provider.propose(proposal, sourceKey, signal)
   } catch (error) {
-    if (/\bis finalized as\b/i.test(errorMessage(error))) return false
+    if (/\bis finalized as\b/i.test(errorMessage(error))) return undefined
     throw error
   }
 }

@@ -35,7 +35,7 @@ test('remote provider interoperates with the authenticated local API', async (t)
   })
 
   const health = await fetch(`http://127.0.0.1:${address.port}/knowledge-api/v1/health`).then(response => response.json())
-  assert.deepEqual(health, { ok: true, service: 'dsh-knowledge', schemaVersion: 12 })
+  assert.deepEqual(health, { ok: true, service: 'dsh-knowledge', schemaVersion: 13 })
 
   assert.equal((await remote.getSettings()).writebackPolicy, 'conservative')
   assert.equal((await remote.updateSettings({ writebackPolicy: 'proactive' })).writebackPolicy, 'proactive')
@@ -142,6 +142,15 @@ test('remote provider interoperates with the authenticated local API', async (t)
   assert.match((await remote.get(entry.id))?.body || '', /tokens private/)
   assert.equal((await remote.search({ text: 'authenticated HTTPS tokens private', limit: 5 }))[0]?.entry.id, entry.id)
   assert.equal((await remote.listDocuments('default')).length, 1)
+  assert.equal(await remote.claimExtraction('remote-writeback:1'), true)
+  await remote.completeExtraction('remote-writeback:1', {
+    outcome: 'completed', candidateCount: 1, directCount: 1, auditCount: 0,
+    destinations: [{
+      knowledgeBaseId: 'default', knowledgeBaseName: '默认知识库', documentId: entry.id,
+      documentTitle: entry.title, documentPath: 'Central-knowledge-service--remote.md', disposition: 'written',
+    }],
+  })
+  assert.equal((await remote.extractionJob('remote-writeback:1'))?.completion?.destinations[0]?.documentTitle, entry.title)
   const finalized = await remote.finalize(entry.id, 'complete', 'The central-service documentation is complete.')
   assert.equal(finalized.documentState, 'complete')
   assert.equal((await remote.getDocument(entry.id))?.documentState, 'complete')

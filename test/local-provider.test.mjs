@@ -811,10 +811,22 @@ test('candidate approval is transactional and extraction claims are idempotent',
   assert.equal(await provider.claimExtraction('session-crashed:1'), true)
   assert.equal((await provider.extractionJob('session-crashed:1'))?.attempts, 2)
   await provider.completeExtraction('session-crashed:1', 0)
+  assert.equal(await provider.claimExtraction('session-details:1'), true)
+  await provider.completeExtraction('session-details:1', {
+    outcome: 'completed', candidateCount: 1, directCount: 1, auditCount: 0,
+    destinations: [{
+      knowledgeBaseId: 'default', knowledgeBaseName: '默认知识库', documentId: 'entry-details',
+      documentTitle: '持久化回写状态', documentPath: '持久化回写状态--entrydet.md', disposition: 'written',
+    }],
+  })
+  assert.deepEqual((await provider.extractionJob('session-details:1'))?.completion?.destinations, [{
+    knowledgeBaseId: 'default', knowledgeBaseName: '默认知识库', documentId: 'entry-details',
+    documentTitle: '持久化回写状态', documentPath: '持久化回写状态--entrydet.md', disposition: 'written',
+  }])
   const stats = await provider.stats()
   assert.equal(stats.entries.active, 1)
   assert.equal(stats.candidates.approved, 1)
-  assert.equal(stats.extractionJobs.completed, 2)
+  assert.equal(stats.extractionJobs.completed, 3)
 })
 
 test('API tokens are hashed, permissioned, and revocable', async (t) => {

@@ -256,7 +256,25 @@ export interface ExtractionJobRecord {
   attempts: number
   candidateCount: number
   lastError?: string
+  completion?: ExtractionJobCompletion
   updatedAt: string
+}
+
+export interface ExtractionWriteDestination {
+  knowledgeBaseId: string
+  knowledgeBaseName: string
+  documentId?: string
+  documentTitle: string
+  documentPath?: string
+  disposition: 'written' | 'pending-review'
+}
+
+export interface ExtractionJobCompletion {
+  outcome: 'completed' | 'skipped' | 'unmounted'
+  candidateCount: number
+  directCount: number
+  auditCount: number
+  destinations: ExtractionWriteDestination[]
 }
 
 export interface KnowledgeStats {

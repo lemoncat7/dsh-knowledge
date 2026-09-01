@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
   DEFAULT_KNOWLEDGE_BASE_ID, isKnowledgeType, normalizeDraft, normalizeKnowledgeBaseDraft,
   normalizeKnowledgeMountDraft, type CandidateProposal, type KnowledgeBaseDraft, type KnowledgeDraft,
-  type ApiTokenRecord, type CandidateChange, type KnowledgeBasePatch, type KnowledgeMountDraft, type ReviewDecision, type TokenPermission,
+  type ApiTokenRecord, type CandidateChange, type ExtractionJobCompletion, type KnowledgeBasePatch, type KnowledgeMountDraft, type ReviewDecision, type TokenPermission,
 } from './domain.js'
 import { LocalKnowledgeProvider } from './local-provider.js'
 import type { RuntimeContextLike } from './runtime.js'
@@ -59,7 +59,7 @@ async function dispatch(
   const method = req.method ?? 'GET'
 
   if (method === 'GET' && segments[0] === 'health') {
-    return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 12 })
+    return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 13 })
   }
 
   const actor = options.authMode === 'same-origin' ? authenticateSameOrigin(req) : authenticateBearer(provider, req)
@@ -452,7 +452,9 @@ async function dispatch(
     if (method === 'POST' && segments[2] === 'complete') {
       const body = await readObject(req)
       const count = typeof body.candidateCount === 'number' && Number.isInteger(body.candidateCount) ? body.candidateCount : 0
-      await provider.completeExtraction(sourceKey, Math.max(0, count))
+      await provider.completeExtraction(sourceKey, body.completion === undefined
+        ? Math.max(0, count)
+        : parseExtractionCompletion(body.completion))
       return sendJson(res, 204, undefined)
     }
     if (method === 'POST' && segments[2] === 'fail') {
@@ -488,6 +490,39 @@ async function dispatch(
   }
 
   throw httpError(404, 'knowledge API route was not found')
+}
+
+function parseExtractionCompletion(value: unknown): ExtractionJobCompletion {
+  if (!isRecord(value)) throw httpError(400, 'completion must be an object')
+  const destinations = Array.isArray(value.destinations) ? value.destinations : []
+  if (destinations.length > 100) throw httpError(400, 'completion has too many destinations')
+  const integer = (input: unknown, field: string): number => {
+    if (typeof input !== 'number' || !Number.isInteger(input) || input < 0 || input > 10_000) throw httpError(400, `${field} must be a non-negative integer`)
+    return input
+  }
+  const string = (input: unknown, field: string, limit: number): string => {
+    if (typeof input !== 'string' || input.trim().length === 0 || input.trim().length > limit) throw httpError(400, `${field} is invalid`)
+    return input.trim()
+  }
+  if (value.outcome !== 'completed' && value.outcome !== 'skipped' && value.outcome !== 'unmounted') throw httpError(400, 'completion outcome is invalid')
+  return {
+    outcome: value.outcome,
+    candidateCount: integer(value.candidateCount, 'candidateCount'),
+    directCount: integer(value.directCount, 'directCount'),
+    auditCount: integer(value.auditCount, 'auditCount'),
+    destinations: destinations.map((destination, index) => {
+      if (!isRecord(destination)) throw httpError(400, `destinations[${index}] must be an object`)
+      if (destination.disposition !== 'written' && destination.disposition !== 'pending-review') throw httpError(400, `destinations[${index}].disposition is invalid`)
+      return {
+        knowledgeBaseId: string(destination.knowledgeBaseId, `destinations[${index}].knowledgeBaseId`, 200),
+        knowledgeBaseName: string(destination.knowledgeBaseName, `destinations[${index}].knowledgeBaseName`, 200),
+        ...destination.documentId === undefined ? {} : { documentId: string(destination.documentId, `destinations[${index}].documentId`, 200) },
+        documentTitle: string(destination.documentTitle, `destinations[${index}].documentTitle`, 500),
+        ...destination.documentPath === undefined ? {} : { documentPath: string(destination.documentPath, `destinations[${index}].documentPath`, 1000) },
+        disposition: destination.disposition,
+      }
+    }),
+  }
 }
 
 function parseKnowledgeBaseDraft(value: unknown): KnowledgeBaseDraft {

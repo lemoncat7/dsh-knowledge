@@ -43,6 +43,23 @@ interface KnowledgeWorkspaceController {
   subscribe(listener: () => void): () => void
 }
 
+interface WritebackDestinationView {
+  knowledgeBaseId: string
+  knowledgeBaseName: string
+  documentId?: string
+  documentTitle: string
+  documentPath?: string
+  disposition: 'written' | 'pending-review'
+}
+
+interface WritebackStatusView {
+  status: 'running' | 'completed' | 'failed'
+  summary: string
+  error?: string
+  retryable: boolean
+  destinations?: WritebackDestinationView[]
+}
+
 const CONNECTION_CONTROL_PATH = '/knowledge-control/v1/connection'
 let cachedConnectionView: KnowledgeConnectionView | undefined
 
@@ -73,17 +90,39 @@ export function apply(ctx: ClientContext): void {
 }
 
 function KnowledgeWritebackStatus({ sessionId, turn }: { sessionId: string; turn: number }) {
-  type Status = { status: 'running' | 'completed' | 'failed'; summary: string; error?: string; retryable: boolean }
-  const [state, setState] = useState<Status>()
+  const [state, setState] = useState<WritebackStatusView>()
   const [retrying, setRetrying] = useState(false)
   useEffect(() => {
     const controller = new AbortController()
-    void fetch(`/knowledge-control/v1/writeback-status?sessionId=${encodeURIComponent(sessionId)}&turn=${turn}`, {
-      headers: { accept: 'application/json', 'x-dsh-knowledge-client': 'conversation-web' }, signal: controller.signal,
-    }).then(async response => response.ok ? response.json() as Promise<Status> : undefined)
-      .then(value => { if (value?.summary) setState(value) })
-      .catch(() => {})
-    return () => { controller.abort() }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let missingAttempts = 0
+    const schedule = (delay: number): void => {
+      if (!controller.signal.aborted) timer = setTimeout(() => { void load() }, delay)
+    }
+    const load = async (): Promise<void> => {
+      try {
+        const response = await fetch(`/knowledge-control/v1/writeback-status?sessionId=${encodeURIComponent(sessionId)}&turn=${turn}`, {
+          headers: { accept: 'application/json', 'x-dsh-knowledge-client': 'conversation-web' }, signal: controller.signal,
+        })
+        if (response.ok) {
+          const value = await response.json() as WritebackStatusView
+          if (value.summary) setState(value)
+          if (value.status === 'running') schedule(1_500)
+          return
+        }
+        if (response.status === 404 && missingAttempts < 3) {
+          missingAttempts += 1
+          schedule(1_500)
+        }
+      } catch {
+        if (!controller.signal.aborted && missingAttempts < 3) {
+          missingAttempts += 1
+          schedule(2_000)
+        }
+      }
+    }
+    void load()
+    return () => { controller.abort(); if (timer !== undefined) clearTimeout(timer) }
   }, [sessionId, turn])
   if (state === undefined) return null
   const retry = async (): Promise<void> => {
@@ -92,17 +131,30 @@ function KnowledgeWritebackStatus({ sessionId, turn }: { sessionId: string; turn
       const response = await fetch(`/knowledge-control/v1/writeback-status?sessionId=${encodeURIComponent(sessionId)}&turn=${turn}`, {
         method: 'POST', headers: { accept: 'application/json', 'x-dsh-knowledge-client': 'conversation-web' },
       })
-      if (!response.ok) throw new Error(`retry failed with HTTP ${response.status}`)
-      setState(await response.json() as Status)
+      const body = await response.json().catch(() => ({})) as WritebackStatusView & { error?: string }
+      if (!response.ok) throw new Error(body.error ?? `retry failed with HTTP ${response.status}`)
+      setState(body)
     } catch (error) {
       setState(previous => previous === undefined ? previous : {
         ...previous, error: error instanceof Error ? error.message : String(error), retryable: true,
       })
     } finally { setRetrying(false) }
   }
-  return <div className="dsh-knowledge-writeback-status">
-    <span>上下文注入</span><strong>dsh-knowledge</strong><span title={state.error}>{state.summary}</span>
-    {state.status === 'failed' && state.retryable && <button type="button" disabled={retrying} onClick={() => { void retry() }}>{retrying ? '重试中…' : '重试'}</button>}
+  const destinations = state.destinations ?? []
+  const summary = state.summary.replace(/^知识库回写\s*·\s*/u, '')
+  return <div className="dsh-knowledge-writeback-status" data-status={state.status}>
+    <div className="dsh-knowledge-writeback-summary" role={state.status === 'running' ? 'status' : undefined} aria-atomic="true">
+      <span>知识库回写</span><strong>@lemoncat7/dsh-knowledge</strong><span title={state.error}>{summary}</span>
+      {state.status === 'failed' && state.retryable && <button type="button" disabled={retrying} onClick={() => { void retry() }}>{retrying ? '重试中…' : '重试'}</button>}
+    </div>
+    {destinations.length > 0 && <ul className="dsh-knowledge-writeback-destinations" aria-label="回写目标">
+      {destinations.map((destination, index) => <li key={`${destination.knowledgeBaseId}:${destination.documentId ?? destination.documentTitle}:${index}`}>
+        <span>{destination.knowledgeBaseName}</span>
+        <strong title={destination.documentPath ?? destination.documentTitle}>{destination.documentPath ?? `拟新建：${destination.documentTitle}`}</strong>
+        <small data-disposition={destination.disposition}>{destination.disposition === 'written' ? '已写入' : '待审核'}</small>
+      </li>)}
+    </ul>}
+    {state.status === 'failed' && state.error && <p className="dsh-knowledge-writeback-error" role="alert">{state.error}</p>}
   </div>
 }
 

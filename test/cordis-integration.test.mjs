@@ -66,6 +66,16 @@ test('real Cordis context dynamically mounts API and Web routes', async (t) => {
   t.after(() => new Promise(resolve => server.close(resolve)))
   const port = server.address().port
   const endpoint = path => `http://127.0.0.1:${port}${path}`
+  const persisted = new KnowledgePlugin.LocalKnowledgeProvider(join(root, 'knowledge.sqlite'))
+  await persisted.claimExtraction('persisted-session:3')
+  await persisted.completeExtraction('persisted-session:3', {
+    outcome: 'completed', candidateCount: 1, directCount: 1, auditCount: 0,
+    destinations: [{
+      knowledgeBaseId: 'default', knowledgeBaseName: '默认知识库', documentId: 'doc-1',
+      documentTitle: '刷新后仍可见', documentPath: '刷新后仍可见--doc1.md', disposition: 'written',
+    }],
+  })
+  await persisted.close()
   assert.equal((await fetch(endpoint('/knowledge-control/v1/models'))).status, 401)
   assert.equal((await fetch(endpoint('/knowledge-control/v1/models'), {
     headers: { 'x-dsh-knowledge-client': 'management-web', 'sec-fetch-site': 'cross-site' },
@@ -79,4 +89,12 @@ test('real Cordis context dynamically mounts API and Web routes', async (t) => {
   assert.equal((await fetch(endpoint('/knowledge-control/v1/writeback-status?sessionId=s&turn=1'), {
     headers: { 'x-dsh-knowledge-client': 'conversation-web' },
   })).status, 404)
+  const restored = await fetch(endpoint('/knowledge-control/v1/writeback-status?sessionId=persisted-session&turn=3'), {
+    headers: { 'x-dsh-knowledge-client': 'conversation-web' },
+  })
+  assert.equal(restored.status, 200)
+  assert.deepEqual((await restored.json()).destinations, [{
+    knowledgeBaseId: 'default', knowledgeBaseName: '默认知识库', documentId: 'doc-1',
+    documentTitle: '刷新后仍可见', documentPath: '刷新后仍可见--doc1.md', disposition: 'written',
+  }])
 })

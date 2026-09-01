@@ -15,6 +15,7 @@ import { Config as ConfigSchema, resolveConfig, type Config as KnowledgeConfig }
 import { KNOWLEDGE_SETTINGS_NAMESPACE } from './constants.js'
 import { registerKnowledgeControl, type KnowledgeConnectionUpdate } from './control.js'
 import { ExtractionCoordinator } from './extraction.js'
+import type { ExtractionJobRecord, ExtractionWriteDestination } from './domain.js'
 import { LocalKnowledgeProvider } from './local-provider.js'
 import { registerRemoteManagementProxy } from './management-proxy.js'
 import type { KnowledgeProvider } from './provider.js'
@@ -36,6 +37,14 @@ export * from './provider.js'
 export * from './notes/domain.js'
 export { LocalKnowledgeProvider } from './local-provider.js'
 export { RemoteKnowledgeProvider, RemoteProviderError } from './remote-provider.js'
+
+type WritebackStatus = {
+  status: 'running' | 'completed' | 'failed'
+  summary: string
+  error?: string
+  retryable: boolean
+  destinations?: ExtractionWriteDestination[]
+}
 
 /** Human-readable Cordis plugin name. */
 export const name = 'dsh-knowledge'
@@ -94,10 +103,9 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
       ? { provider: clientSettings.writebackProvider, model: clientSettings.writebackModel }
       : undefined
   ))
-  type WritebackStatus = { status: 'running' | 'completed' | 'failed'; summary: string; error?: string; retryable: boolean }
   const writebackStatuses = new Map<string, WritebackStatus>()
   const writebackSources = new Map<string, { agent: AgentLike; turn: number }>()
-  let runWriteback: (agent: AgentLike, turn: number, signal: AbortSignal) => Promise<WritebackStatus>
+  let runWriteback: (agent: AgentLike, turn: number, signal: AbortSignal, phase?: 'initial' | 'retry') => Promise<WritebackStatus>
   const handleCodec = new KnowledgeHandleCodec(randomBytes(32))
   const noteHandleCodec = new KnowledgeNoteHandleCodec(randomBytes(32))
   const managementEmbedToken = randomBytes(32).toString('base64url')
@@ -282,6 +290,11 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
           if (!sessionId || !Number.isInteger(turn) || turn < 0) throw connectionError(400, 'sessionId and a non-negative integer turn are required')
           const key = `${sessionId}:${turn}`
           let state = writebackStatuses.get(key)
+          if (state === undefined) {
+            const job = await provider.extractionJob(key).catch(() => undefined)
+            state = job === undefined ? undefined : statusFromExtractionJob(job, writebackSources.has(key))
+            if (state !== undefined) rememberWritebackStatus(writebackStatuses, writebackSources, key, state)
+          }
           if (req.method === 'POST') {
             const source = writebackSources.get(key)
             if (state?.status !== 'failed' || !state.retryable || source === undefined) {
@@ -290,7 +303,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
             writebackStatuses.set(key, { status: 'running', summary: '知识库回写 · 正在重试', retryable: false })
             try {
               await provider.resetExtraction(key)
-              state = await runWriteback(source.agent, source.turn, new AbortController().signal)
+              state = await runWriteback(source.agent, source.turn, new AbortController().signal, 'retry')
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error)
               state = { status: 'failed', summary: '知识库回写 · 重试失败', error: message, retryable: true }
@@ -334,25 +347,23 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   }
 
   if (resolved.extractionEnabled) {
-    runWriteback = async (agent: AgentLike, turn: number, signal: AbortSignal): Promise<WritebackStatus> => {
+    runWriteback = async (agent: AgentLike, turn: number, signal: AbortSignal, phase = 'initial'): Promise<WritebackStatus> => {
       const key = `${agent.session.id}:${turn}`
-      writebackStatuses.set(key, { status: 'running', summary: '知识库回写 · 正在重试', retryable: false })
+      writebackStatuses.set(key, {
+        status: 'running', summary: phase === 'retry' ? '知识库回写 · 正在重试' : '知识库回写 · 正在处理', retryable: false,
+      })
       let state: WritebackStatus
       try {
         const result = await coordinator.run(agent.session, turn, signal)
-        let summary: string
         if (result.status === 'duplicate') {
           const job = await provider.extractionJob(key, signal)
           if (job?.status === 'failed') throw new Error(job.lastError ?? '知识库回写失败')
-          summary = '知识库回写 · 已处理'
-        } else if (result.status === 'unmounted') summary = '知识库回写 · 未挂载可写知识库'
-        else if (result.status === 'skipped') summary = '知识库回写 · 当前回答无可提取内容'
-        else if (result.candidateCount === 0) summary = '知识库回写 · 无需收录'
-        else summary = `知识库回写 · ${result.bases.map(base => {
-          const parts = [base.directCount > 0 ? `直写 ${base.directCount}` : '', base.auditCount > 0 ? `待审 ${base.auditCount}` : ''].filter(Boolean)
-          return `${base.name}：${parts.join('、')}`
-        }).join('；')}`
-        state = { status: 'completed', summary, retryable: false }
+          state = job === undefined
+            ? { status: 'completed', summary: '知识库回写 · 已处理', retryable: false }
+            : statusFromExtractionJob(job, false)
+        } else {
+          state = statusFromExtractionResult(result)
+        }
         writebackSources.delete(key)
       } catch (error) {
         if (signal.aborted) throw error
@@ -367,12 +378,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
         if (retryable) writebackSources.set(key, { agent: snapshotAgent(agent), turn })
         else writebackSources.delete(key)
       }
-      writebackStatuses.set(key, state)
-      if (writebackStatuses.size > 1000) {
-        const oldest = writebackStatuses.keys().next().value as string
-        writebackStatuses.delete(oldest)
-        writebackSources.delete(oldest)
-      }
+      rememberWritebackStatus(writebackStatuses, writebackSources, key, state)
       runtime.logger.info(`dsh-knowledge: ${state.summary}`)
       return state
     }
@@ -388,6 +394,72 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   }, 'dsh-knowledge.close')
 
   runtime.logger.info(`dsh-knowledge: ${provider.mode} provider ready`)
+}
+
+function statusFromExtractionResult(result: Awaited<ReturnType<ExtractionCoordinator['run']>>): WritebackStatus {
+  if (result.status === 'unmounted') return { status: 'completed', summary: '知识库回写 · 未挂载可写知识库', retryable: false }
+  if (result.status === 'skipped') return { status: 'completed', summary: '知识库回写 · 当前回答无可提取内容', retryable: false }
+  if (result.status === 'duplicate') return { status: 'completed', summary: '知识库回写 · 已处理', retryable: false }
+  if (result.candidateCount === 0) return { status: 'completed', summary: '知识库回写 · 无需收录', retryable: false }
+  return {
+    status: 'completed',
+    summary: summarizeWritebackCounts(result.bases),
+    retryable: false,
+    destinations: result.destinations,
+  }
+}
+
+function statusFromExtractionJob(job: ExtractionJobRecord, retryable: boolean): WritebackStatus {
+  if (job.status === 'running') return { status: 'running', summary: '知识库回写 · 正在处理', retryable: false }
+  if (job.status === 'failed') return {
+    status: 'failed', summary: '知识库回写 · 失败', error: job.lastError ?? '知识库回写失败', retryable,
+  }
+  const completion = job.completion
+  if (completion === undefined) return {
+    status: 'completed', summary: job.candidateCount > 0 ? `知识库回写 · 已处理 ${job.candidateCount} 项` : '知识库回写 · 无需收录', retryable: false,
+  }
+  if (completion.outcome === 'unmounted') return { status: 'completed', summary: '知识库回写 · 未挂载可写知识库', retryable: false }
+  if (completion.outcome === 'skipped') return { status: 'completed', summary: '知识库回写 · 当前回答无可提取内容', retryable: false }
+  if (completion.candidateCount === 0) return { status: 'completed', summary: '知识库回写 · 无需收录', retryable: false }
+  const grouped = new Map<string, { name: string; directCount: number; auditCount: number }>()
+  for (const destination of completion.destinations) {
+    const current = grouped.get(destination.knowledgeBaseId) ?? {
+      name: destination.knowledgeBaseName, directCount: 0, auditCount: 0,
+    }
+    if (destination.disposition === 'written') current.directCount += 1
+    else current.auditCount += 1
+    grouped.set(destination.knowledgeBaseId, current)
+  }
+  return {
+    status: 'completed',
+    summary: grouped.size === 0
+      ? `知识库回写 · 已处理 ${completion.candidateCount} 项`
+      : summarizeWritebackCounts([...grouped.values()]),
+    retryable: false,
+    destinations: completion.destinations,
+  }
+}
+
+function summarizeWritebackCounts(bases: Array<{ name: string; directCount: number; auditCount: number }>): string {
+  return `知识库回写 · ${bases.map(base => {
+    const parts = [base.directCount > 0 ? `直写 ${base.directCount}` : '', base.auditCount > 0 ? `待审 ${base.auditCount}` : ''].filter(Boolean)
+    return `${base.name}：${parts.join('、')}`
+  }).join('；')}`
+}
+
+function rememberWritebackStatus(
+  statuses: Map<string, WritebackStatus>,
+  sources: Map<string, { agent: AgentLike; turn: number }>,
+  key: string,
+  state: WritebackStatus,
+): void {
+  statuses.set(key, state)
+  while (statuses.size > 1000) {
+    const oldest = statuses.keys().next().value as string | undefined
+    if (oldest === undefined) break
+    statuses.delete(oldest)
+    sources.delete(oldest)
+  }
 }
 
 function snapshotAgent(agent: AgentLike): AgentLike {
