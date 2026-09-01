@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { inspectSensitiveContent } from '../lib/content-safety.js'
-import { explicitlyRequestsKnowledgeBaseManagement } from '../lib/tool-authorization.js'
+import { explicitlyRequestsKnowledgeBaseManagement, explicitlyRequestsKnowledgeNote } from '../lib/tool-authorization.js'
 
 test('knowledge-base management authorization requires an explicit matching user operation', () => {
   assert.equal(explicitlyRequestsKnowledgeBaseManagement('请创建一个 SSH 资料知识库', 'create'), true)
@@ -14,6 +14,16 @@ test('knowledge-base management authorization requires an explicit matching user
   assert.equal(explicitlyRequestsKnowledgeBaseManagement('给知识库添加两个标签', 'update'), true)
   assert.equal(explicitlyRequestsKnowledgeBaseManagement('不要修改现有知识库，请创建一个新知识库', 'create'), true)
   assert.equal(explicitlyRequestsKnowledgeBaseManagement('知识库不要创建，只调整现有描述', 'create'), false)
+})
+
+test('knowledge-note authorization understands documents and folders without widening to arbitrary files', () => {
+  assert.equal(explicitlyRequestsKnowledgeNote('请把这段内容保存到笔记文档。', 'create', 'document'), true)
+  assert.equal(explicitlyRequestsKnowledgeNote('在笔记工作区建一个发布资料目录。', 'create', 'folder'), true)
+  assert.equal(explicitlyRequestsKnowledgeNote('把项目笔记目录改名为归档。', 'update', 'folder'), true)
+  assert.equal(explicitlyRequestsKnowledgeNote('删除这个笔记文件夹。', 'delete', 'folder'), true)
+  assert.equal(explicitlyRequestsKnowledgeNote('请创建一个本地目录。', 'create', 'folder'), false)
+  assert.equal(explicitlyRequestsKnowledgeNote('请新建一个 Markdown 文档。', 'create', 'document'), false)
+  assert.equal(explicitlyRequestsKnowledgeNote('不要在笔记工作区创建目录。', 'create', 'folder'), false)
 })
 
 test('direct-write safety detects credentials without flagging documented placeholders', () => {

@@ -165,6 +165,7 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
   const catalog = assembled.contexts.find(context => context.name === 'dsh-knowledge:mounts')
   assert.ok(catalog)
   assert.match(catalog.text, /Knowledge bases mounted for this session/)
+  assert.match(catalog.text, /consult mounted knowledge before searching workspace files or the web/)
   assert.match(catalog.text, /knowledge_base_search/)
   assert.doesNotMatch(catalog.text, /knowledge_write/)
   assert.match(catalog.text, /Response isolation rule/)

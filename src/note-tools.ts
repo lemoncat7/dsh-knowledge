@@ -121,9 +121,9 @@ function createNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleC
     output: textOutput,
     async execute(raw: unknown, exec: ToolRunContextLike): Promise<string> {
       const agent = requireToolAgent(exec, 'knowledge note tools')
-      assertExplicitKnowledgeNoteRequest(agent, 'create')
       const args = toolRecord(raw)
       const kind = noteKind(args.kind)
+      assertExplicitKnowledgeNoteRequest(agent, 'create', kind === 'folder' ? 'folder' : 'document')
       const name = requiredToolString(args.name, 'name', 255)
       const content = optionalContent(args.content, 'content') ?? ''
       if (kind === 'folder' && args.content !== undefined) throw new Error('content must be omitted when creating a folder')
@@ -152,11 +152,11 @@ function updateNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleC
     output: textOutput,
     async execute(raw: unknown, exec: ToolRunContextLike): Promise<string> {
       const agent = requireToolAgent(exec, 'knowledge note tools')
-      assertExplicitKnowledgeNoteRequest(agent, 'update')
       const args = toolRecord(raw)
       const handle = requiredToolString(args.noteHandle, 'noteHandle', 4096)
       const operation = updateOperation(args.operation)
       const node = await resolveNoteHandle(provider, codec, agent.session.id, handle, exec.signal)
+      assertExplicitKnowledgeNoteRequest(agent, 'update', node.kind === 'folder' ? 'folder' : 'document')
       let updated: NoteNode
       if (operation === 'rename') {
         updated = await provider.renameNote(node.id, requiredToolString(args.value, 'value', 255), exec.signal)
@@ -188,10 +188,10 @@ function moveNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCod
     output: textOutput,
     async execute(raw: unknown, exec: ToolRunContextLike): Promise<string> {
       const agent = requireToolAgent(exec, 'knowledge note tools')
-      assertExplicitKnowledgeNoteRequest(agent, 'move')
       const args = toolRecord(raw)
       const handle = requiredToolString(args.noteHandle, 'noteHandle', 4096)
       const node = await resolveNoteHandle(provider, codec, agent.session.id, handle, exec.signal)
+      assertExplicitKnowledgeNoteRequest(agent, 'move', node.kind === 'folder' ? 'folder' : 'document')
       const parentId = await resolveOptionalFolderId(provider, codec, agent.session.id, args.targetFolderHandle, 'targetFolderHandle', exec.signal)
       const moved = await provider.moveNote(node.id, parentId, exec.signal)
       return mutationResult(provider, 'moved', moved, codec.encode(agent.session.id, moved.id))
@@ -211,10 +211,10 @@ function deleteNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleC
     output: textOutput,
     async execute(raw: unknown, exec: ToolRunContextLike): Promise<string> {
       const agent = requireToolAgent(exec, 'knowledge note tools')
-      assertExplicitKnowledgeNoteRequest(agent, 'delete')
       const args = toolRecord(raw)
       const handle = requiredToolString(args.noteHandle, 'noteHandle', 4096)
       const node = await resolveNoteHandle(provider, codec, agent.session.id, handle, exec.signal)
+      assertExplicitKnowledgeNoteRequest(agent, 'delete', node.kind === 'folder' ? 'folder' : 'document')
       await provider.deleteNote(node.id, exec.signal)
       return JSON.stringify({ storage: provider.mode, operation: 'deleted', note: { name: node.name, kind: node.kind } }, null, 2)
     },

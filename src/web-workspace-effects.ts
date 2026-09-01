@@ -9,6 +9,12 @@ const GLASS_SURFACE_SELECTOR = [
   '.note-editor-toolbar',
   '.dialog',
 ].join(',')
+const STRUCTURAL_GLASS_SURFACE_SELECTOR = [
+  '.sidebar',
+  '.topbar',
+  '.note-tree-panel',
+  '.notes-browser',
+].join(',')
 const CARD_SURFACE_SELECTOR = [
   '.login-card',
   '.metric',
@@ -163,7 +169,10 @@ function displacementMap(width: number, height: number, radius: number): string 
 function installGlassSurface(surface: HTMLElement): void {
   if (glassSurfaces.has(surface)) return
   surface.classList.add('knowledge-glass-surface')
-  if (!supportsSvgBackdropFilters()) {
+  // Fixed navigation and directory panes already own a single layout edge.
+  // SVG displacement refracts that edge into visible top/left seams, so these
+  // structural surfaces deliberately use the cheaper, stable CSS material.
+  if (surface.matches(STRUCTURAL_GLASS_SURFACE_SELECTOR) || !supportsSvgBackdropFilters()) {
     surface.dataset.knowledgeGlass = 'fallback'
     glassSurfaces.set(surface, { filter: undefined, observer: undefined, frame: 0 })
     return

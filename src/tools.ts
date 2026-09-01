@@ -46,7 +46,7 @@ export function registerKnowledgeTools(
 function searchKnowledgeBaseTool(provider: KnowledgeProvider): ToolDefinitionLike {
   return {
     name: 'knowledge_base_search',
-    description: 'First-stage knowledge discovery. Search only knowledge bases mounted for recall in THIS session by their name, routing description, and tags. Call this before knowledge_search when the current request may depend on durable project or user knowledge. It returns metadata only, never knowledge document content. If nothing matches, continue without knowledge retrieval.',
+    description: 'First-stage knowledge discovery and the preferred first lookup for the user\'s projects, preferences, prior decisions, workflows, installed tools, or mounted topics. Search only knowledge bases mounted for recall in THIS session by their name, routing description, and tags. Call this before workspace-file or web discovery when durable user-managed knowledge may apply, then use knowledge_search. It returns metadata only, never knowledge document content. If nothing matches, continue to the next appropriate source.',
     parameters: {
       type: 'object',
       additionalProperties: false,

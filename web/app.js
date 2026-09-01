@@ -2024,6 +2024,7 @@ function renderNotes() {
           actionButton('新建', () => openCreateNoteDocument(), 'primary small'),
           actionButton('目录', () => openCreateNoteFolder(), 'small'),
           actionButton('导入', () => fileInput.click(), 'ghost small'),
+          actionButton('会话指令', openNoteAgentGuide, 'ghost small'),
           fileInput,
         ),
       ),
@@ -2046,6 +2047,41 @@ function renderNotes() {
     renderNoteTransfer(),
   )
   return element('section', { class: 'notes-page', 'aria-label': '笔记工作区' }, workspace)
+}
+
+function openNoteAgentGuide() {
+  const capabilityRows = [
+    ['笔记文档', '创建、追加或替换内容、重命名、移动、删除'],
+    ['笔记目录', '创建、重命名、移动、删除'],
+  ].map(([label, detail]) => element('div', { class: 'notes-agent-capability' },
+    element('strong', {}, label), element('span', {}, detail)))
+  const examples = [
+    ['创建', '在笔记工作区的「发布资料」目录里，新建笔记文档「上线检查.md」，内容是：……'],
+    ['更新', '把笔记文档「发布资料/上线检查.md」追加以下内容：……'],
+    ['目录', '把笔记目录「发布资料」重命名为「发布归档」。'],
+  ].map(([label, text]) => element('li', {}, element('span', {}, label), element('code', {}, text)))
+  const body = element('div', { class: 'notes-agent-guide' },
+    element('section', { class: 'notes-agent-guide-rule' },
+      element('span', { class: 'notes-agent-guide-index', 'aria-hidden': 'true' }, '01'),
+      element('div', {},
+        element('h3', {}, '在当前消息里明确授权'),
+        element('p', {}, '写清动作、对象和位置，并明确使用“笔记文档”“笔记目录”或“笔记工作区”。为了避免误写，不能只依赖上一轮说过的授权。'))),
+    element('section', { class: 'notes-agent-guide-rule' },
+      element('span', { class: 'notes-agent-guide-index', 'aria-hidden': 'true' }, '02'),
+      element('div', {},
+        element('h3', {}, '名称足够，重名时补全路径'),
+        element('p', {}, '不需要填写内部编号。会话会先浏览笔记目录定位目标；如果有重名，请写成“目录/子目录/文档名”。'))),
+    element('div', { class: 'notes-agent-capabilities', 'aria-label': '会话可执行的笔记操作' }, capabilityRows),
+    element('section', { class: 'notes-agent-examples' },
+      element('h3', {}, '可以直接这样说'),
+      element('ul', {}, examples)),
+    element('p', { class: 'notes-agent-guide-note' }, '只说“新建 Markdown”或“创建本地目录”不会获得笔记写入权限；请明确指出这是笔记工作区中的文档或目录。'))
+  return openSheet({
+    title: '让会话整理笔记',
+    description: '会话可以操作笔记工作区，但每次写入都需要当前用户消息明确授权。',
+    body,
+    cancelLabel: '知道了',
+  })
 }
 
 function renderNoteTransfer() {
