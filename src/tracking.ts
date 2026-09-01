@@ -4,6 +4,7 @@ import { normalizeTags, type CandidateProposal, type KnowledgeEntry, type Resolv
 import type { KnowledgeProvider } from './provider.js'
 import { resolveKnowledgeMounts } from './retrieval.js'
 import type { AgentLike } from './runtime.js'
+import { mapConcurrent } from './async-pool.js'
 
 export const KNOWLEDGE_TRACKING_SERVICE = 'dshKnowledgeTracking'
 
@@ -78,8 +79,12 @@ export function createKnowledgeTrackingService(provider: KnowledgeProvider): Kno
       const mounts = (await resolveKnowledgeMounts(provider, agent, signal)).filter(item => item.enabled && item.recallEnabled)
       if (mounts.length === 0) return []
       const foldedQuery = query.trim().replace(/^@(?:知识库\[)?/u, '').toLocaleLowerCase('zh-CN')
-      const batches = await Promise.all(mounts.map(async mount => {
-        const documents = await provider.listDocuments(mount.knowledgeBaseId, foldedQuery || undefined, signal)
+      const batches = await mapConcurrent(mounts, 4, async mount => {
+        const documents = (await provider.listDocumentIndex({
+          knowledgeBaseIds: [mount.knowledgeBaseId],
+          ...foldedQuery ? { query: foldedQuery } : {},
+          limit: boundedLimit,
+        }, signal)).items
         return documents.flatMap(document => {
           const baseReference = referenceBase(mount)
           const documentReference = document.title.trim()
@@ -95,7 +100,7 @@ export function createKnowledgeTrackingService(provider: KnowledgeProvider): Kno
             score,
           }]
         })
-      }))
+      })
       return batches.flat()
         .sort((left, right) => right.score - left.score || left.label.localeCompare(right.label, 'zh-CN'))
         .slice(0, boundedLimit)

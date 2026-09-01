@@ -75,11 +75,17 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   } catch (error) {
     runtime.logger.warn(`dsh-knowledge: ignored invalid stored connection: ${error instanceof Error ? error.message : String(error)}`)
   }
-  const initialProvider = createConnectionProvider(resolved, initialConnection, publicApiEnabled)
   const managementProvider = resolved.databasePath === undefined || resolved.databasePath.trim().length === 0
     ? undefined
     : new LocalKnowledgeProvider(resolved.databasePath)
-  const providerRouter = new KnowledgeProviderRouter(initialProvider)
+  const connectionProvider = (settings: KnowledgeConnectionSettings): { provider: KnowledgeProvider; owned: boolean } => {
+    if (settings.backend === 'local' && managementProvider !== undefined) {
+      return { provider: managementProvider, owned: false }
+    }
+    return { provider: createConnectionProvider(resolved, settings, publicApiEnabled), owned: true }
+  }
+  const initial = connectionProvider(initialConnection)
+  const providerRouter = new KnowledgeProviderRouter(initial.provider, { owned: initial.owned })
   const provider: KnowledgeProvider = providerRouter.provider
   let activeConnection = initialConnection
 
@@ -113,7 +119,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
       validateConnectionSettings(next, publicApiEnabled, resolved.databasePath !== undefined && resolved.databasePath.trim().length > 0)
       if (sameConnection(next, activeConnection)) return activeConnection
       if (resolved.connectionPath === undefined) throw connectionError(409, '当前插件没有配置持久化路径，无法保存连接。')
-      const candidate = createConnectionProvider(resolved, next, publicApiEnabled)
+      const candidate = connectionProvider(next)
       let persisted = false
       let installed = false
       let managementRouteChanged = false
@@ -125,7 +131,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
         }
       }
       try {
-        if (next.backend === 'remote') await candidate.stats()
+        if (next.backend === 'remote') await candidate.provider.stats()
         await storeConnection(resolved.connectionPath, next)
         persisted = true
         activeConnection = next
@@ -136,13 +142,13 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
           restoreManagementApi()
           throw error
         }
-        await providerRouter.replace(candidate)
+        await providerRouter.replace(candidate.provider, { owned: candidate.owned })
         installed = true
         runtime.logger.info(`dsh-knowledge: verified and switched to ${next.backend} provider`)
         return activeConnection
       } catch (error) {
         if (installed) return next
-        await candidate.close().catch(() => {})
+        if (candidate.owned) await candidate.provider.close().catch(() => {})
         activeConnection = previous
         if (managementRouteChanged) restoreManagementApi()
         if (persisted) {

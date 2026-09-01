@@ -100,7 +100,10 @@ let navigationRequest = 0
 let navigationSave = Promise.resolve(true)
 let libraryDetailRequest = 0
 let documentSearchTimer = 0
+let documentSearchController = null
 let noteSearchTimer = 0
+let noteSearchController = null
+let noteSearchRequest = 0
 let markdownEditorHandle = null
 let noteEditorLoader = null
 let markdownEditorMountRequest = 0
@@ -442,6 +445,7 @@ function renderLogin(message = '') {
 }
 
 function signOut() {
+  cancelPendingSearches()
   releaseNoteEditors()
   releaseNoteAsset()
   sessionStorage.removeItem(TOKEN_KEY)
@@ -455,6 +459,7 @@ async function navigate(view) {
   const request = ++navigationRequest
   navigationSave = navigationSave.then(() => saveBeforeNavigation(), () => saveBeforeNavigation())
   if (!await navigationSave || request !== navigationRequest) return
+  cancelPendingSearches()
   navigationController?.abort()
   const controller = new AbortController()
   navigationController = controller
@@ -487,6 +492,20 @@ async function navigate(view) {
     state.loadingProgress = 1
     renderShell()
   }
+}
+
+function cancelPendingSearches() {
+  state.documentView.searchRequest += 1
+  state.libraryDetail.view.searchRequest += 1
+  noteSearchRequest += 1
+  window.clearTimeout(documentSearchTimer)
+  window.clearTimeout(noteSearchTimer)
+  documentSearchController?.abort()
+  noteSearchController?.abort()
+  documentSearchController = null
+  noteSearchController = null
+  documentSearchTimer = 0
+  noteSearchTimer = 0
 }
 
 function loadingPhaseForView(view) {
@@ -739,7 +758,10 @@ function resetDocumentSearch(view) {
 
 function scheduleDocumentSearch(workspace) {
   window.clearTimeout(documentSearchTimer)
+  documentSearchController?.abort()
+  documentSearchController = null
   const view = workspace.view
+  view.searchRequest += 1
   if (!view.query.trim()) {
     resetDocumentSearch(view)
     renderShell()
@@ -747,7 +769,6 @@ function scheduleDocumentSearch(workspace) {
   }
   view.searchLoading = true
   view.searchError = ''
-  renderShell()
   documentSearchTimer = window.setTimeout(() => { void loadDocumentSearch(workspace, true) }, 220)
 }
 
@@ -765,6 +786,9 @@ async function loadDocumentSearch(workspace, reset = false) {
   const query = view.query.trim()
   if (!query) return resetDocumentSearch(view)
   const request = ++view.searchRequest
+  documentSearchController?.abort()
+  const controller = new AbortController()
+  documentSearchController = controller
   view.searchLoading = true
   view.searchError = ''
   const params = new URLSearchParams({ q: query, limit: '80' })
@@ -783,7 +807,7 @@ async function loadDocumentSearch(workspace, reset = false) {
   }
   if (!reset && view.searchNextCursor) params.set('cursor', view.searchNextCursor)
   try {
-    const result = await api(`document-index?${params}`)
+    const result = await api(`document-index?${params}`, { signal: controller.signal })
     if (request !== view.searchRequest || query !== view.query.trim()) return
     const merged = new Map((reset ? [] : view.searchResults).map(document => [document.id, document]))
     for (const item of result.items) merged.set(item.id, item)
@@ -791,9 +815,11 @@ async function loadDocumentSearch(workspace, reset = false) {
     view.searchNextCursor = result.nextCursor || ''
     view.searchTotal = result.total
   } catch (error) {
+    if (controller.signal.aborted) return
     if (request !== view.searchRequest) return
     view.searchError = friendlyError(error)
   } finally {
+    if (documentSearchController === controller) documentSearchController = null
     if (request === view.searchRequest) {
       view.searchLoading = false
       renderDocumentSearchState(workspace)
@@ -962,20 +988,13 @@ function updateEditorSaveState(label) {
 }
 
 async function loadCandidates(signal) {
-  const [candidates] = await Promise.all([
-    api(`candidates?status=${state.candidateStatus}&limit=100`, { signal }),
+  const [payload] = await Promise.all([
+    api(`candidates?status=${state.candidateStatus}&limit=100&includeTargets=1`, { signal }),
     ensureKnowledgeBases(false, signal),
   ])
+  const candidates = payload.items
   state.candidates = candidates
-  const targetIds = [...new Set(candidates.map(candidate => candidate.targetId).filter(Boolean))]
-  const targets = await Promise.all(targetIds.map(async id => {
-    try { return [id, await api(`entries/${encodeURIComponent(id)}`, { signal })] }
-    catch (error) {
-      if (signal?.aborted) throw error
-      return [id, null]
-    }
-  }))
-  state.candidateTargets = new Map(targets)
+  state.candidateTargets = new Map(payload.targets.map(target => [target.id, target]))
   if (!state.stats) await refreshStats(signal)
 }
 
@@ -2599,11 +2618,24 @@ function releaseNoteAsset() {
 function scheduleNoteSearch(value) {
   state.notes.query = value
   window.clearTimeout(noteSearchTimer)
+  noteSearchController?.abort()
+  noteSearchController = null
+  const request = ++noteSearchRequest
   noteSearchTimer = window.setTimeout(async () => {
+    const controller = new AbortController()
+    noteSearchController = controller
     try {
-      state.notes.searchResults = value.trim() ? await api(`notes?q=${encodeURIComponent(value.trim())}&limit=200`) : []
+      const results = value.trim()
+        ? await api(`notes?q=${encodeURIComponent(value.trim())}&limit=200`, { signal: controller.signal })
+        : []
+      if (request !== noteSearchRequest || value !== state.notes.query) return
+      state.notes.searchResults = results
       renderShell()
-    } catch (error) { showToast(friendlyError(error), 'error') }
+    } catch (error) {
+      if (!controller.signal.aborted && request === noteSearchRequest) showToast(friendlyError(error), 'error')
+    } finally {
+      if (noteSearchController === controller) noteSearchController = null
+    }
   }, 180)
 }
 

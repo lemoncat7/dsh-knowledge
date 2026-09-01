@@ -50,7 +50,7 @@ The browser integration is compiled against the exact official client packages u
 
 ## Data model and consistency
 
-SQLite is authoritative in local mode. Schema version 10 contains:
+SQLite is authoritative in local mode. Schema version 12 contains:
 
 - `knowledge_bases`: independently named destinations with default tags and extraction instructions.
 - `knowledge_mounts`: project/session policy overlays for recall, write mode and tag constraints.
@@ -63,7 +63,7 @@ SQLite is authoritative in local mode. Schema version 10 contains:
 - `knowledge_settings`: the authoritative global conservative/proactive writeback policy shared by local and remote clients.
 - `knowledge_note_references`: the many-to-many relation between knowledge documents and stable note nodes, including user/agent/legacy provenance.
 
-Each active `knowledge_entries` row represents one topic document and is materialized as one real Markdown file under `documents/base-<stable-id>/`. Related findings are Markdown sections or incremental content inside that row/file, rather than sibling one-fact documents. `knowledge_documents` indexes those files for the management console; the entry ID is the document ID, and the human-readable filename is derived from the title plus a stable ID suffix. Mutations complete only after the corresponding file synchronization finishes. SQLite remains authoritative so FTS, version history, direct-write reconciliation and remote providers keep one consistency model.
+Each active `knowledge_entries` row represents one topic document and is materialized as one real Markdown file under `documents/base-<stable-id>/`. Related findings are Markdown sections or incremental content inside that row/file, rather than sibling one-fact documents. `knowledge_documents` indexes those files for the management console; the entry ID is the document ID, and the human-readable filename is derived from the title plus a stable ID suffix. Mutations complete only after the corresponding file synchronization finishes. Normal entry mutations update exactly one derived file and index row; the full-base reconciliation is reserved for startup repair. Knowledge-base metadata changes update only the manifest. SQLite remains authoritative so FTS, version history, direct-write reconciliation and remote providers keep one consistency model.
 
 Notes form a separate hierarchical workspace beside the knowledge database:
 
@@ -81,7 +81,7 @@ Notes form a separate hierarchical workspace beside the knowledge database:
 
 Knowledge-to-note references are explicit many-to-many rows in `knowledge_note_references`; knowledge Markdown contains only knowledge content. Moving or renaming a note does not break a relation because it targets the stable note id. Normal deletion of a node or ancestor folder is rejected while any descendant is referenced; explicit administrator force-deletion remains an API-only recovery operation. Schema 9 upgrades scan valid legacy `note://note_<id>` markers once and backfill `source=legacy` rows without rewriting user-authored Markdown, so old prose remains byte-safe while new mutations use only the relation table. Note content is not parsed, indexed, embedded, recalled or written back by the AI.
 
-The management console never loads the complete document corpus during startup. `/document-index` returns a keyset-paginated metadata projection without `content`; the browser requests one page only for the initially selected knowledge base, loads other bases when their tree nodes expand, and fetches a document body only after selection. Search uses the same bounded index endpoint across the currently visible mounted bases. The original `/documents` endpoint remains available for compatibility and internal reference inspection, but is not part of the console bootstrap path.
+The management console never loads the complete document corpus during startup. `/document-index` returns a keyset-paginated metadata projection without `content`; its browse order has a matching SQLite index. The browser requests one page only for the initially selected knowledge base, loads other bases when their tree nodes expand, and fetches a document body only after selection. Search uses the same bounded index endpoint across the currently visible mounted bases. The original `/documents` endpoint remains available for compatibility, but is not part of console bootstrap, partner-source discovery or normal reference inspection.
 
 Entry writes, version creation and FTS changes share one `BEGIN IMMEDIATE` transaction. Candidate approval and its resulting entry mutation are also one transaction. WAL mode permits readers during a writer, `busy_timeout` absorbs short contention, and foreign keys prevent orphan versions.
 
@@ -119,7 +119,7 @@ Recall combines bounded automatic retrieval with model-driven tools:
 - `knowledge_note_create`, `knowledge_note_update`, `knowledge_note_move`, and `knowledge_note_delete` mutate the active local or remote note workspace only after a matching direct user request; remote permissions and referenced-note deletion protection remain server-enforced;
 - `knowledge_note_references` lists, adds or removes relation rows using exact knowledge and note handles, re-resolving live mounts and rejecting writes through read-only mounts or finalized documents;
 - content write-back, including an explicit user request to save knowledge, runs only in the separate completed-turn extractor and never in the main Agent loop;
-- remote retrieval is awaited and cancellation propagates through the current turn signal;
+- remote retrieval is awaited, cancellation propagates through the current turn signal, and independent per-mount requests run through a shared four-worker bound rather than an unbounded `Promise.all` fan-out;
 - greetings and empty input skip automatic retrieval, and search failures fail open so the normal answer can continue.
 
 Only active entries from recall-enabled resolved mounts are searchable. Each stage re-resolves live mounts, and search/read enforce include/exclude tags and project scope. Exact project entries rank before global entries. Automatic snapshots are partial reference data and are removed before later steps; full document content enters the request only through `knowledge_read`.
@@ -130,7 +130,7 @@ The prompt catalog states a strict response-isolation contract: the main model m
 
 Local and remote modes are mutually exclusive for one plugin instance. There is deliberately no transparent cache or two-way synchronization: that would create conflict semantics at a second layer and obscure which database is authoritative.
 
-A local provider always supports its same-origin management console unless `exposeWeb` is explicitly disabled. This internal surface is distinct from the public API: enabling the public route is an explicit, persistent action in “访问管理”, and enabling it prevents the same instance from switching to a remote provider. In remote mode the same embedded console uses a bounded same-origin server proxy to the configured central API; the browser never receives the saved remote token, and central access-management controls remain hidden. Remote clients use the same provider contract, so extraction candidates and recall work identically. Network timeouts and DSH turn cancellation bound remote requests.
+A local provider always supports its same-origin management console unless `exposeWeb` is explicitly disabled. Local runtime calls and the management console borrow the same provider instance, avoiding duplicate SQLite connections and startup projection passes; the provider router tracks borrowed ownership so switching to remote never closes the management store. This internal surface is distinct from the public API: enabling the public route is an explicit, persistent action in “访问管理”, and enabling it prevents the same instance from switching to a remote provider. In remote mode the same embedded console uses a bounded same-origin server proxy to the configured central API; the browser never receives the saved remote token, and central access-management controls remain hidden. Remote clients use the same provider contract, so extraction candidates and recall work identically. Network timeouts and DSH turn cancellation bound remote requests.
 
 ## Security boundaries
 

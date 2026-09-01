@@ -8,6 +8,7 @@ import type {
 import type { KnowledgeProvider } from './provider.js'
 import type { AgentLike } from './runtime.js'
 import { knowledgeDocumentPath } from './documents/path.js'
+import { mapConcurrent } from './async-pool.js'
 
 interface HandlePayload {
   v: 1
@@ -105,7 +106,7 @@ export async function searchMountedKnowledge(
 ): Promise<MountedSearchResult[]> {
   const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 20))
   const projectId = agent.session.header.cwd
-  const batches = await Promise.all(mounts.map(async mount => {
+  const batches = await mapConcurrent(mounts, 4, async mount => {
     const hits = await provider.search({
       text: query,
       ...projectId === undefined ? {} : { projectId },
@@ -119,7 +120,7 @@ export async function searchMountedKnowledge(
       mount,
       handle: codec.encode(agent.session.id, hit.entry),
     }))
-  }))
+  })
   return batches.flat()
     .sort((left, right) => right.score - left.score || right.entry.updatedAt.localeCompare(left.entry.updatedAt))
     .slice(0, boundedLimit)

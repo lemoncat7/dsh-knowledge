@@ -35,7 +35,7 @@ test('remote provider interoperates with the authenticated local API', async (t)
   })
 
   const health = await fetch(`http://127.0.0.1:${address.port}/knowledge-api/v1/health`).then(response => response.json())
-  assert.deepEqual(health, { ok: true, service: 'dsh-knowledge', schemaVersion: 11 })
+  assert.deepEqual(health, { ok: true, service: 'dsh-knowledge', schemaVersion: 12 })
 
   assert.equal((await remote.getSettings()).writebackPolicy, 'conservative')
   assert.equal((await remote.updateSettings({ writebackPolicy: 'proactive' })).writebackPolicy, 'proactive')
@@ -82,6 +82,9 @@ test('remote provider interoperates with the authenticated local API', async (t)
   assert.match(documents[0]?.relPath || '', /^Central-knowledge-service--[a-zA-Z0-9]+\.md$/)
   assert.equal(documents[0]?.id, entry.id)
   assert.match((await remote.getDocument(documents[0].id))?.content || '', /Central knowledge service/)
+  const documentIndex = await remote.listDocumentIndex({ knowledgeBaseIds: ['default'], query: 'central knowledge', limit: 10 })
+  assert.deepEqual(documentIndex.items.map(item => item.id), [entry.id])
+  assert.equal(Object.hasOwn(documentIndex.items[0], 'content'), false)
 
   const base = await remote.createKnowledgeBase({
     name: 'Shared project knowledge', description: 'Mounted by remote clients.',

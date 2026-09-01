@@ -16,10 +16,7 @@ const STATIC_ASSETS = new Map<string, Asset>([
   ['workspace-effects.js', loadAsset('../web/workspace-effects.js', 'text/javascript; charset=utf-8')],
   ['styles.css', loadAsset('../web/styles.css', 'text/css; charset=utf-8')],
 ])
-const ASSET_VERSION = createHash('sha256')
-  .update([...STATIC_ASSETS.values()].map(asset => asset.body).join(''))
-  .digest('hex')
-  .slice(0, 12)
+const ASSET_VERSION = assetVersion(STATIC_ASSETS.values())
 const INDEX_TEMPLATE = readFileSync(new URL('../web/index.html', import.meta.url), 'utf8')
 
 export function registerKnowledgeWeb(
@@ -103,6 +100,12 @@ function hasValidEmbedToken(rawUrl: string | undefined, expected: string): boole
 
 function loadAsset(path: string, contentType: string): Asset {
   return { body: readFileSync(new URL(path, import.meta.url)), contentType }
+}
+
+function assetVersion(assets: Iterable<Asset>): string {
+  const hash = createHash('sha256')
+  for (const asset of assets) hash.update(asset.body)
+  return hash.digest('hex').slice(0, 12)
 }
 
 function escapeHtmlAttribute(value: string): string {

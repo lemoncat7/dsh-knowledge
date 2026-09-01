@@ -92,6 +92,14 @@ test('same-origin management API controls public access and deletes revoked toke
   assert.equal(documentIndex.total, 1)
   assert.equal(documentIndex.items[0].id, entry.id)
   assert.equal(Object.hasOwn(documentIndex.items[0], 'content'), false)
+  const candidate = await provider.propose({
+    action: 'update', targetId: entry.id,
+    draft: { ...entry, body: '候选更新内容。' },
+    reason: '验证审核页批量加载目标文档',
+  })
+  const candidatePayload = await (await fetch(`${base}/candidates?status=pending&limit=100&includeTargets=1`, { headers })).json()
+  assert.deepEqual(candidatePayload.items.map(item => item.id), [candidate.id])
+  assert.deepEqual(candidatePayload.targets.map(item => item.id), [entry.id])
   const references = await (await fetch(`${base}/notes/${folder.id}/references`, { headers })).json()
   assert.deepEqual(references.map(item => item.documentId), [entry.id])
   assert.equal((await fetch(`${base}/notes/${folder.id}`, { method: 'DELETE', headers })).status, 409)

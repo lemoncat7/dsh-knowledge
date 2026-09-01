@@ -2,6 +2,7 @@ import type { KnowledgeProvider } from './provider.js'
 
 interface ProviderState {
   provider: KnowledgeProvider
+  owned: boolean
   active: number
   retired: boolean
   closePromise?: Promise<void>
@@ -20,8 +21,8 @@ export class KnowledgeProviderRouter {
   private readonly states = new Set<ProviderState>()
   private closing = false
 
-  constructor(initial: KnowledgeProvider) {
-    this.current = this.state(initial)
+  constructor(initial: KnowledgeProvider, options: { owned?: boolean } = {}) {
+    this.current = this.state(initial, options.owned !== false)
     this.provider = new Proxy({} as KnowledgeProvider, {
       get: (_target, property) => {
         if (property === 'mode') return this.current.provider.mode
@@ -34,13 +35,13 @@ export class KnowledgeProviderRouter {
     })
   }
 
-  async replace(next: KnowledgeProvider): Promise<void> {
+  async replace(next: KnowledgeProvider, options: { owned?: boolean } = {}): Promise<void> {
     if (this.closing) {
       await next.close()
       throw new Error('knowledge provider router is closing')
     }
     const previous = this.current
-    this.current = this.state(next)
+    this.current = this.state(next, options.owned !== false)
     previous.retired = true
     // Closing a retired provider is cleanup; it must not make an already
     // completed switch look like it failed to callers.
@@ -54,8 +55,8 @@ export class KnowledgeProviderRouter {
     await Promise.all([...this.states].map(state => this.closeWhenIdle(state)))
   }
 
-  private state(provider: KnowledgeProvider): ProviderState {
-    const state: ProviderState = { provider, active: 0, retired: false }
+  private state(provider: KnowledgeProvider, owned: boolean): ProviderState {
+    const state: ProviderState = { provider, owned, active: 0, retired: false }
     this.states.add(state)
     return state
   }
@@ -80,6 +81,10 @@ export class KnowledgeProviderRouter {
         state.idlePromise = new Promise(resolve => { state.resolveIdle = resolve })
       }
       return state.idlePromise.then(() => this.closeWhenIdle(state))
+    }
+    if (!state.owned) {
+      this.states.delete(state)
+      return Promise.resolve()
     }
     if (state.closePromise === undefined) {
       state.closePromise = state.provider.close().finally(() => { this.states.delete(state) })

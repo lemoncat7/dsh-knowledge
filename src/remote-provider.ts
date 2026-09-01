@@ -8,6 +8,8 @@ import type {
   KnowledgeDraft,
   KnowledgeEntry,
   KnowledgeDocument,
+  KnowledgeDocumentIndexRequest,
+  KnowledgeDocumentIndexResult,
   KnowledgeStats,
   KnowledgeVersion,
   KnowledgeMount,
@@ -104,6 +106,15 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     if (knowledgeBaseId !== undefined) params.set('knowledgeBaseId', knowledgeBaseId)
     if (query !== undefined && query.trim().length > 0) params.set('q', query.trim())
     return this.request<KnowledgeDocument[]>(`documents?${params}`, { signal })
+  }
+
+  async listDocumentIndex(request: KnowledgeDocumentIndexRequest, signal?: AbortSignal): Promise<KnowledgeDocumentIndexResult> {
+    const params = new URLSearchParams({ limit: String(request.limit) })
+    for (const id of request.knowledgeBaseIds ?? []) params.append('knowledgeBaseId', id)
+    if (request.activeKnowledgeBasesOnly) params.set('active', '1')
+    if (request.query !== undefined && request.query.trim().length > 0) params.set('q', request.query.trim())
+    if (request.cursor !== undefined) params.set('cursor', request.cursor)
+    return this.request<KnowledgeDocumentIndexResult>(`document-index?${params}`, { signal })
   }
 
   async getDocument(id: string, signal?: AbortSignal): Promise<KnowledgeDocument | undefined> {

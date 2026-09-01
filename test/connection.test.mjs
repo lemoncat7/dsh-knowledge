@@ -56,6 +56,25 @@ test('provider router lets in-flight calls finish before closing the retired pro
   assert.deepEqual(events, ['search:start', 'search:end', 'close:local', 'close:remote'])
 })
 
+test('provider router can borrow the management provider without closing shared storage', async () => {
+  const closed = []
+  const provider = mode => new Proxy({ mode, close: async () => { closed.push(mode) } }, {
+    get(target, property) {
+      if (property in target) return target[property]
+      return async () => undefined
+    },
+  })
+  const sharedLocal = provider('local')
+  const remote = provider('remote')
+  const router = new KnowledgeProviderRouter(sharedLocal, { owned: false })
+  await router.replace(remote)
+  assert.deepEqual(closed, [])
+  await router.close()
+  assert.deepEqual(closed, ['remote'])
+  await sharedLocal.close()
+  assert.deepEqual(closed, ['remote', 'local'])
+})
+
 test('connection settings survive restart in a private atomic file', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-knowledge-connection-'))
   const path = join(root, 'connection.json')

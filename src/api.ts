@@ -59,7 +59,7 @@ async function dispatch(
   const method = req.method ?? 'GET'
 
   if (method === 'GET' && segments[0] === 'health') {
-    return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 11 })
+    return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 12 })
   }
 
   const actor = options.authMode === 'same-origin' ? authenticateSameOrigin(req) : authenticateBearer(provider, req)
@@ -406,7 +406,10 @@ async function dispatch(
       requirePermission(actor.permissions, 'read')
       const status = url.searchParams.get('status')
       if (status !== 'pending' && status !== 'approved' && status !== 'rejected') throw httpError(400, 'invalid candidate status')
-      return sendJson(res, 200, await provider.listCandidates(status, integerParam(url, 'limit', 50, 1, 100)))
+      const candidates = await provider.listCandidates(status, integerParam(url, 'limit', 50, 1, 100))
+      if (url.searchParams.get('includeTargets') !== '1') return sendJson(res, 200, candidates)
+      const targetIds = candidates.flatMap(candidate => candidate.targetId === undefined ? [] : [candidate.targetId])
+      return sendJson(res, 200, { items: candidates, targets: provider.entriesByIds(targetIds) })
     }
     if (method === 'POST' && segments.length === 1) {
       requirePermission(actor.permissions, 'propose')
@@ -643,15 +646,7 @@ async function noteReferences(provider: LocalKnowledgeProvider, noteId: string):
   if (node === undefined) throw httpError(404, `note node "${noteId}" was not found`)
   if (node.kind === 'folder') return []
   const structured = provider.noteReferencesForNotes([noteId])
-  const marker = `note://${noteId}`
-  const legacy = (await provider.listDocuments())
-    .filter(document => document.content.includes(marker))
-    .map(document => ({
-      noteId,
-      knowledgeBaseId: document.knowledgeBaseId,
-      documentId: document.id,
-      documentTitle: document.title,
-    }))
+  const legacy = provider.legacyNoteReferencesForNotes([noteId])
   return deduplicateNoteReferences([...structured, ...legacy])
 }
 
@@ -659,18 +654,7 @@ async function noteReferencesForSubtree(provider: LocalKnowledgeProvider, noteId
   const noteIds = provider.notes.subtree(noteId).filter(node => node.kind !== 'folder').map(node => node.id)
   if (noteIds.length === 0) return []
   const structured = provider.noteReferencesForNotes(noteIds)
-  const noteIdSet = new Set(noteIds)
-  const legacy = (await provider.listDocuments()).flatMap(document => {
-    const references = document.content.match(/note:\/\/(note_[a-f0-9]{32})/giu) ?? []
-    return [...new Set(references.map(value => value.slice('note://'.length).toLocaleLowerCase()))]
-      .filter(id => noteIdSet.has(id))
-      .map(id => ({
-        noteId: id,
-        knowledgeBaseId: document.knowledgeBaseId,
-        documentId: document.id,
-        documentTitle: document.title,
-      }))
-  })
+  const legacy = provider.legacyNoteReferencesForNotes(noteIds)
   return deduplicateNoteReferences([...structured, ...legacy])
 }
 

@@ -4,6 +4,7 @@ import { inspectSensitiveContent } from './content-safety.js'
 import { contentHash, isKnowledgeType, normalizeTags, type CandidateAction, type CandidateChange, type CandidateProposal, type KnowledgeDraft, type KnowledgeEntry, type KnowledgeEvidence, type KnowledgeScope, type KnowledgeTextEdit, type KnowledgeType, type KnowledgeWritebackPolicy, type ResolvedKnowledgeMount } from './domain.js'
 import { applyKnowledgeTextEdits } from './knowledge-merge.js'
 import type { KnowledgeProvider } from './provider.js'
+import { mapConcurrent } from './async-pool.js'
 import { messageText, type MessageLike, type RuntimeContextLike, type SessionLike } from './runtime.js'
 
 interface TurnSnapshot {
@@ -145,14 +146,14 @@ async function findExistingEntries(
   projectId: string | undefined,
   signal: AbortSignal,
 ): Promise<KnowledgeEntry[]> {
-  const hits = (await Promise.all(mounts.map(mount => provider.search({
+  const hits = (await mapConcurrent(mounts, 4, mount => provider.search({
     text: query,
     ...projectId === undefined ? {} : { projectId },
     knowledgeBaseIds: [mount.knowledgeBaseId],
     ...mount.includeTags.length === 0 ? {} : { includeTags: mount.includeTags },
     ...mount.excludeTags.length === 0 ? {} : { excludeTags: mount.excludeTags },
     limit: 6,
-  }, signal)))).flat()
+  }, signal))).flat()
     .sort((left, right) => right.score - left.score || right.entry.updatedAt.localeCompare(left.entry.updatedAt))
     .slice(0, 16)
   return deduplicateExistingEntries(hits.map(hit => hit.entry))

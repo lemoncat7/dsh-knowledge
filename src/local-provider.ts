@@ -46,7 +46,7 @@ import {
   type TokenPermission,
 } from './domain.js'
 import type { KnowledgeProvider } from './provider.js'
-import { renderKnowledgeMarkdown } from './documents/markdown.js'
+import { markdownHash, renderKnowledgeMarkdown } from './documents/markdown.js'
 import { knowledgeDocumentPath } from './documents/path.js'
 import { KnowledgeDocumentStore } from './documents/store.js'
 import { enqueueDocumentProjection } from './documents/projection-queue.js'
@@ -88,13 +88,14 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   constructor(path: string) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })
     const inMemory = path === ':memory:'
+    const storageRoot = inMemory
+      ? join(tmpdir(), `dsh-knowledge-${randomUUID()}`)
+      : dirname(path)
     this.notes = new NoteStore(
-      inMemory
-        ? join(tmpdir(), `dsh-knowledge-notes-${randomUUID()}`)
-        : join(dirname(path), 'notes'),
+      inMemory ? storageRoot : join(storageRoot, 'notes'),
       inMemory,
     )
-    this.documentStore = new KnowledgeDocumentStore(join(dirname(path), 'documents'))
+    this.documentStore = new KnowledgeDocumentStore(join(storageRoot, 'documents'))
     this.db = new DatabaseSync(path)
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
     this.migrate()
@@ -103,7 +104,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   private migrate(): void {
     let version = Number((this.db.prepare('PRAGMA user_version').get() as SqlRow).user_version ?? 0)
-    if (version > 11) throw new Error(`knowledge database schema ${version} is newer than this plugin supports`)
+    if (version > 12) throw new Error(`knowledge database schema ${version} is newer than this plugin supports`)
     if (version === 0) this.db.exec(`
       BEGIN IMMEDIATE;
       CREATE TABLE knowledge_entries (
@@ -333,6 +334,18 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
         throw error
       }
     }
+    if (version <= 10) version = 11
+    if (version === 11) this.db.exec(`
+      BEGIN IMMEDIATE;
+      CREATE INDEX IF NOT EXISTS knowledge_documents_index_order ON knowledge_documents(
+        knowledge_base_id,
+        (CASE WHEN rel_path='README.md' THEN 0 ELSE 1 END),
+        rel_path,
+        id
+      );
+      PRAGMA user_version = 12;
+      COMMIT;
+    `)
     // Alpha v2 used a migration note as the default base's routing description.
     // Clear only that exact placeholder so existing user-authored descriptions stay untouched.
     this.db.prepare("UPDATE knowledge_bases SET description='' WHERE id=? AND description=?")
@@ -416,7 +429,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       base.id, base.name, base.description, JSON.stringify(base.defaultTags), base.extractionInstructions,
       base.writebackPolicy, base.writebackProvider ?? null, base.writebackModel ?? null, timestamp, timestamp,
     )
-    await this.syncKnowledgeDocumentsQueued(base.id)
+    await this.syncKnowledgeBaseManifestQueued(base.id)
     return base
   }
 
@@ -441,7 +454,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       updated.name, updated.description, JSON.stringify(updated.defaultTags), updated.extractionInstructions,
       updated.writebackPolicy, updated.writebackProvider ?? null, updated.writebackModel ?? null, updated.updatedAt, id,
     )
-    await this.syncKnowledgeDocumentsQueued(id)
+    await this.syncKnowledgeBaseManifestQueued(id)
     return updated
   }
 
@@ -686,10 +699,11 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     const resolved = new Map<string, { mount: KnowledgeMount; inheritedFrom?: 'project' }>()
     for (const mount of project) resolved.set(mount.knowledgeBaseId, { mount, inheritedFrom: 'project' })
     for (const mount of session) resolved.set(mount.knowledgeBaseId, { mount })
+    const bases = new Map((await this.listKnowledgeBases()).map(base => [base.id, base]))
     const output: ResolvedKnowledgeMount[] = []
     for (const { mount, inheritedFrom } of resolved.values()) {
       if (!mount.enabled) continue
-      const base = await this.getKnowledgeBase(mount.knowledgeBaseId)
+      const base = bases.get(mount.knowledgeBaseId)
       if (base === undefined || base.status !== 'active') continue
       output.push({ ...mount, base, ...inheritedFrom === undefined ? {} : { inheritedFrom } })
     }
@@ -860,6 +874,24 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     return row === undefined ? undefined : rowToEntry(row)
   }
 
+  /** Management-only bulk lookup used to avoid one HTTP/SQL round trip per review target. */
+  entriesByIds(ids: string[]): KnowledgeEntry[] {
+    this.assertOpen()
+    const uniqueIds = [...new Set(ids.map(id => id.trim()).filter(Boolean))].slice(0, 100)
+    if (uniqueIds.length === 0) return []
+    const placeholders = uniqueIds.map(() => '?').join(',')
+    const rows = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM knowledge_entries WHERE id IN (${placeholders})`)
+      .all(...uniqueIds) as SqlRow[]
+    const entries = new Map(rows.map(row => {
+      const entry = rowToEntry(row)
+      return [entry.id, entry]
+    }))
+    return uniqueIds.flatMap(id => {
+      const entry = entries.get(id)
+      return entry === undefined ? [] : [entry]
+    })
+  }
+
   async versions(id: string): Promise<KnowledgeVersion[]> {
     this.assertOpen()
     const rows = this.db.prepare('SELECT * FROM knowledge_versions WHERE knowledge_id = ? ORDER BY version DESC').all(id) as SqlRow[]
@@ -870,7 +902,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     this.assertOpen()
     await this.documentsReady
     const entry = this.transaction(() => this.insertEntry(draft))
-    await this.syncKnowledgeDocumentsQueued(entry.knowledgeBaseId)
+    await this.syncKnowledgeEntryQueued(entry.id)
     return entry
   }
 
@@ -903,10 +935,8 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   async update(id: string, draft: KnowledgeDraft): Promise<KnowledgeEntry> {
     this.assertOpen()
     await this.documentsReady
-    const current = await this.get(id)
     const entry = this.transaction(() => this.updateEntry(id, draft, 'update'))
-    if (current !== undefined && current.knowledgeBaseId !== entry.knowledgeBaseId) await this.syncKnowledgeDocumentsQueued(current.knowledgeBaseId)
-    await this.syncKnowledgeDocumentsQueued(entry.knowledgeBaseId)
+    await this.syncKnowledgeEntryQueued(entry.id)
     return entry
   }
 
@@ -939,7 +969,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       this.upsertFts(updated)
       return updated
     })
-    await this.syncKnowledgeDocumentsQueued(entry.knowledgeBaseId)
+    await this.syncKnowledgeEntryQueued(entry.id)
     return entry
   }
 
@@ -969,7 +999,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       this.upsertFts(updated)
       return updated
     })
-    await this.syncKnowledgeDocumentsQueued(entry.knowledgeBaseId)
+    await this.syncKnowledgeEntryQueued(entry.id)
     return entry
   }
 
@@ -1024,7 +1054,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       this.db.prepare('DELETE FROM knowledge_fts WHERE knowledge_id = ?').run(id)
       return updated
     })
-    await this.syncKnowledgeDocumentsQueued(entry.knowledgeBaseId)
+    await this.syncKnowledgeEntryQueued(entry.id)
     return entry
   }
 
@@ -1037,7 +1067,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       const result = this.db.prepare('DELETE FROM knowledge_entries WHERE id = ?').run(id)
       if (result.changes === 0) throw notFound('knowledge entry', id)
     })
-    if (current !== undefined) await this.syncKnowledgeDocumentsQueued(current.knowledgeBaseId)
+    if (current !== undefined) await this.syncKnowledgeEntryQueued(current.id)
   }
 
   async listNotes(request: NoteListRequest = {}): Promise<NoteNode[]> {
@@ -1180,6 +1210,30 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     }))
   }
 
+  /** Compatibility path for manually embedded legacy note:// markers. */
+  legacyNoteReferencesForNotes(noteIds: string[]): NoteReference[] {
+    this.assertOpen()
+    const requested = new Set(noteIds.map(id => id.toLocaleLowerCase()))
+    if (requested.size === 0) return []
+    const rows = this.db.prepare(`
+      SELECT knowledge_base_id,id,title,content
+      FROM knowledge_documents
+      WHERE content LIKE '%note://note_%'
+      ORDER BY updated_at DESC,id
+    `).all() as SqlRow[]
+    return rows.flatMap(row => {
+      const references = String(row.content).match(/note:\/\/(note_[a-f0-9]{32})/giu) ?? []
+      return [...new Set(references.map(value => value.slice('note://'.length).toLocaleLowerCase()))]
+        .filter(noteId => requested.has(noteId))
+        .map(noteId => ({
+          noteId,
+          knowledgeBaseId: String(row.knowledge_base_id),
+          documentId: String(row.id),
+          documentTitle: String(row.title),
+        }))
+    })
+  }
+
   deleteNoteReferences(noteIds: string[]): void {
     this.assertOpen()
     const ids = [...new Set(noteIds)]
@@ -1199,7 +1253,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   async writeDirect(input: CandidateProposal, sourceKey?: string): Promise<DirectWriteResult> {
     this.assertOpen()
     await this.documentsReady
-    let touchedBaseId: string | undefined
+    let touchedEntryId: string | undefined
     const result = this.transaction((): DirectWriteResult => {
       const resolution = this.resolveDirectProposal(normalizeProposal(input))
       if (resolution.outcome === 'duplicate') return { outcome: 'duplicate', ...resolution.entry === undefined ? {} : { entry: resolution.entry } }
@@ -1215,7 +1269,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
         .run('approved', reviewedAt, resolution.outcome === 'merged'
           ? 'Automatically merged by direct-write reconciliation.'
           : 'Automatically approved by direct-write policy.', candidate.id)
-      touchedBaseId = entry.knowledgeBaseId
+      touchedEntryId = entry.id
       return {
         outcome: resolution.outcome,
         candidate: {
@@ -1229,7 +1283,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
         entry,
       }
     })
-    if (touchedBaseId !== undefined) await this.syncKnowledgeDocumentsQueued(touchedBaseId)
+    if (touchedEntryId !== undefined) await this.syncKnowledgeEntryQueued(touchedEntryId)
     return result
   }
 
@@ -1340,6 +1394,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   async review(id: string, decision: ReviewDecision): Promise<KnowledgeCandidate> {
     this.assertOpen()
     await this.documentsReady
+    let touchedEntryId: string | undefined
     const reviewed: KnowledgeCandidate = this.transaction(() => {
       const row = this.db.prepare('SELECT * FROM knowledge_candidates WHERE id = ?').get(id) as SqlRow | undefined
       if (row === undefined) throw notFound('knowledge candidate', id)
@@ -1357,7 +1412,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
             throw conflict('candidate approval cannot move a document between knowledge bases')
           }
           assertExpectedReviewVersion(target, decision.expectedVersion)
-          this.updateEntry(candidate.targetId, editedKnowledgeDraft(target, draft), 'update')
+          touchedEntryId = this.updateEntry(candidate.targetId, editedKnowledgeDraft(target, draft), 'update').id
         } else if (candidate.action === 'conflict') {
           if (decision.resolution !== 'merge') {
             throw conflict('conflict candidate requires an explicit merge resolution')
@@ -1369,7 +1424,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
           }
           const applied = applyCandidateToTarget(target, candidate, true)
           if (!applied.ok) throw conflict(`${applied.reason}; edit the current document to resolve this conflict`)
-          this.updateEntry(candidate.targetId, applied.draft, 'update')
+          touchedEntryId = this.updateEntry(candidate.targetId, applied.draft, 'update').id
         } else {
           const resolution = this.resolveDirectProposal({
             action: candidate.action,
@@ -1395,8 +1450,10 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
           }
           if (resolution.outcome === 'finalized') throw finalizedConflict(resolution.entry)
           if (resolution.outcome !== 'duplicate') {
-            if (resolution.proposal.action === 'create') this.insertEntry(resolution.proposal.draft)
-            else this.updateEntry(resolution.proposal.targetId as string, resolution.proposal.draft, 'update')
+            const entry = resolution.proposal.action === 'create'
+              ? this.insertEntry(resolution.proposal.draft)
+              : this.updateEntry(resolution.proposal.targetId as string, resolution.proposal.draft, 'update')
+            touchedEntryId = entry.id
           }
         }
       }
@@ -1407,7 +1464,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
         .run(status, reviewedAt, note ?? null, id)
       return { ...candidate, status, reviewedAt, ...note === undefined ? {} : { reviewNote: note } }
     })
-    if (decision.decision === 'approve') await this.syncKnowledgeDocumentsQueued(reviewed.draft.knowledgeBaseId)
+    if (touchedEntryId !== undefined) await this.syncKnowledgeEntryQueued(touchedEntryId)
     return reviewed
   }
 
@@ -1574,81 +1631,148 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     return this.enqueueDocumentSync(() => this.syncKnowledgeDocuments(knowledgeBaseId))
   }
 
+  private syncKnowledgeBaseManifestQueued(knowledgeBaseId: string): Promise<void> {
+    return this.enqueueDocumentSync(async () => {
+      const row = this.db.prepare('SELECT * FROM knowledge_bases WHERE id=?').get(knowledgeBaseId) as SqlRow | undefined
+      if (row !== undefined) await this.documentStore.ensureBase(rowToKnowledgeBase(row))
+    })
+  }
+
+  private syncKnowledgeEntryQueued(entryId: string): Promise<void> {
+    return this.enqueueDocumentSync(() => this.syncKnowledgeEntry(entryId))
+  }
+
+  /** Keep the derived Markdown projection proportional to one changed entry. */
+  private async syncKnowledgeEntry(entryId: string): Promise<void> {
+    const projected = this.db.prepare(`
+      SELECT id,knowledge_base_id,rel_path FROM knowledge_documents WHERE id=?
+    `).get(entryId) as SqlRow | undefined
+    const entryRow = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM knowledge_entries WHERE id=?`).get(entryId) as SqlRow | undefined
+    if (entryRow === undefined || entryRow.status !== 'active') {
+      if (projected !== undefined) await this.removeProjectedDocument(projected)
+      this.db.prepare('DELETE FROM knowledge_documents WHERE id=?').run(entryId)
+      return
+    }
+
+    const entry = rowToEntry(entryRow)
+    const baseRow = this.db.prepare('SELECT * FROM knowledge_bases WHERE id=?').get(entry.knowledgeBaseId) as SqlRow | undefined
+    if (baseRow === undefined) return
+    const base = rowToKnowledgeBase(baseRow)
+    const directory = await this.documentStore.ensureBase(base)
+    const relPath = knowledgeDocumentPath(entry)
+    const markdown = renderEntryMarkdown(entry)
+    const stored = await this.documentStore.writeDocument(directory, relPath, markdown)
+    this.upsertProjectedDocument(entry, relPath, stored.contentHash)
+
+    if (projected !== undefined && (
+      String(projected.knowledge_base_id) !== entry.knowledgeBaseId
+      || String(projected.rel_path) !== relPath
+    )) await this.removeProjectedDocument(projected)
+  }
+
+  private async removeProjectedDocument(projected: SqlRow): Promise<void> {
+    const baseRow = this.db.prepare('SELECT * FROM knowledge_bases WHERE id=?')
+      .get(String(projected.knowledge_base_id)) as SqlRow | undefined
+    if (baseRow === undefined) return
+    const directory = this.documentStore.baseDirectory(rowToKnowledgeBase(baseRow))
+    try {
+      await this.documentStore.deleteDocument(directory, String(projected.rel_path))
+    } catch (error) {
+      if (!(error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT')) throw error
+    }
+  }
+
+  private upsertProjectedDocument(entry: KnowledgeEntry, relPath: string, projectedHash: string): void {
+    this.db.prepare(`
+      INSERT INTO knowledge_documents(
+        id,knowledge_base_id,rel_path,title,content,entry_count,content_hash,
+        document_state,finalized_at,finalization_note,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET
+        knowledge_base_id=excluded.knowledge_base_id,rel_path=excluded.rel_path,
+        title=excluded.title,content=excluded.content,entry_count=excluded.entry_count,
+        content_hash=excluded.content_hash,document_state=excluded.document_state,
+        finalized_at=excluded.finalized_at,finalization_note=excluded.finalization_note,
+        updated_at=excluded.updated_at
+      WHERE knowledge_documents.knowledge_base_id<>excluded.knowledge_base_id
+         OR knowledge_documents.content_hash<>excluded.content_hash
+         OR knowledge_documents.rel_path<>excluded.rel_path
+         OR knowledge_documents.title<>excluded.title
+         OR knowledge_documents.entry_count<>excluded.entry_count
+         OR knowledge_documents.document_state<>excluded.document_state
+         OR knowledge_documents.finalized_at IS NOT excluded.finalized_at
+         OR knowledge_documents.finalization_note IS NOT excluded.finalization_note
+    `).run(
+      entry.id, entry.knowledgeBaseId, relPath, entry.title, renderEntryContent(entry), 1, projectedHash,
+      entry.documentState, entry.finalizedAt ?? null, entry.finalizationNote ?? null,
+      entry.createdAt, entry.updatedAt,
+    )
+  }
+
   private async syncKnowledgeDocuments(knowledgeBaseId: string): Promise<void> {
     const baseRow = this.db.prepare('SELECT * FROM knowledge_bases WHERE id=?').get(knowledgeBaseId) as SqlRow | undefined
     if (baseRow === undefined) return
     const base = rowToKnowledgeBase(baseRow)
     const directory = await this.documentStore.ensureBase(base)
+    const storedDocuments = await this.documentStore.listDocuments(directory)
+    const storedById = new Map(storedDocuments.map(document => [document.metadata.id, document]))
     const entries = (this.db.prepare(`
       SELECT ${ENTRY_COLUMNS} FROM knowledge_entries
       WHERE knowledge_base_id=? AND status='active'
       ORDER BY updated_at DESC, id
     `).all(knowledgeBaseId) as SqlRow[]).map(rowToEntry)
-    const desired = new Map<string, { entry: KnowledgeEntry; relPath: string; content: string; contentHash: string }>()
+    const desired = new Map<string, { entry: KnowledgeEntry; relPath: string; contentHash: string }>()
     for (const entry of entries) {
       const relPath = knowledgeDocumentPath(entry)
-      const markdown = renderKnowledgeMarkdown({
-        metadata: {
-          id: entry.id,
-          type: entry.type,
-          tags: entry.tags,
-          scope: entry.scope,
-          confidence: entry.confidence,
-          status: entry.status,
-          documentState: entry.documentState,
-          ...entry.finalizedAt === undefined ? {} : { finalizedAt: entry.finalizedAt },
-          ...entry.finalizationNote === undefined ? {} : { finalizationNote: entry.finalizationNote },
-        },
-        title: entry.title,
-        body: entry.body,
-      })
-      const stored = await this.documentStore.writeDocument(directory, relPath, markdown)
+      const markdown = renderEntryMarkdown(entry)
+      const current = storedById.get(entry.id)
+      const contentHash = markdownHash(markdown)
+      const stored = current?.relPath === relPath && current.contentHash === contentHash
+        ? current
+        : await this.documentStore.writeDocument(directory, relPath, markdown)
       desired.set(entry.id, {
         entry,
         relPath,
-        content: `# ${markdownHeading(entry.title)}\n\n${entry.body.trim()}\n`,
         contentHash: stored.contentHash,
       })
     }
-    const storedDocuments = await this.documentStore.listDocuments(directory)
     for (const document of storedDocuments) {
       const expected = desired.get(document.metadata.id)
       if (expected === undefined || expected.relPath !== document.relPath) {
         await this.documentStore.deleteDocument(directory, document.relPath, document.contentHash)
       }
     }
-    const existing = this.db.prepare('SELECT id,rel_path,created_at FROM knowledge_documents WHERE knowledge_base_id=?')
+    const existing = this.db.prepare('SELECT id FROM knowledge_documents WHERE knowledge_base_id=?')
       .all(knowledgeBaseId) as SqlRow[]
     for (const document of desired.values()) {
-      this.db.prepare(`
-        INSERT INTO knowledge_documents(
-          id,knowledge_base_id,rel_path,title,content,entry_count,content_hash,
-          document_state,finalized_at,finalization_note,created_at,updated_at
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(id) DO UPDATE SET
-          knowledge_base_id=excluded.knowledge_base_id,rel_path=excluded.rel_path,
-          title=excluded.title,content=excluded.content,entry_count=excluded.entry_count,
-          content_hash=excluded.content_hash,document_state=excluded.document_state,
-          finalized_at=excluded.finalized_at,finalization_note=excluded.finalization_note,
-          updated_at=excluded.updated_at
-        WHERE knowledge_documents.content_hash<>excluded.content_hash
-           OR knowledge_documents.rel_path<>excluded.rel_path
-           OR knowledge_documents.title<>excluded.title
-           OR knowledge_documents.entry_count<>excluded.entry_count
-           OR knowledge_documents.document_state<>excluded.document_state
-           OR knowledge_documents.finalized_at IS NOT excluded.finalized_at
-           OR knowledge_documents.finalization_note IS NOT excluded.finalization_note
-      `).run(
-        document.entry.id, knowledgeBaseId, document.relPath,
-        document.entry.title, document.content, 1, document.contentHash,
-        document.entry.documentState, document.entry.finalizedAt ?? null, document.entry.finalizationNote ?? null,
-        document.entry.createdAt, document.entry.updatedAt,
-      )
+      this.upsertProjectedDocument(document.entry, document.relPath, document.contentHash)
     }
     for (const row of existing) {
       if (!desired.has(String(row.id))) this.db.prepare('DELETE FROM knowledge_documents WHERE id=?').run(String(row.id))
     }
   }
+}
+
+function renderEntryMarkdown(entry: KnowledgeEntry): string {
+  return renderKnowledgeMarkdown({
+    metadata: {
+      id: entry.id,
+      type: entry.type,
+      tags: entry.tags,
+      scope: entry.scope,
+      confidence: entry.confidence,
+      status: entry.status,
+      documentState: entry.documentState,
+      ...entry.finalizedAt === undefined ? {} : { finalizedAt: entry.finalizedAt },
+      ...entry.finalizationNote === undefined ? {} : { finalizationNote: entry.finalizationNote },
+    },
+    title: entry.title,
+    body: entry.body,
+  })
+}
+
+function renderEntryContent(entry: KnowledgeEntry): string {
+  return `# ${markdownHeading(entry.title)}\n\n${entry.body.trim()}\n`
 }
 
 function markdownHeading(value: string): string {

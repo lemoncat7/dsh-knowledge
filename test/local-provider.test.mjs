@@ -93,8 +93,21 @@ test('separate local provider instances serialize their shared Markdown projecti
   assert.match((await first.getDocument(right.id))?.content || '', /right provider/)
 })
 
+test('in-memory providers keep projections in disposable temporary storage', async () => {
+  const provider = new LocalKnowledgeProvider(':memory:')
+  const root = provider.documentStore.root
+  assert.equal(root.startsWith(tmpdir()), true)
+  assert.equal(root.startsWith(process.cwd()), false)
+  await provider.create(globalDraft)
+  await access(root)
+  await provider.close()
+  await assert.rejects(() => access(root), error => error?.code === 'ENOENT')
+})
+
 test('document index paginates metadata without returning document bodies', async (t) => {
   const provider = await fixture(t)
+  assert.ok(provider.db.prepare("PRAGMA index_list('knowledge_documents')").all()
+    .some(index => index.name === 'knowledge_documents_index_order'))
   const created = []
   for (const [title, body] of [
     ['Alpha runbook', 'alpha deployment details'],
@@ -119,6 +132,34 @@ test('document index paginates metadata without returning document bodies', asyn
     () => provider.listDocumentIndex({ knowledgeBaseIds: ['default'], cursor: 'not-a-cursor', limit: 10 }),
     /invalid document pagination cursor/,
   )
+})
+
+test('entry and knowledge-base updates do not rewrite an entire Markdown projection', async (t) => {
+  const provider = await fixture(t)
+  const entries = []
+  for (let index = 0; index < 12; index += 1) {
+    entries.push(await provider.create({
+      ...globalDraft,
+      title: `Projection performance ${index}`,
+      body: `Stable document ${index}.`,
+    }))
+  }
+
+  const originalWrite = provider.documentStore.writeDocument.bind(provider.documentStore)
+  let writes = 0
+  provider.documentStore.writeDocument = async (...args) => {
+    writes += 1
+    return originalWrite(...args)
+  }
+
+  const target = entries[5]
+  await provider.update(target.id, { ...target, body: 'Only this projected document should be rewritten.' })
+  assert.equal(writes, 1)
+
+  writes = 0
+  const base = await provider.getKnowledgeBase('default')
+  await provider.updateKnowledgeBase(base.id, { ...base, description: 'Manifest-only metadata change.' })
+  assert.equal(writes, 0)
 })
 
 test('archived documents cannot be silently restored by editing or candidate approval', async (t) => {

@@ -8,6 +8,8 @@ import type {
   KnowledgeDraft,
   KnowledgeEntry,
   KnowledgeDocument,
+  KnowledgeDocumentIndexRequest,
+  KnowledgeDocumentIndexResult,
   KnowledgeStats,
   KnowledgeVersion,
   KnowledgeMount,
@@ -41,6 +43,7 @@ export interface KnowledgeProvider {
   restoreKnowledgeBase(id: string, signal?: AbortSignal): Promise<KnowledgeBase>
   deleteKnowledgeBase(id: string, signal?: AbortSignal): Promise<void>
   listDocuments(knowledgeBaseId?: string, query?: string, signal?: AbortSignal): Promise<KnowledgeDocument[]>
+  listDocumentIndex(request: KnowledgeDocumentIndexRequest, signal?: AbortSignal): Promise<KnowledgeDocumentIndexResult>
   getDocument(id: string, signal?: AbortSignal): Promise<KnowledgeDocument | undefined>
   listMounts(targetKind?: KnowledgeMountTargetKind, targetId?: string, signal?: AbortSignal): Promise<KnowledgeMount[]>
   upsertMount(draft: KnowledgeMountDraft, signal?: AbortSignal): Promise<KnowledgeMount>
