@@ -145,6 +145,12 @@ test('remote provider interoperates with the authenticated local API', async (t)
   const finalized = await remote.finalize(entry.id, 'complete', 'The central-service documentation is complete.')
   assert.equal(finalized.documentState, 'complete')
   assert.equal((await remote.getDocument(entry.id))?.documentState, 'complete')
+  const moved = await remote.moveDocument(entry.id, base.id)
+  assert.equal(moved.knowledgeBaseId, base.id)
+  assert.equal(moved.documentState, 'complete')
+  assert.deepEqual((await remote.listDocuments(base.id)).map(document => document.id), [entry.id])
+  assert.deepEqual(await remote.listDocuments('default'), [])
+  await remote.moveDocument(entry.id, 'default')
   await assert.rejects(
     () => remote.update(entry.id, { ...entry, body: 'Finalized documents cannot be edited.' }),
     /is finalized as collection complete/,

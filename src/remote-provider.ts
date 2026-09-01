@@ -206,6 +206,12 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     return this.request<KnowledgeEntry>(`documents/${encodeURIComponent(id)}/reopen`, { method: 'POST', signal })
   }
 
+  async moveDocument(id: string, knowledgeBaseId: string, signal?: AbortSignal): Promise<KnowledgeEntry> {
+    return this.request<KnowledgeEntry>(`documents/${encodeURIComponent(id)}/move`, {
+      method: 'POST', body: { knowledgeBaseId }, signal,
+    })
+  }
+
   async archive(id: string, signal?: AbortSignal): Promise<KnowledgeEntry> {
     return this.request<KnowledgeEntry>(`entries/${encodeURIComponent(id)}/archive`, { method: 'POST', signal })
   }

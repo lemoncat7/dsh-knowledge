@@ -862,8 +862,11 @@ html,
 }
 .note-tree-group + .note-tree-group { margin-top: 3px; }
 .note-tree-base, .note-tree-document, .note-tree-new { width: 100%; display: flex; align-items: center; border: 0; background: transparent; color: var(--text-secondary); text-align: left; }
-.note-tree-base { min-height: 36px; gap: 7px; border-radius: 9px; padding: 5px 7px; font-weight: 620; transition: background var(--motion-fast) ease, color var(--motion-fast) ease, transform var(--motion-base) var(--ease-out); }
+.note-tree-base { position: relative; min-height: 36px; gap: 7px; border-radius: 9px; padding: 5px 7px; font-weight: 620; transition: background var(--motion-fast) ease, color var(--motion-fast) ease, transform var(--motion-base) var(--ease-out), box-shadow var(--motion-fast) ease; }
 .note-tree-base:hover, .note-tree-document:hover, .note-tree-new:hover { background: var(--surface-hover); color: var(--text); transform: translateX(2px); }
+.note-tree-group[data-drop-target="true"] > .note-tree-base { background: color-mix(in srgb, var(--accent) 13%, var(--surface)); color: var(--text); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 44%, transparent), var(--shadow-control); transform: translateX(2px); }
+.note-tree-group[data-drop-target="true"] > .note-tree-base .tree-count { visibility: hidden; }
+.note-tree-group[data-drop-target="true"] > .note-tree-base::after { content: "移动到这里"; position: absolute; right: 7px; border-radius: 5px; padding: 2px 6px; background: var(--surface-raised); color: var(--accent); font-size: 9px; font-weight: 650; pointer-events: none; }
 .tree-disclosure { width: 7px; height: 7px; flex: none; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform .16s ease; }
 .note-tree-group[data-expanded="true"] .tree-disclosure { transform: rotate(45deg) translate(-1px, -1px); }
 .tree-folder-icon {
@@ -882,6 +885,10 @@ html,
 .tree-count { min-width: 20px; color: var(--text-tertiary); font-size: 10px; font-variant-numeric: tabular-nums; text-align: right; }
 .note-tree-documents { display: grid; gap: 1px; margin: 1px 0 5px 18px; padding-left: 10px; border-left: 1px solid color-mix(in srgb, var(--border-strong) 55%, transparent); }
 .note-tree-document { position: relative; min-height: 40px; gap: 8px; border-radius: 9px; padding: 5px 8px; transition: background var(--motion-fast) ease, color var(--motion-fast) ease, transform var(--motion-base) var(--ease-out), box-shadow var(--motion-base) ease; }
+.note-tree-document[draggable="true"] { cursor: grab; }
+.note-tree-document[draggable="true"]:active { cursor: grabbing; }
+.note-tree-document[data-dragging="true"] { opacity: .42; transform: translateX(5px) scale(.985); }
+.note-tree-document[aria-busy="true"] { opacity: .58; pointer-events: none; }
 .note-tree-document[aria-current="page"] { background: var(--material-control); color: var(--text); box-shadow: inset 2px 0 0 color-mix(in srgb, var(--text-secondary) 74%, transparent), var(--shadow-control); transform: translateX(2px); }
 .tree-document-icon {
   width: 14px;

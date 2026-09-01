@@ -328,6 +328,14 @@ async function dispatch(
       requirePermission(actor.permissions, 'write')
       return sendJson(res, 200, await provider.reopen(segments[1]))
     }
+    if (method === 'POST' && segments[1] !== undefined && segments[2] === 'move' && segments.length === 3) {
+      requirePermission(actor.permissions, 'write')
+      const body = await readObject(req)
+      return sendJson(res, 200, await provider.moveDocument(
+        segments[1],
+        requiredString(body.knowledgeBaseId, 'knowledgeBaseId'),
+      ))
+    }
   }
 
   if (segments[0] === 'entries') {

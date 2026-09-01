@@ -1003,6 +1003,38 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     return entry
   }
 
+  async moveDocument(id: string, knowledgeBaseId: string): Promise<KnowledgeEntry> {
+    this.assertOpen()
+    await this.documentsReady
+    let changed = false
+    const entry = this.transaction(() => {
+      const row = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM knowledge_entries WHERE id=?`).get(id) as SqlRow | undefined
+      if (row === undefined) throw notFound('knowledge entry', id)
+      const current = rowToEntry(row)
+      if (current.status !== 'active') throw conflict('only active knowledge documents can be moved')
+      if (current.knowledgeBaseId === knowledgeBaseId) return current
+      if (this.db.prepare("SELECT id FROM knowledge_bases WHERE id=? AND status='active'").get(knowledgeBaseId) === undefined) {
+        throw notFound('active knowledge base', knowledgeBaseId)
+      }
+      const updated: KnowledgeEntry = {
+        ...current,
+        knowledgeBaseId,
+        version: current.version + 1,
+        updatedAt: nowIso(),
+      }
+      this.db.prepare(`
+        UPDATE knowledge_entries
+        SET knowledge_base_id=?,version=?,updated_at=?
+        WHERE id=?
+      `).run(knowledgeBaseId, updated.version, updated.updatedAt, id)
+      this.writeVersion(updated, 'update')
+      changed = true
+      return updated
+    })
+    if (changed) await this.syncKnowledgeEntryQueued(entry.id)
+    return entry
+  }
+
   private updateEntry(id: string, input: KnowledgeDraft, changeKind: 'update' | 'restore'): KnowledgeEntry {
     const currentRow = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM knowledge_entries WHERE id = ?`).get(id) as SqlRow | undefined
     if (currentRow === undefined) throw notFound('knowledge entry', id)

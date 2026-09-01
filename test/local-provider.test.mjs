@@ -555,6 +555,38 @@ test('each active entry is persisted as one editable Markdown document', async (
   assert.deepEqual(await provider.listDocuments('default'), [])
 })
 
+test('knowledge documents move between bases without losing identity, finalization, or projection integrity', async (t) => {
+  const provider = await fixture(t)
+  const target = await provider.createKnowledgeBase({
+    name: 'Moved documents',
+    description: 'Receives documents organized from another knowledge base.',
+    defaultTags: [],
+    extractionInstructions: '',
+    writebackPolicy: 'conservative',
+  })
+  const created = await provider.create({ ...globalDraft, title: 'Stable movable document' })
+  const finalized = await provider.finalize(created.id, 'complete', 'Keep this document sealed while organizing it.')
+  const sourceDocument = (await provider.listDocuments('default'))[0]
+  const sourcePath = join(provider.fixtureRoot, 'documents', 'base-default', sourceDocument.relPath)
+
+  const moved = await provider.moveDocument(created.id, target.id)
+  assert.equal(moved.id, created.id)
+  assert.equal(moved.knowledgeBaseId, target.id)
+  assert.equal(moved.documentState, finalized.documentState)
+  assert.equal(moved.finalizationNote, finalized.finalizationNote)
+  assert.equal(moved.version, finalized.version + 1)
+  assert.deepEqual(await provider.listDocuments('default'), [])
+  const targetDocument = (await provider.listDocuments(target.id))[0]
+  assert.equal(targetDocument.id, created.id)
+  await assert.rejects(() => access(sourcePath), /ENOENT/)
+  const targetDirectory = `base-${target.id.replace(/[^a-zA-Z0-9]/gu, '').slice(0, 8)}`
+  await access(join(provider.fixtureRoot, 'documents', targetDirectory, targetDocument.relPath))
+  assert.equal((await provider.versions(created.id))[0]?.snapshot.knowledgeBaseId, target.id)
+
+  const unchanged = await provider.moveDocument(created.id, target.id)
+  assert.equal(unchanged.version, moved.version)
+})
+
 test('finalized documents remain recallable but reject every content mutation until reopened', async (t) => {
   const provider = await fixture(t)
   const entry = await provider.create({

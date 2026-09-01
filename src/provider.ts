@@ -45,6 +45,7 @@ export interface KnowledgeProvider {
   listDocuments(knowledgeBaseId?: string, query?: string, signal?: AbortSignal): Promise<KnowledgeDocument[]>
   listDocumentIndex(request: KnowledgeDocumentIndexRequest, signal?: AbortSignal): Promise<KnowledgeDocumentIndexResult>
   getDocument(id: string, signal?: AbortSignal): Promise<KnowledgeDocument | undefined>
+  moveDocument(id: string, knowledgeBaseId: string, signal?: AbortSignal): Promise<KnowledgeEntry>
   listMounts(targetKind?: KnowledgeMountTargetKind, targetId?: string, signal?: AbortSignal): Promise<KnowledgeMount[]>
   upsertMount(draft: KnowledgeMountDraft, signal?: AbortSignal): Promise<KnowledgeMount>
   applyMountBatch(batch: KnowledgeMountBatch, signal?: AbortSignal): Promise<KnowledgeMountBatchResult>

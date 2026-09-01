@@ -22,6 +22,7 @@ const WRITE_MODE_LABELS = { none: '仅召回', audit: '审核写入', direct: '�
 const EVIDENCE_LABELS = { explicit: '用户明确', verified: '结果已验证', inferred: '模型推断' }
 const DOCUMENT_STATE_LABELS = { open: '进行中', resolved: '已解决', complete: '已收集完成' }
 const DOCUMENT_LAYOUT_KEY = 'dsh-knowledge.document-layout'
+const KNOWLEDGE_DOCUMENT_DRAG_TYPE = 'application/x-dsh-knowledge-document-id'
 const NOTE_MAX_FILE_SIZE = 64 * 1024 * 1024
 const pageParams = new URLSearchParams(location.search)
 const mountContext = {
@@ -112,6 +113,8 @@ let plainTextEditorMountRequest = 0
 let noteTransferFrame = 0
 let noteTransferSequence = 0
 let noteSelectionRequest = 0
+let knowledgeDocumentDrag = null
+let movingDocumentId = ''
 
 function installHostThemeBridge() {
   if (window.parent === window) return Promise.resolve()
@@ -982,6 +985,106 @@ async function saveDocumentEditor(workspace = activeDocumentWorkspace()) {
   }
 }
 
+function activateKnowledgeBaseDropTarget(event, workspace, baseId) {
+  const drag = knowledgeDocumentDrag
+  if (!drag || drag.workspaceKind !== workspace.kind || drag.sourceBaseId === baseId) return
+  if (!hasDragType(event, KNOWLEDGE_DOCUMENT_DRAG_TYPE)) return
+  event.preventDefault()
+  event.stopPropagation()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  document.querySelectorAll('.note-tree-group[data-drop-target="true"]').forEach(target => {
+    if (target !== event.currentTarget) target.dataset.dropTarget = 'false'
+  })
+  event.currentTarget.dataset.dropTarget = 'true'
+}
+
+function clearKnowledgeDocumentDragState() {
+  knowledgeDocumentDrag = null
+  document.querySelectorAll('.note-tree-group[data-drop-target="true"]').forEach(node => { node.dataset.dropTarget = 'false' })
+  document.querySelectorAll('.note-tree-document[data-dragging="true"]').forEach(node => { node.dataset.dragging = 'false' })
+}
+
+function dropKnowledgeDocument(event, workspace, targetBaseId) {
+  const documentId = event.dataTransfer?.getData(KNOWLEDGE_DOCUMENT_DRAG_TYPE) || ''
+  const source = documentWorkspaceDocuments(workspace).find(document => document.id === documentId)
+  if (!documentId || !source || source.knowledgeBaseId === targetBaseId) return
+  event.preventDefault()
+  event.stopPropagation()
+  clearKnowledgeDocumentDragState()
+  void moveKnowledgeDocument(workspace, documentId, targetBaseId)
+}
+
+async function moveKnowledgeDocument(workspace, documentId, targetBaseId) {
+  const bases = documentWorkspaceBases(workspace)
+  const target = bases.find(base => base.id === targetBaseId && base.status === 'active')
+  const summaries = documentWorkspaceDocuments(workspace)
+  const current = summaries.find(document => document.id === documentId)
+  const sourceBaseId = current?.knowledgeBaseId
+    || (workspace.view.editor?.id === documentId ? workspace.view.editor.knowledgeBaseId : '')
+  if (!target || !sourceBaseId || sourceBaseId === targetBaseId || movingDocumentId) return false
+  const editor = workspace.view.editor
+  if (editor?.id === documentId && editor.dirty && !await saveDocumentEditor(workspace)) return false
+
+  movingDocumentId = documentId
+  renderShell()
+  try {
+    const saved = await api(`documents/${encodeURIComponent(documentId)}/move`, {
+      method: 'POST', body: { knowledgeBaseId: targetBaseId },
+    })
+    const latest = documentWorkspaceDocuments(workspace)
+    const summary = latest.find(document => document.id === documentId) || current
+    if (summary) {
+      setDocumentWorkspaceDocuments(workspace, [
+        { ...summary, knowledgeBaseId: targetBaseId, updatedAt: saved.updatedAt },
+        ...latest.filter(document => document.id !== documentId),
+      ])
+    }
+    workspace.view.searchResults = workspace.view.searchResults.map(document => document.id === documentId
+      ? { ...document, knowledgeBaseId: targetBaseId, updatedAt: saved.updatedAt }
+      : document)
+    const sourcePage = documentPageState(workspace, sourceBaseId)
+    const targetPage = documentPageState(workspace, targetBaseId)
+    if (sourcePage.loaded) sourcePage.total = Math.max(0, sourcePage.total - 1)
+    if (targetPage.loaded) targetPage.total += 1
+    workspace.view.knowledgeBaseId = targetBaseId
+    workspace.view.expandedBases.add(targetBaseId)
+    if (workspace.view.documentId === documentId && workspace.view.editor?.id === documentId) {
+      workspace.view.editor = {
+        ...workspace.view.editor,
+        ...saved,
+        tagsText: saved.tags.join(', '),
+        dirty: false,
+        isNew: false,
+        saveState: '已移动',
+      }
+    }
+    showToast(`已移动到“${target.name}”。`)
+    return true
+  } catch (error) {
+    showToast(friendlyError(error), 'error')
+    return false
+  } finally {
+    movingDocumentId = ''
+    renderShell()
+  }
+}
+
+function openMoveKnowledgeDocument(workspace, editor) {
+  const targets = documentWorkspaceBases(workspace).filter(base => base.status === 'active' && base.id !== editor.knowledgeBaseId)
+  if (!targets.length) return showToast('当前没有其他可移动到的知识库。', 'error')
+  const form = element('form', { class: 'form-grid' })
+  const destination = selectField('目标知识库', targets.map(base => ({ value: base.id, label: base.name })), targets[0].id)
+  destination.wrapper.classList.add('span-2')
+  form.append(destination.wrapper)
+  return openSheet({
+    title: `移动“${editor.title}”`,
+    description: '文档 ID、版本历史和关联笔记都会保留，Markdown 投影将同步移动。',
+    body: form,
+    primaryLabel: '移动文档',
+    onPrimary: () => moveKnowledgeDocument(workspace, editor.id, destination.input.value),
+  })
+}
+
 function updateEditorSaveState(label) {
   const node = document.querySelector('.editor-save-status')
   if (node) node.textContent = label
@@ -1635,6 +1738,7 @@ function renderDocumentWorkspace(workspace, options = {}) {
   const activeBases = documentWorkspaceBases(workspace)
   const workspaceDocuments = documentWorkspaceDocuments(workspace)
   const readOnly = documentWorkspaceReadOnly(workspace)
+  const canOrganize = !readOnly && activeBases.length > 1
   const selectedBase = activeBases.find(base => base.id === view.knowledgeBaseId)
   const search = element('input', {
     class: 'note-tree-search', type: 'search', value: view.query, placeholder: '搜索文档', 'aria-label': '搜索知识库文档',
@@ -1658,6 +1762,11 @@ function renderDocumentWorkspace(workspace, options = {}) {
     const documents = (query ? view.searchResults : workspaceDocuments).filter(document => document.knowledgeBaseId === base.id)
     return element('section', {
       class: 'note-tree-group', 'data-expanded': String(expanded),
+      'data-base-id': base.id, 'data-drop-target': 'false',
+      onDragEnter: event => activateKnowledgeBaseDropTarget(event, workspace, base.id),
+      onDragOver: event => activateKnowledgeBaseDropTarget(event, workspace, base.id),
+      onDragLeave: event => { if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.dataset.dropTarget = 'false' },
+      onDrop: event => dropKnowledgeDocument(event, workspace, base.id),
     },
       element('button', {
         type: 'button', class: 'note-tree-base', 'aria-expanded': String(expanded),
@@ -1678,8 +1787,18 @@ function renderDocumentWorkspace(workspace, options = {}) {
           actionButton('重试', () => { void loadDocumentPage(workspace, base.id, { reset: true }).then(renderShell) }, 'ghost small')) : null,
         documents.map(document => element('button', {
           type: 'button', class: 'note-tree-document', 'aria-current': document.id === view.documentId ? 'page' : undefined,
+          draggable: canOrganize && movingDocumentId !== document.id ? 'true' : undefined,
+          'aria-busy': movingDocumentId === document.id ? 'true' : undefined,
+          title: canOrganize ? `${document.title} · 拖到其他知识库以移动` : document.title,
           'data-document-id': document.id,
           'data-knowledge-motion-key': `knowledge-document:${workspace.kind}:${document.id}`,
+          onDragStart: event => {
+            knowledgeDocumentDrag = { documentId: document.id, sourceBaseId: base.id, workspaceKind: workspace.kind }
+            event.dataTransfer.effectAllowed = 'move'
+            event.dataTransfer.setData(KNOWLEDGE_DOCUMENT_DRAG_TYPE, document.id)
+            event.currentTarget.dataset.dragging = 'true'
+          },
+          onDragEnd: clearKnowledgeDocumentDragState,
           onClick: () => { view.knowledgeBaseId = base.id; void selectDocument(workspace, document.id) },
         }, element('span', { class: 'tree-document-icon', 'aria-hidden': 'true' }), element('span', { class: 'tree-document-copy' },
           element('strong', {}, document.title), element('small', {}, document.relPath)),
@@ -1778,6 +1897,9 @@ function renderNoteEditor(workspace, editor, base) {
       element('div', { class: 'note-editor-actions' },
         finalized ? badge(DOCUMENT_STATE_LABELS[editor.documentState] || '已结束', 'success') : readOnly ? badge('只读') : null,
         element('span', { class: 'editor-save-status', role: 'status' }, editor.saveState),
+        !readOnly && !editor.isNew && documentWorkspaceBases(workspace).some(item => item.id !== editor.knowledgeBaseId)
+          ? actionButton('移动到…', () => openMoveKnowledgeDocument(workspace, editor), 'ghost small')
+          : null,
         finalized && !readOnly ? actionButton('重新打开', () => reopenDocument(workspace, editor), 'small') : null,
         !readOnly && !editor.isNew && !finalized ? actionButton('标记结束', () => openFinalizeDocument(workspace, editor), 'small') : null,
         !readOnly && !editor.isNew && !finalized ? actionButton('删除', () => confirmDeleteDocument(workspace, editor), 'ghost small') : null,
@@ -3092,12 +3214,16 @@ function clearNoteDragState() {
   document.querySelectorAll('.notes-tree-item[data-dragging="true"]').forEach(node => { node.dataset.dragging = 'false' })
 }
 
-function installNoteDragRecovery() {
-  window.addEventListener('drop', clearNoteDragState, true)
-  window.addEventListener('dragend', clearNoteDragState, true)
-  window.addEventListener('blur', clearNoteDragState)
+function installDragRecovery() {
+  const clear = () => {
+    clearNoteDragState()
+    clearKnowledgeDocumentDragState()
+  }
+  window.addEventListener('drop', clear, true)
+  window.addEventListener('dragend', clear, true)
+  window.addEventListener('blur', clear)
   document.addEventListener('dragleave', event => {
-    if (event.relatedTarget === null) clearNoteDragState()
+    if (event.relatedTarget === null) clear()
   }, true)
 }
 
@@ -3992,5 +4118,5 @@ window.addEventListener('beforeunload', event => {
   event.returnValue = ''
 })
 
-installNoteDragRecovery()
+installDragRecovery()
 void installHostThemeBridge().then(() => boot())
