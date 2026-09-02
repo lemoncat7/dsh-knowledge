@@ -188,6 +188,66 @@ test('archived documents cannot be silently restored by editing or candidate app
   assert.equal((await provider.listCandidates('pending', 10))[0]?.id, candidate.id)
 })
 
+test('batch approval drains safe candidates in bounded order and preserves manual items', async (t) => {
+  const provider = await fixture(t)
+  const target = await provider.create({
+    ...globalDraft,
+    title: 'Manual conflict target',
+    body: 'Keep the current manual value.',
+  })
+  for (let index = 0; index < 15; index += 1) {
+    await provider.propose({
+      action: 'create',
+      draft: {
+        ...globalDraft,
+        title: `Batch candidate ${index}`,
+        body: `Independent batch knowledge ${index}.`,
+      },
+      reason: 'Safe independent candidate.',
+    }, `batch:${index}`)
+  }
+  const invalidTarget = await provider.create({
+    ...globalDraft,
+    title: 'Target archived before review',
+    body: 'This target exists while the candidate is proposed.',
+  })
+  const invalid = await provider.propose({
+    action: 'update', targetId: invalidTarget.id,
+    draft: { ...invalidTarget, body: 'This target is archived before review.' },
+    reason: 'Must remain for manual recovery.',
+  }, 'batch:invalid')
+  await provider.archive(invalidTarget.id)
+  const conflict = await provider.propose({
+    action: 'conflict', targetId: target.id,
+    draft: { ...target, body: 'Replace the current value with a conflicting value.' },
+    reason: 'Requires an explicit resolution.',
+  }, 'batch:conflict')
+
+  const first = await provider.approvePendingBatch(10, [invalid.id])
+  assert.deepEqual(first, {
+    selected: 10, approved: 10, deferred: 0, failed: [],
+    remainingReviewable: 5, remainingManual: 2,
+  })
+  const second = await provider.approvePendingBatch(10, [invalid.id])
+  assert.deepEqual(second, {
+    selected: 5, approved: 5, deferred: 0, failed: [],
+    remainingReviewable: 0, remainingManual: 2,
+  })
+  assert.deepEqual(
+    new Set((await provider.listCandidates('pending', 100)).map(candidate => candidate.id)),
+    new Set([invalid.id, conflict.id]),
+  )
+  assert.equal((await provider.listCandidates('approved', 100)).length, 15)
+
+  const failed = await provider.approvePendingBatch(10)
+  assert.equal(failed.selected, 1)
+  assert.equal(failed.approved, 0)
+  assert.equal(failed.failed[0]?.id, invalid.id)
+  assert.match(failed.failed[0]?.error || '', /active knowledge entry/)
+  assert.equal(failed.remainingReviewable, 0)
+  assert.equal(failed.remainingManual, 2)
+})
+
 test('direct writes merge compatible knowledge, skip duplicates, and hold conflicts for review', async (t) => {
   const provider = await fixture(t)
   const existing = await provider.create({

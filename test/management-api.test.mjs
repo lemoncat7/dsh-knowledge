@@ -100,6 +100,18 @@ test('same-origin management API controls public access and deletes revoked toke
   const candidatePayload = await (await fetch(`${base}/candidates?status=pending&limit=100&includeTargets=1`, { headers })).json()
   assert.deepEqual(candidatePayload.items.map(item => item.id), [candidate.id])
   assert.deepEqual(candidatePayload.targets.map(item => item.id), [entry.id])
+  const bulkResponse = await fetch(`${base}/candidates/bulk-review`, {
+    method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ limit: 25, excludeIds: [] }),
+  })
+  assert.equal(bulkResponse.status, 200)
+  assert.deepEqual(await bulkResponse.json(), {
+    selected: 1, approved: 1, deferred: 0, failed: [], remainingReviewable: 0, remainingManual: 0,
+  })
+  assert.equal((await fetch(`${base}/candidates/bulk-review`, {
+    method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ limit: 0 }),
+  })).status, 400)
   const references = await (await fetch(`${base}/notes/${folder.id}/references`, { headers })).json()
   assert.deepEqual(references.map(item => item.documentId), [entry.id])
   assert.equal((await fetch(`${base}/notes/${folder.id}`, { method: 'DELETE', headers })).status, 409)

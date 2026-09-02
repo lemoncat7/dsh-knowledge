@@ -1,5 +1,6 @@
 import type {
   CandidateProposal,
+  CandidateBatchReviewResult,
   ExtractionJobCompletion,
   ExtractionJobRecord,
   KnowledgeCandidate,
@@ -86,6 +87,7 @@ export interface KnowledgeProvider {
   writeDirect(proposal: CandidateProposal, sourceKey?: string, signal?: AbortSignal): Promise<DirectWriteResult>
   listCandidates(status: 'pending' | 'approved' | 'rejected', limit: number, signal?: AbortSignal): Promise<KnowledgeCandidate[]>
   review(id: string, decision: ReviewDecision, signal?: AbortSignal): Promise<KnowledgeCandidate>
+  approvePendingBatch(limit: number, excludeIds?: string[], signal?: AbortSignal): Promise<CandidateBatchReviewResult>
   claimExtraction(sourceKey: string, signal?: AbortSignal): Promise<boolean>
   completeExtraction(sourceKey: string, completion: ExtractionJobCompletion | number, signal?: AbortSignal): Promise<void>
   failExtraction(sourceKey: string, error: string, signal?: AbortSignal): Promise<void>

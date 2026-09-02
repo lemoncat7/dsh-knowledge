@@ -250,6 +250,23 @@ export interface ReviewDecision {
   expectedVersion?: number
 }
 
+export interface CandidateBatchReviewFailure {
+  id: string
+  error: string
+}
+
+/** Result of one bounded pass over automatically reviewable pending candidates. */
+export interface CandidateBatchReviewResult {
+  selected: number
+  approved: number
+  deferred: number
+  failed: CandidateBatchReviewFailure[]
+  /** Pending non-conflict candidates not excluded by the caller. */
+  remainingReviewable: number
+  /** Conflicts and caller-excluded failures that still require attention. */
+  remainingManual: number
+}
+
 export interface ExtractionJobRecord {
   sourceKey: string
   status: 'running' | 'completed' | 'failed'

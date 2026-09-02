@@ -430,6 +430,14 @@ async function dispatch(
       const body = await readObject(req)
       return sendJson(res, 200, await provider.writeDirect(parseProposal(body.proposal), optionalString(body.sourceKey)))
     }
+    if (method === 'POST' && segments[1] === 'bulk-review' && segments.length === 2) {
+      requirePermission(actor.permissions, 'write')
+      const body = await readObject(req)
+      return sendJson(res, 200, await provider.approvePendingBatch(
+        boundedInteger(body.limit, 'limit', 25, 1, 50),
+        stringArray(body.excludeIds, 'excludeIds', 5000),
+      ))
+    }
     if (method === 'POST' && segments[1] !== undefined && segments[2] === 'review' && segments.length === 3) {
       requirePermission(actor.permissions, 'write')
       const body = await readObject(req)
@@ -812,6 +820,23 @@ function integerParam(url: URL, name: string, fallback: number, min: number, max
   const value = Number(raw)
   if (!Number.isInteger(value) || value < min || value > max) throw httpError(400, `${name} must be an integer from ${min} to ${max}`)
   return value
+}
+
+function boundedInteger(value: unknown, name: string, fallback: number, min: number, max: number): number {
+  if (value === undefined) return fallback
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+    throw httpError(400, `${name} must be an integer between ${min} and ${max}`)
+  }
+  return parsed
+}
+
+function stringArray(value: unknown, name: string, maximumItems: number): string[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > maximumItems || value.some(item => typeof item !== 'string' || item.length === 0 || item.length > 200)) {
+    throw httpError(400, `${name} must be an array of at most ${maximumItems} non-empty strings`)
+  }
+  return [...new Set(value)]
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {

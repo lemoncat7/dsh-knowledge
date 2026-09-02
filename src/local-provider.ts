@@ -13,6 +13,7 @@ import {
   normalizeKnowledgeSettings,
   nowIso,
   type CandidateProposal,
+  type CandidateBatchReviewResult,
   type CandidateChange,
   type ApiTokenRecord,
   type ExtractionJobCompletion,
@@ -84,6 +85,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   private readonly db: DatabaseSync
   private readonly documentStore: KnowledgeDocumentStore
   private readonly documentsReady: Promise<void>
+  private batchReviewTail: Promise<void> = Promise.resolve()
   private closed = false
 
   constructor(path: string) {
@@ -1528,6 +1530,62 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     })
     if (touchedEntryId !== undefined) await this.syncKnowledgeEntryQueued(touchedEntryId)
     return reviewed
+  }
+
+  async approvePendingBatch(limit: number, excludeIds: string[] = []): Promise<CandidateBatchReviewResult> {
+    this.assertOpen()
+    const previous = this.batchReviewTail
+    let release!: () => void
+    this.batchReviewTail = new Promise<void>(resolve => { release = resolve })
+    await previous
+    try {
+      await this.documentsReady
+      const batchLimit = Math.max(1, Math.min(Math.trunc(limit), 50))
+      const excluded = [...new Set(excludeIds.filter(id => typeof id === 'string' && id.length > 0))].slice(0, 5000)
+      const exclusionSql = excluded.length === 0 ? '' : ` AND id NOT IN (${excluded.map(() => '?').join(',')})`
+      const selected = (this.db.prepare(`
+        SELECT id FROM knowledge_candidates
+        WHERE status='pending' AND action<>'conflict'${exclusionSql}
+        ORDER BY created_at ASC, id ASC
+        LIMIT ?
+      `).all(...excluded, batchLimit) as SqlRow[]).map(row => String(row.id))
+
+      let approved = 0
+      let deferred = 0
+      const failed: CandidateBatchReviewResult['failed'] = []
+      for (const id of selected) {
+        try {
+          const reviewed = await this.review(id, { decision: 'approve' })
+          if (reviewed.status === 'approved') approved += 1
+          else if (reviewed.status === 'pending' && reviewed.action === 'conflict') deferred += 1
+          else failed.push({ id, error: `candidate remained ${reviewed.status}` })
+        } catch (error) {
+          failed.push({ id, error: error instanceof Error ? error.message : String(error) })
+        }
+      }
+
+      const remainingExcluded = [...new Set([...excluded, ...failed.map(item => item.id)])]
+      const remainingExclusionSql = remainingExcluded.length === 0
+        ? ''
+        : ` AND id NOT IN (${remainingExcluded.map(() => '?').join(',')})`
+      const remainingReviewable = Number((this.db.prepare(`
+        SELECT COUNT(*) AS count FROM knowledge_candidates
+        WHERE status='pending' AND action<>'conflict'${remainingExclusionSql}
+      `).get(...remainingExcluded) as SqlRow).count ?? 0)
+      const pendingTotal = Number((this.db.prepare(`
+        SELECT COUNT(*) AS count FROM knowledge_candidates WHERE status='pending'
+      `).get() as SqlRow).count ?? 0)
+      return {
+        selected: selected.length,
+        approved,
+        deferred,
+        failed,
+        remainingReviewable,
+        remainingManual: Math.max(0, pendingTotal - remainingReviewable),
+      }
+    } finally {
+      release()
+    }
   }
 
   async claimExtraction(sourceKey: string): Promise<boolean> {

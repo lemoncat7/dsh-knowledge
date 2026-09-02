@@ -81,6 +81,7 @@ const state = {
   candidates: [],
   candidateTargets: new Map(),
   candidateStatus: 'pending',
+  candidateBatchRunning: false,
   settings: { writebackPolicy: 'conservative', updatedAt: '' },
   modelCatalog: null,
   settingsSaving: false,
@@ -3274,13 +3275,21 @@ function formatBytes(value) {
 
 function renderCandidates() {
   const statuses = [['pending', '待审核'], ['approved', '已通过'], ['rejected', '已拒绝']]
-  return element('section', { 'aria-labelledby': 'candidates-heading' },
+  const pendingCount = state.stats?.candidates.pending ?? state.candidates.filter(candidate => candidate.status === 'pending').length
+  return element('section', { class: 'candidate-page', 'aria-labelledby': 'candidates-heading' },
     element('div', { class: 'section-heading' },
       element('div', {}, element('h2', { id: 'candidates-heading' }, 'AI 提取候选'), element('p', {}, '审核写入、模型推断、低置信度结果和冲突项会在这里等待确认；只有高置信度且证据明确的结果才能直接写入。')),
-      element('div', { class: 'tabs', role: 'tablist', 'aria-label': '候选状态' }, statuses.map(([value, label]) => element('button', {
-        type: 'button', role: 'tab', class: 'tab', 'aria-selected': String(state.candidateStatus === value),
-        onClick: async () => { state.candidateStatus = value; await navigate('candidates') },
-      }, label, state.stats ? ` ${state.stats.candidates[value]}` : ''))),
+      element('div', { class: 'candidate-heading-actions' },
+        state.candidateStatus === 'pending' ? actionButton(state.candidateBatchRunning ? '正在通过…' : '一键通过', openBulkApprove, 'primary', {
+          disabled: state.candidateBatchRunning || pendingCount === 0,
+          title: pendingCount === 0 ? '当前没有待审核候选' : '分批通过新增与可安全合并项，冲突项会保留',
+          'aria-busy': String(state.candidateBatchRunning),
+        }) : null,
+        element('div', { class: 'tabs', role: 'tablist', 'aria-label': '候选状态' }, statuses.map(([value, label]) => element('button', {
+          type: 'button', role: 'tab', class: 'tab', 'aria-selected': String(state.candidateStatus === value),
+          onClick: async () => { state.candidateStatus = value; await navigate('candidates') },
+        }, label, state.stats ? ` ${state.stats.candidates[value]}` : ''))),
+      ),
     ),
     state.candidates.length ? element('div', { class: 'candidate-list' }, state.candidates.map(renderCandidateCard))
       : emptyState(`没有${STATUS_LABELS[state.candidateStatus]}候选`, state.candidateStatus === 'pending' ? '新的对话结束后，插件会在后台判断是否产生候选。' : '切换其他状态查看历史记录。'),
@@ -3951,6 +3960,88 @@ async function reviewCandidate(candidate, decision, resolution) {
       await navigate('candidates')
     },
   })
+}
+
+function openBulkApprove() {
+  if (state.candidateBatchRunning) return
+  const pendingCount = state.stats?.candidates.pending ?? state.candidates.length
+  const summary = element('strong', {}, `准备处理 ${pendingCount} 条待审核候选`)
+  const detail = element('p', {}, '开始后会按创建时间分批处理，并实时显示结果。')
+  const metrics = element('div', { class: 'bulk-review-metrics' })
+  const status = element('div', {
+    class: 'bulk-review-status', role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true', hidden: true,
+  }, summary, detail, metrics)
+  const body = element('div', { class: 'bulk-review-confirm' },
+    element('p', {}, '将分批通过待审核中的新增与可安全合并项。冲突项、目标不可用项，以及审核期间发生变化的候选会保留，供你逐条处理。'),
+    element('div', { class: 'bulk-review-safety' },
+      element('strong', {}, '不会自动处理冲突'),
+      element('span', {}, '同一文档的候选会按时间顺序写入，避免并发覆盖。'),
+    ),
+    status,
+  )
+  openModal({
+    title: '一键通过待审核候选？',
+    description: '适合集中处理积压候选；操作完成后无法批量撤销。',
+    body,
+    primaryLabel: '开始一键通过',
+    onPrimary: async () => {
+      state.candidateBatchRunning = true
+      status.hidden = false
+      const excluded = new Set()
+      const totals = { approved: 0, deferred: 0, failed: 0, selected: 0, remainingReviewable: pendingCount, remainingManual: 0 }
+      const updateProgress = (message = '正在按顺序审核候选…') => {
+        summary.textContent = message
+        detail.textContent = `已检查 ${totals.selected} 条；每批最多 25 条。`
+        metrics.replaceChildren(
+          bulkReviewMetric('已通过', totals.approved, 'success'),
+          bulkReviewMetric('转为冲突', totals.deferred, 'warning'),
+          bulkReviewMetric('失败保留', totals.failed, totals.failed ? 'danger' : ''),
+          bulkReviewMetric('剩余可处理', totals.remainingReviewable),
+        )
+      }
+      updateProgress()
+      try {
+        for (let pass = 0; pass < 1000; pass += 1) {
+          const result = await api('candidates/bulk-review', {
+            method: 'POST', body: { limit: 25, excludeIds: [...excluded] },
+          })
+          totals.selected += result.selected
+          totals.approved += result.approved
+          totals.deferred += result.deferred
+          totals.failed += result.failed.length
+          totals.remainingReviewable = result.remainingReviewable
+          totals.remainingManual = result.remainingManual
+          result.failed.forEach(item => excluded.add(item.id))
+          updateProgress()
+          if (result.remainingReviewable === 0) break
+          if (result.selected === 0) throw new Error('批量审核没有继续推进；剩余候选已保留，请刷新后重试。')
+        }
+        if (totals.remainingReviewable > 0) throw new Error('待审核候选过多，本次处理已达到安全上限，请再次执行。')
+        summary.textContent = totals.approved > 0 ? `已通过 ${totals.approved} 条候选` : '没有可自动通过的候选'
+        detail.textContent = totals.remainingManual > 0
+          ? `仍有 ${totals.remainingManual} 条冲突或失败项保留，需逐条确认。`
+          : '待审核队列已处理完成。'
+        state.stats = null
+        await loadCandidates()
+        state.candidateBatchRunning = false
+        renderShell()
+        const parts = [`已通过 ${totals.approved} 条`]
+        if (totals.deferred) parts.push(`${totals.deferred} 条转为冲突`)
+        if (totals.failed) parts.push(`${totals.failed} 条失败并保留`)
+        if (totals.remainingManual) parts.push(`${totals.remainingManual} 条待人工处理`)
+        showToast(`${parts.join('，')}。`, totals.failed ? 'error' : '')
+        return true
+      } finally {
+        state.candidateBatchRunning = false
+      }
+    },
+  })
+}
+
+function bulkReviewMetric(label, value, variant = '') {
+  return element('span', { class: `bulk-review-metric ${variant}`.trim() },
+    element('small', {}, label), element('strong', {}, String(value)),
+  )
 }
 
 function confirmArchive(entry) {

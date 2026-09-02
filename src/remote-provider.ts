@@ -1,5 +1,6 @@
 import type {
   CandidateProposal,
+  CandidateBatchReviewResult,
   ExtractionJobCompletion,
   ExtractionJobRecord,
   KnowledgeCandidate,
@@ -314,6 +315,12 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
 
   async review(id: string, decision: ReviewDecision, signal?: AbortSignal): Promise<KnowledgeCandidate> {
     return this.request<KnowledgeCandidate>(`candidates/${encodeURIComponent(id)}/review`, { method: 'POST', body: decision, signal })
+  }
+
+  async approvePendingBatch(limit: number, excludeIds: string[] = [], signal?: AbortSignal): Promise<CandidateBatchReviewResult> {
+    return this.request<CandidateBatchReviewResult>('candidates/bulk-review', {
+      method: 'POST', body: { limit, excludeIds }, signal,
+    })
   }
 
   async claimExtraction(sourceKey: string, signal?: AbortSignal): Promise<boolean> {

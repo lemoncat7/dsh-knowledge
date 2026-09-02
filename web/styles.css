@@ -673,6 +673,7 @@ html,
 .section-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .section-heading h2 { margin: 0; font-size: 16px; }
 .section-heading p { margin: 4px 0 0; color: var(--text-tertiary); font-size: 12px; }
+.candidate-heading-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
 
 .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 30px; }
 .metric { position: relative; min-width: 0; overflow: hidden; border: 1px solid var(--glass-border); border-radius: var(--radius-panel); padding: 18px; background: var(--material-panel); box-shadow: var(--shadow-control); transition: border-color var(--motion-base) ease, box-shadow var(--motion-base) ease, transform var(--motion-base) var(--ease-out); }
@@ -1343,6 +1344,22 @@ html,
 .tab[aria-selected="true"] { background: var(--surface-raised); color: var(--text); box-shadow: var(--shadow-soft); }
 
 .candidate-list { display: grid; gap: 13px; }
+.bulk-review-confirm { display: grid; gap: 14px; }
+.bulk-review-confirm > p { margin: 0; color: var(--text-secondary); line-height: 1.65; }
+.bulk-review-safety { display: grid; gap: 3px; border: 1px solid var(--panel-border); border-radius: 10px; padding: 11px 12px; background: var(--material-control); }
+.bulk-review-safety strong { color: var(--text); font-size: 12px; }
+.bulk-review-safety span { color: var(--text-tertiary); font-size: 11px; line-height: 1.5; }
+.bulk-review-status { display: grid; gap: 8px; border-top: 1px solid var(--separator); padding-top: 13px; }
+.bulk-review-status[hidden] { display: none; }
+.bulk-review-status > strong { font-size: 13px; }
+.bulk-review-status > p { margin: 0; color: var(--text-tertiary); font-size: 11px; }
+.bulk-review-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
+.bulk-review-metric { min-width: 0; display: grid; gap: 3px; border-radius: 8px; padding: 8px 9px; background: var(--surface-soft); color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.bulk-review-metric small { overflow: hidden; color: var(--text-tertiary); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.bulk-review-metric strong { font-size: 15px; }
+.bulk-review-metric.success strong { color: var(--success); }
+.bulk-review-metric.warning strong { color: var(--warning); }
+.bulk-review-metric.danger strong { color: var(--danger); }
 .candidate { overflow: hidden; border: 1px solid var(--panel-border); border-radius: var(--radius-panel); background: var(--surface-pane); box-shadow: var(--shadow-control); content-visibility: auto; contain-intrinsic-size: auto 560px; }
 .candidate-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 17px 18px 12px; }
 .candidate-header h3 { margin: 8px 0 0; font-size: 15px; }
@@ -1895,6 +1912,9 @@ html,
   .mount-bulk-actions { justify-content: stretch; }
   .mount-bulk-actions .button { flex: 1 1 auto; }
   .candidate-header, .candidate-footer { align-items: flex-start; flex-direction: column; }
+  .candidate-page > .section-heading { align-items: stretch; flex-direction: column; }
+  .candidate-heading-actions { align-items: stretch; flex-direction: column; }
+  .candidate-heading-actions > .button { width: 100%; }
   .candidate-footer { gap: 9px; }
   .candidate-actions { width: 100%; justify-content: flex-start; }
   .notes-workspace { height: auto; min-height: calc(100dvh - 72px); grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(320px, 44dvh) minmax(430px, auto); }
@@ -1941,6 +1961,7 @@ html,
   .candidate-body { padding-inline: 14px; }
   .candidate-footer { padding-inline: 14px; }
   .candidate-change-heading { align-items: flex-start; flex-direction: column; }
+  .bulk-review-metrics { grid-template-columns: 1fr 1fr; }
   .diff-column-headings, .diff-line { grid-template-columns: 30px 30px 20px minmax(0, 1fr); }
   .diff-column-headings span, .diff-line-number { padding-inline: 4px; }
   .candidate-actions .button { flex: 1 1 auto; }

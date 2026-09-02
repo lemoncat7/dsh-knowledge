@@ -128,6 +128,26 @@ test('remote provider interoperates with the authenticated local API', async (t)
   assert.equal((await remote.get(entry.id))?.source?.evidence, 'verified')
   assert.match((await remote.get(entry.id))?.body || '', /over HTTPS/)
   assert.match((await remote.get(entry.id))?.body || '', /authenticated HTTPS/)
+  for (let index = 0; index < 3; index += 1) {
+    await remote.propose({
+      action: 'create',
+      draft: {
+        knowledgeBaseId: 'default', title: `Remote batch ${index}`, body: `Remote batch body ${index}.`,
+        type: 'fact', tags: ['remote-batch'], scope: { kind: 'global' }, confidence: 0.91,
+      },
+      reason: 'Remote batch contract.',
+    }, `remote-batch:${index}`)
+  }
+  const batch = await remote.approvePendingBatch(2)
+  assert.deepEqual(batch, {
+    selected: 2, approved: 2, deferred: 0, failed: [],
+    remainingReviewable: 1, remainingManual: 0,
+  })
+  assert.equal((await remote.approvePendingBatch(2)).approved, 1)
+  const batchEntries = (await remote.list({ knowledgeBaseId: 'default', status: 'active', limit: 100 })).items
+    .filter(item => item.tags.includes('remote-batch'))
+  assert.equal(batchEntries.length, 3)
+  for (const batchEntry of batchEntries) await remote.delete(batchEntry.id)
   assert.equal((await remote.list({ knowledgeBaseId: 'default', status: 'active', limit: 10 })).items.length, 1)
   const direct = await remote.writeDirect({
     action: 'create',
