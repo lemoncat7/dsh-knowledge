@@ -467,7 +467,7 @@ function snapshotAgent(agent: AgentLike): AgentLike {
     session: {
       id: agent.session.id,
       header: { ...agent.session.header },
-      events: [...agent.session.events],
+      events: [...(typeof agent.session.snapshotEvents === 'function' ? agent.session.snapshotEvents() : agent.session.events)],
     },
   }
 }

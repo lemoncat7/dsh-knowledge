@@ -256,18 +256,19 @@ function pendingDestination(
 }
 
 function snapshotTurn(session: SessionLike, turn: number, maxChars: number): TurnSnapshot | undefined {
+  const events = typeof session.snapshotEvents === 'function' ? session.snapshotEvents() : session.events
   let start = -1
-  for (let index = session.events.length - 1; index >= 0; index -= 1) {
-    const event = session.events[index]
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
     if (event?.type === 'turn/start' && event.data.turn === turn) { start = index; break }
   }
   if (start < 0) return undefined
-  const events = session.events.slice(start)
-  const userMessages = events
+  const turnEvents = events.slice(start)
+  const userMessages = turnEvents
     .filter(event => event.type === 'user/message')
     .map(event => event.data as unknown as MessageLike)
     .filter(message => message.source?.kind === 'user')
-  const assistantMessages = events
+  const assistantMessages = turnEvents
     .filter(event => event.type === 'assistant/message' && event.data.turn === turn)
     .map(event => (event.data as { message?: MessageLike }).message)
     .filter((message): message is MessageLike => message !== undefined)
@@ -510,14 +511,29 @@ async function callWithLowReasoningFallback(
   parentSignal: AbortSignal,
   system: string,
 ): Promise<{ text: string; finish?: { kind: string; failure?: { message?: string } } }> {
+  // DSH's adapterStream() catches prepareCall() errors and yields them as
+  // finish chunks (kind: 'error') instead of throwing, so try/catch alone
+  // never catches reasoning-effort rejections. Check the returned finish too.
+  const REASONING_ERROR = /reasoning|unsupported|unknown (?:field|option|parameter)|invalid (?:field|option|parameter)/i
   try {
-    return await callExtractionModel(
+    const result = await callExtractionModel(
       ctx, route, message, sessionId, maxTokens, timeoutMs, parentSignal,
       system, 'low',
     )
+    if (result.finish !== undefined && result.finish.kind === 'error') {
+      const failureMessage = result.finish.failure?.message ?? ''
+      if (REASONING_ERROR.test(failureMessage)) {
+        ctx.logger.warn(`dsh-knowledge: ${route.provider}/${route.model} does not accept reasoningEffort; retrying without it`)
+        return callExtractionModel(
+          ctx, route, message, sessionId, maxTokens, timeoutMs, parentSignal,
+          system,
+        )
+      }
+    }
+    return result
   } catch (error) {
     const messageText = error instanceof Error ? error.message : String(error)
-    if (!/reasoning|unsupported|unknown (?:field|option|parameter)|invalid (?:field|option|parameter)/i.test(messageText)) throw error
+    if (!REASONING_ERROR.test(messageText)) throw error
     ctx.logger.warn(`dsh-knowledge: ${route.provider}/${route.model} does not accept reasoningEffort; retrying without it`)
     return callExtractionModel(
       ctx, route, message, sessionId, maxTokens, timeoutMs, parentSignal,

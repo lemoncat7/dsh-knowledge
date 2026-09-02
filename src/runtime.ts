@@ -19,6 +19,8 @@ export interface SessionLike {
   id: string
   header: { cwd?: string }
   events: readonly SessionEventLike[]
+  /** DSH ≥ 0.1.2-alpha.4 replaced the `events` getter with `snapshotEvents()`. */
+  snapshotEvents?: () => readonly SessionEventLike[]
 }
 
 export interface AgentLike {

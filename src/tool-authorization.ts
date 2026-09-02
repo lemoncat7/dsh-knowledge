@@ -84,14 +84,15 @@ function clauseRequestsKnowledgeBaseManagement(
 }
 
 function currentDirectUserText(agent: AgentLike): string {
+  const events = typeof agent.session.snapshotEvents === 'function' ? agent.session.snapshotEvents() : agent.session.events
   let turnStart = -1
-  for (let index = agent.session.events.length - 1; index >= 0; index -= 1) {
-    if (agent.session.events[index]?.type === 'turn/start') {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index]?.type === 'turn/start') {
       turnStart = index
       break
     }
   }
-  return agent.session.events.slice(turnStart + 1)
+  return events.slice(turnStart + 1)
     .filter(event => event.type === 'user/message')
     .map(event => event.data as unknown as MessageLike)
     .filter(message => message.source?.kind === 'user')
