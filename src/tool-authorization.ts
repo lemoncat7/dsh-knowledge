@@ -126,7 +126,9 @@ function clauseRequestsKnowledgeNote(
     || (workspaceSubject.test(text) && targetSubject.test(text))
   if (!hasQualifiedTarget) return false
   if (operation === 'inspect') {
-    return /(?:查看|读取|读一下|打开|搜索|查找|找一下|列出|浏览|检查|内容|引用|关联|连接|绑定|创建|新建|建立|添加|写入|记录|修改|更新|编辑|追加|重命名|改名|移动|整理|删除|移除|read|open|search|find|list|browse|inspect|reference|link|attach|create|add|write|record|update|edit|append|rename|move|delete|remove)/iu.test(text)
+    const inspectIntent = /(?:查看|查询|检索|读取|读一下|打开|搜索|查找|找一下|列出|浏览|检查|看看|内容|引用|关联|连接|绑定|创建|新建|建立|添加|写入|记录|修改|更新|编辑|追加|重命名|改名|移动|整理|删除|移除|read|open|search|query|find|list|browse|inspect|reference|link|attach|create|add|write|record|update|edit|append|rename|move|delete|remove)/iu
+    const clarification = /(?:我说的?是|我指的?是|指的是|说的是|就是|那个|这个).{0,32}(?:笔记|筆記|文档|文檔|markdown|md\s*文件|notes?|notebook|document)/iu
+    return inspectIntent.test(text) || clarification.test(text)
   }
   if (deniesKnowledgeNoteMutation(text, operation)) return false
   if (operation === 'create') {

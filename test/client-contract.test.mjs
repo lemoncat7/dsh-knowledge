@@ -27,5 +27,8 @@ test('browser integration is type-checked against the official DSH client contra
   assert.match(css, /body\[data-ds-dark-theme\][\s\S]*--knowledge-pane: rgb\(8 10 12 \/ 19%\)/)
   assert.doesNotMatch(source, /interface\s+(?:ClientContext|SlotService)\b/)
   assert.match(css, /\.dsh-knowledge-writeback-destinations/)
+  assert.match(css, /\.dsh-knowledge-writeback-status \.dsh-knowledge-writeback-document/)
+  assert.match(css, /\.dsh-knowledge-writeback-document:hover[\s\S]*?background: var\(--knowledge-hover\)/)
+  assert.doesNotMatch(css, /\.dsh-knowledge-writeback-destinations li \{[^}]*background: var\(--knowledge-control\)/)
   assert.match(css, /overflow: hidden;[\s\S]*?text-overflow: ellipsis;/)
 })

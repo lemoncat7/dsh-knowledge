@@ -39,8 +39,15 @@ interface KnowledgeConnectionView {
 interface KnowledgeWorkspaceController {
   isOpen(): boolean
   toggle(): void
+  openDocument(target: KnowledgeDocumentTarget): void
+  currentTarget(): KnowledgeDocumentTarget | undefined
   close(): void
   subscribe(listener: () => void): () => void
+}
+
+interface KnowledgeDocumentTarget {
+  knowledgeBaseId: string
+  documentId: string
 }
 
 interface WritebackDestinationView {
@@ -86,10 +93,14 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
     name: 'conversation.chat.turnTail',
     select: owner => ({ turn: owner.turn.turn }),
-  }, props => <KnowledgeWritebackStatus sessionId={String(props.sessionId)} turn={props.matched.turn} />))
+  }, props => <KnowledgeWritebackStatus sessionId={String(props.sessionId)} turn={props.matched.turn} workspace={workspace} />))
 }
 
-function KnowledgeWritebackStatus({ sessionId, turn }: { sessionId: string; turn: number }) {
+function KnowledgeWritebackStatus({
+  sessionId,
+  turn,
+  workspace,
+}: { sessionId: string; turn: number; workspace: KnowledgeWorkspaceController }) {
   const [state, setState] = useState<WritebackStatusView>()
   const [retrying, setRetrying] = useState(false)
   useEffect(() => {
@@ -149,8 +160,17 @@ function KnowledgeWritebackStatus({ sessionId, turn }: { sessionId: string; turn
     </div>
     {destinations.length > 0 && <ul className="dsh-knowledge-writeback-destinations" aria-label="回写目标">
       {destinations.map((destination, index) => <li key={`${destination.knowledgeBaseId}:${destination.documentId ?? destination.documentTitle}:${index}`}>
-        <span>{destination.knowledgeBaseName}</span>
-        <strong title={destination.documentPath ?? destination.documentTitle}>{destination.documentPath ?? `拟新建：${destination.documentTitle}`}</strong>
+        <span className="dsh-knowledge-writeback-base">{destination.knowledgeBaseName}</span>
+        <span className="dsh-knowledge-writeback-separator" aria-hidden="true">/</span>
+        {destination.documentId
+          ? <button
+            type="button"
+            className="dsh-knowledge-writeback-document"
+            title={`打开 ${destination.documentPath ?? destination.documentTitle}`}
+            aria-label={`在知识库中打开 ${destination.documentTitle}`}
+            onClick={() => { workspace.openDocument({ knowledgeBaseId: destination.knowledgeBaseId, documentId: destination.documentId! }) }}
+          ><strong>{destination.documentPath ?? destination.documentTitle}</strong></button>
+          : <strong title={destination.documentTitle}>{`拟新建：${destination.documentTitle}`}</strong>}
         <small data-disposition={destination.disposition}>{destination.disposition === 'written' ? '已写入' : '待审核'}</small>
       </li>)}
     </ul>}
@@ -161,6 +181,7 @@ function KnowledgeWritebackStatus({ sessionId, turn }: { sessionId: string; turn
 function createKnowledgeWorkspaceController(client: ClientContext): KnowledgeWorkspaceController {
   const listeners = new Set<() => void>()
   let disposeWorkspace: (() => void) | undefined
+  let target: KnowledgeDocumentTarget | undefined
   const notify = (): void => { for (const listener of listeners) listener() }
   const close = (): void => {
     if (disposeWorkspace === undefined) return
@@ -169,17 +190,28 @@ function createKnowledgeWorkspaceController(client: ClientContext): KnowledgeWor
     dispose()
     notify()
   }
-  const controller: KnowledgeWorkspaceController = {
+  let controller: KnowledgeWorkspaceController
+  const open = (): void => {
+    if (disposeWorkspace !== undefined) return
+    activatePluginWorkspace(PLUGIN_ID)
+    disposeWorkspace = client.slots.register({ name: 'conversation', priority: -1 }, props => (
+      <KnowledgeWorkspace {...props} client={client} workspace={controller} />
+    ))
+  }
+  controller = {
     isOpen: () => disposeWorkspace !== undefined,
     toggle: () => {
       if (disposeWorkspace !== undefined) return close()
-      activatePluginWorkspace(PLUGIN_ID)
-      const dispose = client.slots.register({ name: 'conversation', priority: -1 }, props => (
-        <KnowledgeWorkspace {...props} client={client} workspace={controller} />
-      ))
-      disposeWorkspace = dispose
+      target = undefined
+      open()
       notify()
     },
+    openDocument: nextTarget => {
+      target = nextTarget
+      open()
+      notify()
+    },
+    currentTarget: () => target,
     close,
     subscribe: listener => {
       listeners.add(listener)
@@ -411,8 +443,9 @@ function KnowledgeWorkspace({
   const [panelState, setPanelState] = useState<'loading' | 'ready' | 'unavailable' | 'error'>(cachedConnectionView === undefined ? 'loading' : cachedManagementPath === undefined ? 'unavailable' : 'ready')
   const [managementPath, setManagementPath] = useState<string | undefined>(cachedManagementPath)
   const [panelError, setPanelError] = useState('')
+  const [target, setTarget] = useState<KnowledgeDocumentTarget | undefined>(workspace.currentTarget())
   const projectId = useSessions(state => sessionId === undefined ? undefined : state.byId[sessionId]?.cwd)
-  const knowledgeUrl = managementPath === undefined ? undefined : knowledgePanelUrl(managementPath, sessionId, projectId)
+  const knowledgeUrl = managementPath === undefined ? undefined : knowledgePanelUrl(managementPath, sessionId, projectId, target)
   const frame = useRef<HTMLIFrameElement | null>(null)
   const themeFrame = useRef(0)
 
@@ -438,6 +471,8 @@ function KnowledgeWorkspace({
   useEffect(() => {
     void loadManagement(cachedConnectionView !== undefined)
   }, [loadManagement])
+
+  useEffect(() => workspace.subscribe(() => { setTarget(workspace.currentTarget()) }), [workspace])
 
   const sendTheme = useCallback((): void => {
     const currentFrame = frame.current
@@ -505,10 +540,14 @@ function KnowledgeWorkspace({
   )
 }
 
-function knowledgePanelUrl(managementPath: string, sessionId?: string, projectId?: string): string {
+function knowledgePanelUrl(managementPath: string, sessionId?: string, projectId?: string, target?: KnowledgeDocumentTarget): string {
   const params = new URLSearchParams()
   if (sessionId !== undefined) params.set('sessionId', sessionId)
   if (projectId !== undefined) params.set('projectId', projectId)
+  if (target !== undefined) {
+    params.set('knowledgeBaseId', target.knowledgeBaseId)
+    params.set('documentId', target.documentId)
+  }
   const query = params.toString()
   return query.length === 0 ? managementPath : `${managementPath}${managementPath.includes('?') ? '&' : '?'}${query}`
 }

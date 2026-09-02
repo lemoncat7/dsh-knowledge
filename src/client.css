@@ -555,7 +555,7 @@ div:has(> div[data-slot="sidebar.footer.action"] .dsh-knowledge-trigger--rail) {
 .dsh-knowledge-writeback-destinations {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px 8px;
+  gap: 2px 12px;
   min-width: 0;
   margin: 0;
   padding: 0;
@@ -567,15 +567,16 @@ div:has(> div[data-slot="sidebar.footer.action"] .dsh-knowledge-trigger--rail) {
   gap: 5px;
   min-width: 0;
   max-width: 100%;
-  padding: 2px 7px;
-  border: 1px solid var(--knowledge-border);
-  border-radius: 7px;
-  background: var(--knowledge-control);
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
-.dsh-knowledge-writeback-destinations li > span::after {
-  margin-left: 5px;
+.dsh-knowledge-writeback-base,
+.dsh-knowledge-writeback-separator {
+  flex: none;
+}
+.dsh-knowledge-writeback-separator {
   color: var(--dsw-alias-label-quaternary, #9ca3af);
-  content: "/";
 }
 .dsh-knowledge-writeback-destinations strong {
   min-width: 0;
@@ -583,6 +584,27 @@ div:has(> div[data-slot="sidebar.footer.action"] .dsh-knowledge-trigger--rail) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.dsh-knowledge-writeback-status .dsh-knowledge-writeback-document {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 24px;
+  padding: 0 3px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, #374151);
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+  transition: color 120ms ease, background-color 120ms ease, text-decoration-color 120ms ease;
+}
+.dsh-knowledge-writeback-status .dsh-knowledge-writeback-document:hover {
+  background: var(--knowledge-hover);
+  color: var(--dsw-alias-label-primary, #171719);
+  text-decoration-color: currentColor;
+}
+.dsh-knowledge-writeback-document strong { color: inherit; }
 .dsh-knowledge-writeback-destinations small {
   flex: none;
   color: var(--dsw-alias-label-secondary, #374151);

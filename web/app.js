@@ -25,6 +25,8 @@ const DOCUMENT_LAYOUT_KEY = 'dsh-knowledge.document-layout'
 const KNOWLEDGE_DOCUMENT_DRAG_TYPE = 'application/x-dsh-knowledge-document-id'
 const NOTE_MAX_FILE_SIZE = 64 * 1024 * 1024
 const pageParams = new URLSearchParams(location.search)
+const initialKnowledgeBaseId = pageParams.get('knowledgeBaseId')?.trim() || ''
+const initialDocumentId = pageParams.get('documentId')?.trim() || ''
 const mountContext = {
   sessionId: pageParams.get('sessionId')?.trim() || '',
   projectId: pageParams.get('projectId')?.trim() || '',
@@ -65,6 +67,8 @@ const state = {
   entryFilters: { query: '', type: '', status: 'active', projectId: '', knowledgeBaseId: '' },
   documents: [],
   documentView: createDocumentViewState({
+    knowledgeBaseId: initialKnowledgeBaseId,
+    documentId: initialDocumentId,
     sidebarHidden: savedDocumentLayout.sidebarHidden,
     sidebarWidth: savedDocumentLayout.sidebarWidth,
   }),
@@ -637,6 +641,19 @@ async function loadDocuments(signal, onPhase = () => {}) {
   if (view.knowledgeBaseId) {
     view.expandedBases.add(view.knowledgeBaseId)
     await loadDocumentPage(workspace, view.knowledgeBaseId, { signal })
+  }
+  if (view.documentId && !state.documents.some(document => document.id === view.documentId)) {
+    try {
+      const document = await api(`documents/${encodeURIComponent(view.documentId)}`, { signal })
+      if (visibleBaseIds.has(document.knowledgeBaseId)) {
+        view.knowledgeBaseId = document.knowledgeBaseId
+        view.expandedBases.add(document.knowledgeBaseId)
+        mergeDocumentSummaries(workspace, [documentSummary(document)], document.knowledgeBaseId, false)
+      } else view.documentId = ''
+    } catch (error) {
+      if (error.name === 'AbortError') throw error
+      view.documentId = ''
+    }
   }
   selectDefaultDocument(workspace)
   if (view.documentId) {

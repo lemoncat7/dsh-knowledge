@@ -17,6 +17,9 @@ test('knowledge-base management authorization requires an explicit matching user
 })
 
 test('knowledge-note authorization understands documents and folders without widening to arbitrary files', () => {
+  assert.equal(explicitlyRequestsKnowledgeNote('查询笔记文档', 'inspect'), true)
+  assert.equal(explicitlyRequestsKnowledgeNote('我说的是笔记文档中的不停机文档', 'inspect'), true)
+  assert.equal(explicitlyRequestsKnowledgeNote('聊聊不停机设计', 'inspect'), false)
   assert.equal(explicitlyRequestsKnowledgeNote('请把这段内容保存到笔记文档。', 'create', 'document'), true)
   assert.equal(explicitlyRequestsKnowledgeNote('在笔记工作区建一个发布资料目录。', 'create', 'folder'), true)
   assert.equal(explicitlyRequestsKnowledgeNote('把项目笔记目录改名为归档。', 'update', 'folder'), true)
