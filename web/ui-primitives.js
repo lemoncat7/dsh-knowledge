@@ -35,6 +35,13 @@ export function paneToggleButton(pane, visible, onClick, label) {
 export function interfaceIcon(name, className = 'interface-icon') {
   const paths = {
     search: 'M10.8 4.5a6.3 6.3 0 1 0 0 12.6 6.3 6.3 0 0 0 0-12.6Zm4.6 11 4.1 4',
+    more: 'M5 12h.01M12 12h.01M19 12h.01',
+    save: 'M5 3.5h11l3 3v14H5zM8 3.5v6h8v-6M8 20.5v-7h8v7',
+    outline: 'M8 6h11M8 12h11M8 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01',
+    history: 'M4 4v5h5M4.8 8.2A8 8 0 1 1 4 13M12 7.5V12l3 2',
+    download: 'M12 3v11M8 10l4 4 4-4M5 20h14',
+    link: 'M9.5 14.5l5-5M8.5 17H6a5 5 0 0 1 0-10h3M15.5 7H18a5 5 0 0 1 0 10h-3',
+    rename: 'M4 20l4.2-1 10.4-10.4a2.1 2.1 0 0 0-3-3L5.2 16zM14.5 6.5l3 3',
   }
   return element('svg', {
     class: className, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
@@ -56,4 +63,3 @@ export function createToastPresenter(region) {
     if (kind !== 'error') window.setTimeout(() => toast.remove(), 4200)
   }
 }
-

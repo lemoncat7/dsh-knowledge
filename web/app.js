@@ -2474,8 +2474,8 @@ function renderNoteFileOverflowMenu(node, options) {
       }, 0)
     },
   })
-  const summary = element('summary', { class: 'button ghost small', 'aria-label': `打开 ${node.name} 的更多操作` },
-    element('span', { class: 'notes-document-more-icon', 'aria-hidden': 'true' }),
+  const summary = element('summary', { class: 'button ghost small', title: '更多操作', 'aria-label': `打开 ${node.name} 的更多操作` },
+    interfaceIcon('more', 'notes-document-more-icon'),
   )
   details.addEventListener('toggle', () => {
     summary.setAttribute('aria-expanded', String(details.open))
@@ -2485,18 +2485,37 @@ function renderNoteFileOverflowMenu(node, options) {
     details.open = false
     action(event)
   }
-  const menu = element('div', { class: 'notes-document-more-menu', role: 'menu', 'aria-label': `${node.name} 的更多操作` },
-    options.editable ? actionButton(state.notes.dirty ? '保存修改' : '已保存', closeThen(() => { void saveNoteDocument() }), state.notes.dirty ? 'primary small' : 'ghost small', { role: 'menuitem', disabled: !state.notes.dirty }) : null,
-    options.enhanced ? actionButton('查找', closeThen(() => markdownEditorHandle?.openFind()), 'ghost small', { role: 'menuitem' }) : null,
-    options.enhanced ? actionButton('大纲', closeThen(() => markdownEditorHandle?.toggleOutline()), 'ghost small', { role: 'menuitem' }) : null,
-    options.editable ? actionButton('页面历史', closeThen(() => { void openNoteHistory(node) }), 'ghost small', { role: 'menuitem' }) : null,
-    noteDownloadButton(node, 'ghost small', '下载', { role: 'menuitem', onClick: closeThen(event => { void downloadNoteFile(node, event.currentTarget) }) }),
-    actionButton('复制引用', closeThen(() => { void copyNoteReference(node) }), 'ghost small', { role: 'menuitem' }),
-    actionButton('重命名', closeThen(() => openRenameNoteNode(node)), 'ghost small', { role: 'menuitem' }),
+  const menuItems = []
+  if (options.editable) {
+    menuItems.push(noteMenuAction(state.notes.dirty ? '保存修改' : '已保存', 'save', closeThen(() => { void saveNoteDocument() }), { disabled: !state.notes.dirty }))
+    menuItems.push(noteMenuDivider())
+  }
+  if (options.enhanced) {
+    menuItems.push(noteMenuAction('查找', 'search', closeThen(() => markdownEditorHandle?.openFind())))
+    menuItems.push(noteMenuAction('标题大纲', 'outline', closeThen(() => markdownEditorHandle?.toggleOutline())))
+  }
+  if (options.editable) menuItems.push(noteMenuAction('页面历史', 'history', closeThen(() => { void openNoteHistory(node) })))
+  if (options.enhanced || options.editable) menuItems.push(noteMenuDivider())
+  menuItems.push(
+    noteMenuAction('下载', 'download', closeThen(event => { void downloadNoteFile(node, event.currentTarget) })),
+    noteMenuAction('复制引用', 'link', closeThen(() => { void copyNoteReference(node) })),
+    noteMenuAction('重命名', 'rename', closeThen(() => openRenameNoteNode(node))),
   )
+  const menu = element('div', { class: 'notes-document-more-menu', role: 'menu', 'aria-label': `${node.name} 的更多操作` }, menuItems)
   summary.setAttribute('aria-expanded', 'false')
   details.append(summary, menu)
   return details
+}
+
+function noteMenuAction(label, icon, onClick, attributes = {}) {
+  return actionButton([
+    interfaceIcon(icon, 'notes-document-menu-icon'),
+    element('span', { class: 'notes-document-menu-label' }, label),
+  ], onClick, 'ghost small notes-document-menu-item', { role: 'menuitem', ...attributes })
+}
+
+function noteMenuDivider() {
+  return element('div', { class: 'notes-document-menu-divider', role: 'separator' })
 }
 
 function renderNoteFileStatusbar(node) {
