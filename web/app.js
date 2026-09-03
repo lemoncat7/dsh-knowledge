@@ -2448,7 +2448,10 @@ function renderNoteFileToolbar(node, options = {}) {
     element('div', { class: 'notes-document-actions' },
       options.editable ? element('span', { class: 'notes-save-state', role: 'status', 'data-note-save-state': '', 'data-dirty': String(state.notes.dirty) }, state.notes.dirty ? '未保存' : '已保存') : null,
       options.enhanced ? actionButton('查找', () => markdownEditorHandle?.openFind(), 'ghost small', { 'data-note-find': '', 'data-note-mobile-overflow': '', 'aria-keyshortcuts': 'Control+F Meta+F', 'aria-pressed': 'false' }) : null,
-      options.enhanced ? actionButton('大纲', () => markdownEditorHandle?.toggleOutline(), 'ghost small', { 'data-note-outline': '', 'data-note-mobile-overflow': '', 'aria-controls': 'dsh-note-outline', 'aria-expanded': 'false', 'aria-pressed': 'false' }) : null,
+      options.enhanced ? actionButton([
+        interfaceIcon('outline', 'notes-toolbar-action-icon'),
+        element('span', {}, '大纲'),
+      ], () => markdownEditorHandle?.toggleOutline(), 'ghost small notes-outline-action', { 'data-note-outline': '', 'aria-label': '打开标题大纲', 'aria-controls': 'dsh-note-outline', 'aria-expanded': 'false', 'aria-pressed': 'false' }) : null,
       options.editable ? actionButton('历史', () => { void openNoteHistory(node) }, 'ghost small', { 'data-note-history': '', 'data-note-mobile-overflow': '' }) : null,
       noteDownloadButton(node, 'ghost small', '下载', { 'data-note-mobile-overflow': '' }),
       actionButton('复制引用', () => { void copyNoteReference(node) }, 'ghost small', { 'data-note-mobile-overflow': '' }),
@@ -2486,13 +2489,12 @@ function renderNoteFileOverflowMenu(node, options) {
     action(event)
   }
   const menuItems = []
-  if (options.editable) {
-    menuItems.push(noteMenuAction(state.notes.dirty ? '保存修改' : '已保存', 'save', closeThen(() => { void saveNoteDocument() }), { disabled: !state.notes.dirty }))
+  if (options.editable && state.notes.dirty) {
+    menuItems.push(noteMenuAction('保存修改', 'save', closeThen(() => { void saveNoteDocument() })))
     menuItems.push(noteMenuDivider())
   }
   if (options.enhanced) {
     menuItems.push(noteMenuAction('查找', 'search', closeThen(() => markdownEditorHandle?.openFind())))
-    menuItems.push(noteMenuAction('标题大纲', 'outline', closeThen(() => markdownEditorHandle?.toggleOutline())))
   }
   if (options.editable) menuItems.push(noteMenuAction('页面历史', 'history', closeThen(() => { void openNoteHistory(node) })))
   if (options.enhanced || options.editable) menuItems.push(noteMenuDivider())

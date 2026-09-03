@@ -1050,8 +1050,10 @@ html,
 .notes-file-info-item > span { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
 .notes-file-info-item[data-note-info="id"] > span { font-family: var(--font-mono); }
 .notes-document-actions { display: flex; flex: none; align-items: center; justify-content: flex-end; gap: 5px; }
-.notes-save-state { color: var(--text-tertiary); font-size: 10px; }
+.notes-save-state { color: var(--text-tertiary); font-size: 10px; white-space: nowrap; }
 .notes-save-state[data-dirty="true"] { color: var(--warning); }
+.notes-outline-action { display: inline-flex; align-items: center; gap: 6px; }
+.notes-toolbar-action-icon { width: 16px; height: 16px; display: block; flex: none; color: currentColor; stroke-width: 2; }
 .notes-document-more { position: relative; display: none; flex: none; }
 .notes-document-more > summary { width: 44px; min-width: 44px; display: inline-grid; place-items: center; list-style: none; padding: 0; color: var(--text); user-select: none; }
 .notes-document-more > summary::-webkit-details-marker { display: none; }
@@ -2046,7 +2048,10 @@ html,
   .notes-document-toolbar { align-items: center; flex-direction: row; gap: 6px; overflow: visible; padding: 4px max(8px, env(safe-area-inset-right)) 4px max(8px, env(safe-area-inset-left)); }
   .notes-toolbar-leading { width: auto; min-height: 44px; flex: 1 1 auto; }
   .notes-document-actions { width: auto; display: flex; gap: 4px; }
-  .notes-document-actions > [data-note-mobile-overflow], .notes-save-state { display: none; }
+  .notes-document-actions > [data-note-mobile-overflow] { display: none; }
+  .notes-save-state { display: inline-flex; min-height: 44px; align-items: center; padding-inline: 4px; color: var(--text-secondary); font-size: 11px; }
+  .notes-save-state[data-dirty="true"] { color: var(--warning); }
+  .notes-outline-action { min-width: 44px; padding-inline: 10px; }
   .notes-document-actions > .button, .notes-document-more > summary { min-height: 44px; justify-content: center; touch-action: manipulation; }
   .notes-document-more { display: block; }
   .notes-document-more-menu .button { min-height: 44px; touch-action: manipulation; }
