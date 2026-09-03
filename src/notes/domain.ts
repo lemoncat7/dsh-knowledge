@@ -9,8 +9,19 @@ export interface NoteNode {
   editable: boolean
   size: number
   sha256: string | null
+  version: number
   createdAt: string
   updatedAt: string
+}
+
+export interface NoteVersion {
+  noteId: string
+  version: number
+  name: string
+  mediaType: string | null
+  size: number
+  sha256: string
+  createdAt: string
 }
 
 export interface NoteReference {

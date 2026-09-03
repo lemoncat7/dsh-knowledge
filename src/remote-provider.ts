@@ -31,7 +31,7 @@ import type {
 } from './domain.js'
 import type { KnowledgeProvider } from './provider.js'
 import { normalizeRemoteKnowledgeUrl } from './remote-url.js'
-import type { KnowledgeNoteReference, KnowledgeNoteReferenceSource, NoteListRequest, NoteNode } from './notes/domain.js'
+import type { KnowledgeNoteReference, KnowledgeNoteReferenceSource, NoteListRequest, NoteNode, NoteVersion } from './notes/domain.js'
 
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 const MAX_NOTE_RESPONSE_BYTES = 64 * 1024 * 1024
@@ -245,6 +245,29 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     if (node === undefined) throw new RemoteProviderError(`note node "${id}" was not found`, 404)
     const content = await this.requestBytes(`notes/${encodeURIComponent(id)}/content`, { signal })
     return { node, content }
+  }
+
+  async listNoteVersions(id: string, limit = 100, signal?: AbortSignal): Promise<NoteVersion[]> {
+    const params = new URLSearchParams({ limit: String(limit) })
+    return this.request<NoteVersion[]>(`notes/${encodeURIComponent(id)}/versions?${params}`, { signal })
+  }
+
+  async readNoteVersion(id: string, version: number, signal?: AbortSignal): Promise<{ node: NoteNode; version: NoteVersion; content: Uint8Array }> {
+    const [node, versions, content] = await Promise.all([
+      this.getNote(id, signal),
+      this.listNoteVersions(id, 200, signal),
+      this.requestBytes(`notes/${encodeURIComponent(id)}/versions/${version}/content`, { signal }),
+    ])
+    if (node === undefined) throw new RemoteProviderError(`note node "${id}" was not found`, 404)
+    const snapshot = versions.find(item => item.version === version)
+    if (snapshot === undefined) throw new RemoteProviderError(`note version "${id}@${version}" was not found`, 404)
+    return { node, version: snapshot, content }
+  }
+
+  async restoreNoteVersion(id: string, version: number, expectedVersion?: number, signal?: AbortSignal): Promise<NoteNode> {
+    return this.request<NoteNode>(`notes/${encodeURIComponent(id)}/versions/${version}/restore`, {
+      method: 'POST', body: { expectedVersion }, signal,
+    })
   }
 
   async createNoteFolder(name: string, parentId: string | null = null, signal?: AbortSignal): Promise<NoteNode> {

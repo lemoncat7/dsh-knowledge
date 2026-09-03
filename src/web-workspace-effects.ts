@@ -8,7 +8,6 @@ const GLASS_SURFACE_SELECTOR = [
   '.notes-document-toolbar',
   '.notes-document-statusbar',
   '.note-editor-toolbar',
-  '.dialog',
 ].join(',')
 const STRUCTURAL_GLASS_SURFACE_SELECTOR = [
   '.sidebar',
@@ -30,7 +29,6 @@ const BORDER_SURFACE_SELECTOR = [
   '.mount-table',
   '.note-workspace',
   '.notes-workspace',
-  '.dialog',
   CARD_SURFACE_SELECTOR,
 ].join(',')
 const GLARE_SURFACE_SELECTOR = [

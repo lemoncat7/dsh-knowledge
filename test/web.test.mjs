@@ -1,12 +1,40 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import test from 'node:test'
+import { Schema } from '@tiptap/pm/model'
 import { registerKnowledgeWeb } from '../lib/web.js'
 import { plainTextFromDocument, plainTextToDocument } from '../lib/web-note-editor.js'
+import { findNoteSearchRanges } from '../lib/web-note-editor-search.js'
 
 test('plain text note documents preserve logical lines exactly', () => {
   const source = '第一行\n会自动折行但仍是一行的长内容\n\n最后一行\n'
   assert.equal(plainTextFromDocument(plainTextToDocument(source)), source)
+})
+
+test('note search finds literal text across inline formatting without regex surprises', () => {
+  const schema = new Schema({
+    nodes: {
+      doc: { content: 'paragraph+' },
+      paragraph: { content: 'inline*', group: 'block' },
+      text: { group: 'inline' },
+      hard_break: { inline: true, group: 'inline' },
+    },
+    marks: { strong: {} },
+  })
+  const strong = schema.marks.strong.create()
+  const document = schema.node('doc', null, [
+    schema.node('paragraph', null, [schema.text('Doc'), schema.text('most', [strong]), schema.text(' docmost.')]),
+  ])
+  assert.deepEqual(findNoteSearchRanges(document, 'docmost', false), [
+    { from: 1, to: 8 },
+    { from: 9, to: 16 },
+  ])
+  assert.deepEqual(findNoteSearchRanges(document, '.', true), [{ from: 16, to: 17 }])
+  const broken = schema.node('doc', null, [schema.node('paragraph', null, [
+    schema.text('Doc'), schema.node('hard_break'), schema.text('most'),
+  ])])
+  assert.deepEqual(findNoteSearchRanges(broken, 'docmost', false), [])
+  assert.deepEqual(findNoteSearchRanges(broken, 'most', false), [{ from: 5, to: 9 }])
 })
 
 test('management console serves a secured same-origin application', async (t) => {
@@ -74,9 +102,14 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(application, /表格内容，可横向滚动/)
   assert.match(application, /loadMarkdownNoteEditor/)
   assert.match(application, /DshKnowledgeNoteEditor/)
+  assert.match(application, /data-note-find/)
+  assert.match(application, /data-note-outline/)
+  assert.match(application, /data-note-history/)
+  assert.match(application, /function openNoteHistory/)
+  assert.match(application, /aria-keyshortcuts': 'Control\+F Meta\+F'/)
+  assert.match(application, /notes-editor-frame/)
   assert.match(application, /createPlainTextEditor/)
-  assert.match(application, /function binaryUploadRequest\(/)
-  assert.match(application, /request\.upload\.addEventListener\('progress'/)
+  assert.match(application, /createApiClient/)
   assert.match(application, /function collectNoteEntry\(/)
   assert.match(application, /function importNotePlans\(/)
   assert.doesNotMatch(application, /DshKnowledgePlainTextEditor|plain-text-editor\.js/)
@@ -148,6 +181,13 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(application, /note:\/\//)
   assert.match(application, /复制引用/)
   assert.match(application, /function renderNoteFileToolbar\(node, options = \{\}\)/)
+  assert.match(application, /function renderNoteFileOverflowMenu\(node, options\)/)
+  assert.match(application, /function noteMenuAction\(label, icon, onClick, attributes = \{\}\)/)
+  assert.match(application, /interfaceIcon\('more', 'notes-document-more-icon'\)/)
+  assert.match(application, /interfaceIcon\('outline', 'notes-toolbar-action-icon'\)/)
+  assert.doesNotMatch(application, /noteMenuAction\('标题大纲', 'outline'/)
+  assert.match(application, /data-note-mobile-overflow/)
+  assert.match(application, /notes-document-more-menu/)
   assert.match(application, /node\.editable/)
   assert.match(application, /function releaseNoteAsset\(\)/)
   assert.doesNotMatch(application, /openNoteFilePreview/)
@@ -185,13 +225,18 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(application, /captureScrollPosition/)
   assert.match(application, /restoreScrollPosition/)
   assert.match(application, /data-scroll-key/)
-  assert.match(application, /host-theme-ready/)
-  assert.match(application, /event\.source !== window\.parent/)
-  assert.match(application, /parentOrigin && event\.origin !== parentOrigin/)
-  assert.match(application, /CSS\.supports\('color'/)
-  assert.match(application, /root\.style\.colorScheme/)
-  assert.match(application, /root\.dataset\.colorScheme/)
+  assert.match(application, /import\(moduleUrl\('host-theme'\)\)/)
   assert.match(application, /installHostThemeBridge\(\)\.then\(\(\) => boot\(\)\)/)
+
+  const hostThemeResponse = await fetch(`${base}/knowledge/host-theme.js`)
+  assert.equal(hostThemeResponse.status, 200)
+  const hostTheme = await hostThemeResponse.text()
+  assert.match(hostTheme, /host-theme-ready/)
+  assert.match(hostTheme, /event\.source !== window\.parent/)
+  assert.match(hostTheme, /parentOrigin && event\.origin !== parentOrigin/)
+  assert.match(hostTheme, /CSS\.supports\('color'/)
+  assert.match(hostTheme, /root\.style\.colorScheme/)
+  assert.match(hostTheme, /root\.dataset\.colorScheme/)
 
   const effectsScript = await fetch(`${base}/knowledge/workspace-effects.js`)
   assert.equal(effectsScript.status, 200)
@@ -237,15 +282,17 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(styles, /\.document-finalized-banner/)
   assert.match(styles, /container-type: inline-size/)
   assert.match(styles, /note-workspace\[data-tree-open="true"\]/)
-  assert.match(styles, /background: color-mix\(in srgb, var\(--dialog-surface\) 88%, transparent\)/)
+  assert.match(styles, /\.dialog \{[\s\S]*background: var\(--dialog-surface\)/)
   assert.match(styles, /\.input, \.select \{ height: 38px/)
   assert.match(styles, /scrollbar-color: var\(--scrollbar-thumb\) transparent/)
-  assert.match(styles, /--material-panel: color-mix\(in srgb, var\(--surface-raised\) 82%, transparent\)/)
+  assert.match(styles, /--material-panel: color-mix\(in srgb, var\(--surface-raised\) 88%, var\(--surface\)\)/)
   assert.match(styles, /--accent: #3a3a3c/)
-  assert.match(styles, /--glass-filter: saturate\(1\.18\) contrast\(1\.025\) blur\(28px\)/)
+  assert.match(styles, /@media \(prefers-color-scheme: dark\)[\s\S]*--accent: #69b6ba/)
+  assert.match(styles, /--glass-filter: saturate\(1\.08\) contrast\(1\.02\) blur\(18px\)/)
   assert.match(styles, /@media \(prefers-color-scheme: dark\)[\s\S]*:root:not\(\[data-color-scheme\]\)/)
   assert.match(styles, /:root\[data-color-scheme="dark"\]/)
-  assert.match(styles, /:root\[data-dsh-host-theme="true"\] body \{ background: transparent; \}/)
+  assert.match(styles, /:root\[data-dsh-host-theme="true"\],[\s\S]*:root\[data-dsh-host-theme="true"\] body \{ background: transparent; \}/)
+  assert.doesNotMatch(effects, /\.dialog/)
   assert.match(styles, /\.knowledge-card-surface \{/)
   assert.match(styles, /\.knowledge-glass-surface\[data-knowledge-glass="svg"\]/)
   assert.match(styles, /\.knowledge-border-surface::before/)
@@ -265,20 +312,30 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(styles, /\.select \{[\s\S]*appearance: none;[\s\S]*background-image:/)
   assert.match(styles, /\.range-row input\[type="range"\]::-webkit-slider-thumb/)
   assert.match(styles, /\.archived-bases summary::-webkit-details-marker/)
-  assert.match(styles, /grid-template-columns: subgrid/)
+  assert.match(styles, /\.base-grid \{[\s\S]*grid-template-columns: repeat\(auto-fit, minmax\(min\(100%, 390px\), 1fr\)\)/)
+  assert.doesNotMatch(styles, /grid-template-columns: subgrid/)
   assert.match(styles, /\.library-detail-header/)
   assert.match(styles, /\.candidate-change/)
   assert.match(styles, /\.diff-viewer \{[^}]*overscroll-behavior: auto;/)
   assert.match(styles, /\.notes-workspace/)
+  assert.match(styles, /\.app-shell\[data-view="notes"\] \.main \{ height: 100dvh; min-height: 0; display: grid; grid-template-rows: auto minmax\(0, 1fr\); overflow: hidden; \}/)
+  assert.match(styles, /\.notes-workspace \{ height: 100%; min-height: 0; grid-template-columns: minmax\(0, 1fr\); grid-template-rows: minmax\(0, 1fr\); \}/)
+  assert.match(styles, /\.notes-browser \{ display: none; \}/)
+  assert.match(styles, /\.notes-file-list \{ min-width: 0; display: grid;/)
+  assert.match(styles, /\.notes-file-row \{ min-width: 0; min-height: 0; grid-template-columns: minmax\(0, 1fr\) auto;/)
+  assert.match(styles, /\.notes-file-actions \{ grid-column: 1 \/ -1; display: grid;/)
+  assert.match(styles, /\.dialog, \.dialog\.narrow, \.dialog\.sheet \{ width: 100%; height: 100dvh;/)
+  assert.match(styles, /font-size: 16px;/)
+  assert.match(styles, /env\(safe-area-inset-bottom\)/)
   assert.match(styles, /\.app-shell \{[\s\S]*height: 100dvh;[\s\S]*overflow: hidden;/)
   assert.match(styles, /\.app-shell \{[\s\S]*transition: grid-template-columns 230ms var\(--ease-out\);/)
-  assert.match(styles, /\.sidebar \{[\s\S]*border-radius: 20px;[\s\S]*overflow: hidden;/)
+  assert.match(styles, /\.sidebar \{[\s\S]*border-radius: 15px;[\s\S]*overflow: hidden;/)
   assert.match(styles, /data-sidebar-hidden="true"\][^}]*> \.sidebar \{[\s\S]*opacity: 0;[\s\S]*translateX/)
   assert.doesNotMatch(styles, /data-sidebar-hidden="true"[^}]*\{[^}]*display: none/)
   assert.match(styles, /\.nav \{[\s\S]*overflow-x: hidden;[\s\S]*overflow-y: auto;[\s\S]*scrollbar-gutter: stable;/)
   assert.doesNotMatch(styles, /\.nav-button:hover \{[^}]*translateX/)
-  assert.match(styles, /\.topbar \{[\s\S]*border-radius: 18px;[\s\S]*overflow: hidden;/)
-  assert.match(styles, /\.main \{[\s\S]*height: 100dvh;[\s\S]*overflow-y: auto;/)
+  assert.match(styles, /\.topbar \{[\s\S]*border-radius: 0;[\s\S]*overflow: hidden;/)
+  assert.match(styles, /\.main \{[\s\S]*height: calc\(100dvh - var\(--chrome-inset\) \* 2\);[\s\S]*overflow-y: auto;/)
   assert.match(styles, /\.app-shell\[data-view="notes"\] \.view-stage \{[\s\S]*height: 100%;[\s\S]*overflow: hidden;/)
   assert.match(styles, /--font-reading:/)
   assert.match(styles, /\.markdown-preview \{[\s\S]*font: 16px\/1\.55 var\(--font-reading\);/)
@@ -286,6 +343,20 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(styles, /\.notes-tree-chevron::before/)
   assert.match(styles, /\.notes-file-info/)
   assert.match(styles, /\.notes-live-editor-surface/)
+  assert.match(styles, /\.notes-editor-outline/)
+  assert.match(styles, /\.notes-find-panel/)
+  assert.match(styles, /\.notes-selection-menu/)
+  assert.match(styles, /\.note-history-workspace/)
+  assert.match(styles, /\.notes-document-more-menu/)
+  assert.match(styles, /\.notes-document-more > summary \{[^}]*display: inline-grid;[^}]*color: var\(--text\);/)
+  assert.match(styles, /\.notes-document-more-menu \.button \{[^}]*grid-template-columns: 20px minmax\(0, 1fr\);[^}]*text-align: left;/)
+  assert.match(styles, /\.notes-document-menu-icon/)
+  assert.match(styles, /\.notes-document-actions > \[data-note-mobile-overflow\] \{ display: none; \}/)
+  assert.match(styles, /\.notes-save-state \{ display: inline-flex; min-height: 44px;/)
+  assert.match(styles, /grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/)
+  assert.doesNotMatch(styles, /\.notes-document-toolbar \{ align-items: center; flex-direction: row; overflow-x: auto; \}/)
+  assert.match(styles, /\.notes-content\.is-document \{ --notes-document-inline: 16px; \}/)
+  assert.match(styles, /\.notes-live-editor-surface \.tableWrapper \{ width: 100%; max-width: 100%; overflow-x: auto;/)
   assert.match(styles, /\.knowledge-live-editor/)
   assert.doesNotMatch(styles, /\.note-mode-switch/)
   assert.doesNotMatch(styles, /\.notes-document-paper/)
@@ -341,6 +412,24 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(application, /function openSheet/)
   assert.match(styles, /dialog\.sheet/)
 
+  const apiClientResponse = await fetch(`${base}/knowledge/api-client.js`)
+  assert.equal(apiClientResponse.status, 200)
+  assert.match(apiClientResponse.headers.get('content-type'), /text\/javascript/)
+  const apiClient = await apiClientResponse.text()
+  assert.match(apiClient, /function binaryUploadRequest\(/)
+  assert.match(apiClient, /request\.upload\.addEventListener\('progress'/)
+
+  for (const moduleName of ['host-theme.js', 'ui-primitives.js']) {
+    const response = await fetch(`${base}/knowledge/${moduleName}`)
+    assert.equal(response.status, 200)
+    assert.match(response.headers.get('content-type'), /text\/javascript/)
+    if (moduleName === 'ui-primitives.js') {
+      const primitives = await response.text()
+      assert.match(primitives, /createElementNS\('http:\/\/www\.w3\.org\/2000\/svg'/)
+      assert.match(primitives, /vectorElement\('path'/)
+    }
+  }
+
   const markdownPreview = await fetch(`${base}/knowledge/markdown-preview.js`)
   assert.equal(markdownPreview.status, 200)
   assert.match(markdownPreview.headers.get('content-type'), /text\/javascript/)
@@ -354,6 +443,15 @@ test('management console serves a secured same-origin application', async (t) =>
   const noteEditorSource = await noteEditor.text()
   assert.match(noteEditorSource, /DshKnowledgeNoteEditor/)
   assert.match(noteEditorSource, /spellcheck:"false"/)
+  assert.match(noteEditorSource, /notes-search-result-current/)
+  assert.match(noteEditorSource, /notes-editor-outline-header/)
+  assert.match(noteEditorSource, /notes-selection-primary/)
+
+  const noteHistory = await fetch(`${base}/knowledge/note-history.js`)
+  assert.equal(noteHistory.status, 200)
+  assert.match(noteHistory.headers.get('content-type'), /text\/javascript/)
+  assert.equal(noteHistory.headers.get('cache-control'), 'public, max-age=31536000, immutable')
+  assert.match(await noteHistory.text(), /DshKnowledgeNoteHistory/)
 
   const plainTextEditor = await fetch(`${base}/knowledge/plain-text-editor.js`)
   assert.equal(plainTextEditor.status, 404)

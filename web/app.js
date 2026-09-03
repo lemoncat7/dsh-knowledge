@@ -2,16 +2,15 @@ const API_BASE = document.querySelector('meta[name="dsh-knowledge-api"]')?.conte
 const AUTH_MODE = document.querySelector('meta[name="dsh-knowledge-auth-mode"]')?.content || 'bearer'
 const WEB_PATH = document.querySelector('meta[name="dsh-knowledge-web"]')?.content || '/knowledge'
 const ASSET_VERSION = document.querySelector('meta[name="dsh-knowledge-asset-version"]')?.content || ''
-const HOST_THEME_MESSAGE = '@lemoncat7/dsh-knowledge/host-theme'
-const HOST_THEME_READY_MESSAGE = '@lemoncat7/dsh-knowledge/host-theme-ready'
-const HOST_THEME_PROTOCOL_VERSION = 1
-const HOST_THEME_COLOR_TOKENS = new Set([
-  '--bg', '--surface', '--surface-raised', '--surface-soft', '--surface-hover', '--dialog-surface',
-  '--text', '--text-secondary', '--text-tertiary', '--border', '--border-strong',
-  '--accent', '--accent-hover', '--accent-soft', '--on-accent',
-  '--success', '--success-soft', '--warning', '--warning-soft', '--danger', '--danger-soft',
+const moduleUrl = name => `./${name}.js${ASSET_VERSION ? `?v=${encodeURIComponent(ASSET_VERSION)}` : ''}`
+const [apiModule, themeModule, uiModule] = await Promise.all([
+  import(moduleUrl('api-client')),
+  import(moduleUrl('host-theme')),
+  import(moduleUrl('ui-primitives')),
 ])
-const HOST_THEME_STYLE_TOKENS = new Set(['--shadow'])
+const { createApiClient } = apiModule
+const { installHostThemeBridge } = themeModule
+const { actionButton, badge, createToastPresenter, element, interfaceIcon, paneToggleButton } = uiModule
 const TOKEN_KEY = 'dsh-knowledge.session-token'
 const TYPES = ['preference', 'fact', 'decision', 'procedure', 'lesson']
 const TYPE_LABELS = { preference: '偏好', fact: '事实', decision: '决策', procedure: '流程', lesson: '经验' }
@@ -33,6 +32,7 @@ const mountContext = {
 }
 const app = document.querySelector('#app')
 const toastRegion = document.querySelector('#toast-region')
+const showToast = createToastPresenter(toastRegion)
 const savedDocumentLayout = readDocumentLayout()
 
 function createDocumentViewState(overrides = {}) {
@@ -121,62 +121,10 @@ let noteSelectionRequest = 0
 let knowledgeDocumentDrag = null
 let movingDocumentId = ''
 
-function installHostThemeBridge() {
-  if (window.parent === window) return Promise.resolve()
-  const parentOrigin = referrerOrigin()
-  return new Promise(resolve => {
-    let initialThemeSettled = false
-    const settleInitialTheme = () => {
-      if (initialThemeSettled) return
-      initialThemeSettled = true
-      window.clearTimeout(fallback)
-      resolve()
-    }
-    const fallback = window.setTimeout(settleInitialTheme, 160)
-    window.addEventListener('message', event => {
-      if (event.source !== window.parent) return
-      if (parentOrigin && event.origin !== parentOrigin) return
-      const message = event.data
-      if (!message || message.type !== HOST_THEME_MESSAGE || message.version !== HOST_THEME_PROTOCOL_VERSION) return
-      if (message.colorScheme !== 'light' && message.colorScheme !== 'dark') return
-      if (!message.tokens || typeof message.tokens !== 'object' || Array.isArray(message.tokens)) return
-
-      const root = document.documentElement
-      for (const name of [...HOST_THEME_COLOR_TOKENS, ...HOST_THEME_STYLE_TOKENS]) root.style.removeProperty(name)
-      for (const [name, value] of Object.entries(message.tokens)) {
-        if (typeof value !== 'string' || value.length === 0 || value.length > 512) continue
-        if (HOST_THEME_COLOR_TOKENS.has(name) && CSS.supports('color', value)) root.style.setProperty(name, value)
-        else if (HOST_THEME_STYLE_TOKENS.has(name) && CSS.supports('box-shadow', value)) root.style.setProperty(name, value)
-      }
-      root.dataset.dshHostTheme = 'true'
-      root.dataset.colorScheme = message.colorScheme
-      root.style.colorScheme = message.colorScheme
-      document.querySelector('meta[name="color-scheme"]')?.setAttribute('content', message.colorScheme)
-      const background = root.style.getPropertyValue('--bg')
-      if (background) document.querySelector('meta[name="theme-color"]')?.setAttribute('content', background)
-      settleInitialTheme()
-    })
-    window.parent.postMessage({
-      type: HOST_THEME_READY_MESSAGE,
-      version: HOST_THEME_PROTOCOL_VERSION,
-    }, parentOrigin || '*')
-  })
-}
-
-function referrerOrigin() {
-  if (!document.referrer) return ''
-  try {
-    const origin = new URL(document.referrer).origin
-    return origin === 'null' ? '' : origin
-  } catch {
-    return ''
-  }
-}
-
 function readDocumentLayout() {
   const fallback = {
     sidebarHidden: false,
-    sidebarWidth: 236,
+    sidebarWidth: 214,
   }
   try {
     const value = JSON.parse(localStorage.getItem(DOCUMENT_LAYOUT_KEY) || '{}')
@@ -236,153 +184,15 @@ function restoreScrollPosition(view) {
   })
 }
 
-function element(tag, attributes = {}, ...children) {
-  const node = document.createElement(tag)
-  for (const [key, value] of Object.entries(attributes)) {
-    if (value === undefined || value === null || value === false) continue
-    if (key === 'class') node.className = value
-    else if (key === 'text') node.textContent = value
-    else if (key.startsWith('on') && typeof value === 'function') node.addEventListener(key.slice(2).toLowerCase(), value)
-    else if (key === 'checked' || key === 'selected' || key === 'disabled') node[key] = Boolean(value)
-    else node.setAttribute(key, String(value))
-  }
-  for (const child of children.flat(Infinity)) {
-    if (child === undefined || child === null || child === false) continue
-    node.append(child instanceof Node ? child : document.createTextNode(String(child)))
-  }
-  return node
-}
-
 function refreshWorkspaceEffects(root = document) {
   window.DshKnowledgeEffects?.refresh(root)
 }
 
-function actionButton(label, onClick, variant = '', attributes = {}) {
-  return element('button', { type: 'button', class: `button ${variant}`.trim(), onClick, ...attributes }, label)
-}
-
-function paneToggleButton(pane, visible, onClick, label) {
-  const action = `${visible ? '隐藏' : '显示'}${label}`
-  return element('button', {
-    type: 'button', class: 'pane-toggle-button', 'data-pane': pane,
-    'aria-label': action, 'aria-pressed': String(visible), title: action, onClick,
-  }, element('span', { class: `pane-icon pane-icon-${pane}`, 'aria-hidden': 'true' }))
-}
-
-function interfaceIcon(name, className = 'interface-icon') {
-  const paths = {
-    search: 'M10.8 4.5a6.3 6.3 0 1 0 0 12.6 6.3 6.3 0 0 0 0-12.6Zm4.6 11 4.1 4',
-  }
-  return element('svg', {
-    class: className, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
-    'stroke-width': '1.8', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true',
-  }, element('path', { d: paths[name] }))
-}
-
-function badge(label, variant = '') {
-  return element('span', { class: `badge ${variant}`.trim() }, label)
-}
-
-function showToast(message, kind = '') {
-  const toast = element('div', { class: `toast ${kind}`.trim(), role: kind === 'error' ? 'alert' : 'status' },
-    element('span', {}, message),
-    kind === 'error' ? actionButton('关闭', () => toast.remove(), 'ghost small toast-close', { 'aria-label': '关闭错误提示' }) : null,
-  )
-  toastRegion.append(toast)
-  if (kind !== 'error') window.setTimeout(() => toast.remove(), 4200)
-}
-
-async function api(path, options = {}) {
-  const headers = { accept: 'application/json', ...(options.body === undefined ? {} : { 'content-type': 'application/json' }) }
-  if (AUTH_MODE === 'same-origin') headers['x-dsh-knowledge-client'] = 'management-web'
-  if (state.token) headers.authorization = `Bearer ${state.token}`
-  const response = await fetch(`${API_BASE}/${path.replace(/^\/+/, '')}`, {
-    method: options.method || 'GET',
-    headers,
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    signal: options.signal,
-  })
-  const text = await response.text()
-  let payload
-  if (text) {
-    try { payload = JSON.parse(text) } catch { throw new Error('服务返回了无法识别的数据') }
-  }
-  if (!response.ok) {
-    const error = new Error(payload?.error || `请求失败（HTTP ${response.status}）`)
-    error.status = response.status
-    throw error
-  }
-  return payload
-}
-
-async function binaryRequest(path, options = {}) {
-  const headers = { accept: options.accept || 'application/json' }
-  if (AUTH_MODE === 'same-origin') headers['x-dsh-knowledge-client'] = 'management-web'
-  if (state.token) headers.authorization = `Bearer ${state.token}`
-  if (options.contentType) headers['content-type'] = options.contentType
-  const response = await fetch(`${API_BASE}/${path.replace(/^\/+/, '')}`, {
-    method: options.method || 'GET',
-    headers,
-    body: options.body,
-    signal: options.signal,
-  })
-  if (options.responseType === 'blob') {
-    if (!response.ok) throw await responseError(response)
-    return response.blob()
-  }
-  const text = await response.text()
-  let payload
-  if (text) {
-    try { payload = JSON.parse(text) } catch { throw new Error('服务返回了无法识别的数据') }
-  }
-  if (!response.ok) {
-    const error = new Error(payload?.error || `请求失败（HTTP ${response.status}）`)
-    error.status = response.status
-    throw error
-  }
-  return payload
-}
-
-function binaryUploadRequest(path, body, options = {}) {
-  return new Promise((resolve, reject) => {
-    const request = new XMLHttpRequest()
-    request.open(options.method || 'POST', `${API_BASE}/${path.replace(/^\/+/, '')}`)
-    request.responseType = 'text'
-    request.setRequestHeader('accept', 'application/json')
-    if (AUTH_MODE === 'same-origin') request.setRequestHeader('x-dsh-knowledge-client', 'management-web')
-    if (state.token) request.setRequestHeader('authorization', `Bearer ${state.token}`)
-    if (options.contentType) request.setRequestHeader('content-type', options.contentType)
-    request.upload.addEventListener('progress', event => {
-      if (event.lengthComputable) options.onProgress?.(event.loaded, event.total)
-    })
-    request.addEventListener('load', () => {
-      let payload
-      if (request.responseText) {
-        try { payload = JSON.parse(request.responseText) }
-        catch { return reject(new Error('服务返回了无法识别的数据')) }
-      }
-      if (request.status < 200 || request.status >= 300) {
-        const error = new Error(payload?.error || `请求失败（HTTP ${request.status}）`)
-        error.status = request.status
-        reject(error)
-        return
-      }
-      resolve(payload)
-    })
-    request.addEventListener('error', () => reject(new Error('上传连接中断，请检查网络后重试')))
-    request.addEventListener('abort', () => reject(new DOMException('上传已取消', 'AbortError')))
-    request.send(body)
-  })
-}
-
-async function responseError(response) {
-  let message = `请求失败（HTTP ${response.status}）`
-  try {
-    const payload = await response.json()
-    if (payload?.error) message = payload.error
-  } catch {}
-  return Object.assign(new Error(message), { status: response.status })
-}
+const { api, binaryRequest, binaryUploadRequest } = createApiClient({
+  apiBase: API_BASE,
+  authMode: AUTH_MODE,
+  getToken: () => state.token,
+})
 
 async function boot() {
   if (AUTH_MODE === 'same-origin') {
@@ -2367,8 +2177,8 @@ function renderNoteFolderContent(folder) {
           renderNoteIcon(node, true),
           element('span', {}, element('strong', {}, node.name), element('small', {}, noteKindLabel(node))),
         ),
-        element('time', { datetime: node.updatedAt }, formatDate(node.updatedAt)),
-        element('span', { class: 'notes-file-size' }, node.kind === 'folder' ? '' : formatBytes(node.size)),
+        element('time', { datetime: node.updatedAt, 'data-label': '更新' }, formatDate(node.updatedAt)),
+        element('span', { class: 'notes-file-size', 'data-label': node.kind === 'folder' ? '类型' : '大小' }, node.kind === 'folder' ? '目录' : formatBytes(node.size)),
         element('div', { class: 'notes-file-actions' },
           node.kind !== 'folder' ? noteDownloadButton(node, 'ghost tiny') : null,
           actionButton('重命名', () => openRenameNoteNode(node), 'ghost tiny'),
@@ -2413,22 +2223,27 @@ function renderEditableNote(node) {
     ? element('div', { class: 'notes-live-editor', role: 'status', 'aria-label': `正在打开 ${node.name}` },
       element('div', { class: 'notes-editor-loading' }, '正在打开文档…'))
     : createPlainTextNoteEditor(node)
-  if (markdown) mountMarkdownNoteEditor(editor, node)
+  const scrollHost = element('div', { class: 'notes-document-scroll', 'data-scroll-key': `notes-document:${node.id}` },
+    element('h1', {
+      class: 'notes-document-title', contenteditable: 'plaintext-only', spellcheck: 'false',
+      'aria-label': `修改 ${node.name} 的标题`, title: '点击修改标题',
+      onBlur: event => { void saveEditableNoteTitle(event.currentTarget, node) },
+      onKeyDown: event => {
+        if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur() }
+        if (event.key === 'Escape') { event.preventDefault(); event.currentTarget.textContent = title; event.currentTarget.blur() }
+      },
+    }, title),
+    editor,
+  )
+  const outlineHost = markdown ? element('aside', { id: 'dsh-note-outline', class: 'notes-editor-outline', 'aria-label': '文档大纲', 'aria-hidden': 'true' }) : null
+  const editorFrame = markdown
+    ? element('div', { class: 'notes-editor-frame', 'data-outline-open': 'false', 'data-find-open': 'false' }, scrollHost, outlineHost)
+    : scrollHost
+  if (markdown) mountMarkdownNoteEditor(editor, node, editorFrame, scrollHost, outlineHost)
   else mountPlainTextNoteEditor(editor, node)
   return element('main', { class: `notes-content is-document${markdown ? '' : ' has-line-numbers'}` },
-    renderNoteFileToolbar(node, { editable: true }),
-    element('div', { class: 'notes-document-scroll', 'data-scroll-key': `notes-document:${node.id}` },
-      element('h1', {
-        class: 'notes-document-title', contenteditable: 'plaintext-only', spellcheck: 'false',
-        'aria-label': `修改 ${node.name} 的标题`, title: '点击修改标题',
-        onBlur: event => { void saveEditableNoteTitle(event.currentTarget, node) },
-        onKeyDown: event => {
-          if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur() }
-          if (event.key === 'Escape') { event.preventDefault(); event.currentTarget.textContent = title; event.currentTarget.blur() }
-        },
-      }, title),
-      editor,
-    ),
+    renderNoteFileToolbar(node, { editable: true, enhanced: markdown }),
+    editorFrame,
     renderNoteFileStatusbar(node),
   )
 }
@@ -2483,8 +2298,11 @@ function updateNoteDraft(value) {
   syncNoteEditorChrome()
 }
 
-function mountMarkdownNoteEditor(host, node) {
+function mountMarkdownNoteEditor(host, node, frame, scrollHost, outlineHost) {
   mountMarkdownEditor(host, {
+    frame,
+    scrollHost,
+    outlineHost,
     markdown: state.notes.draft,
     label: `编辑 ${node.name}`,
     isCurrent: () => state.notes.selectedNode?.id === node.id,
@@ -2530,6 +2348,13 @@ function mountMarkdownEditor(host, options) {
       host.removeAttribute('role')
       markdownEditorHandle = runtime.createMarkdownEditor({
         host,
+        ...(options.frame ? {
+          frame: options.frame,
+          scrollHost: options.scrollHost,
+          outlineHost: options.outlineHost,
+          findButton: host.closest('.notes-content')?.querySelector('[data-note-find]') || null,
+          outlineButton: host.closest('.notes-content')?.querySelector('[data-note-outline]') || null,
+        } : {}),
         markdown: options.markdown,
         label: options.label,
         onChange: options.onChange,
@@ -2622,12 +2447,77 @@ function renderNoteFileToolbar(node, options = {}) {
     ),
     element('div', { class: 'notes-document-actions' },
       options.editable ? element('span', { class: 'notes-save-state', role: 'status', 'data-note-save-state': '', 'data-dirty': String(state.notes.dirty) }, state.notes.dirty ? '未保存' : '已保存') : null,
-      noteDownloadButton(node, 'ghost small'),
-      actionButton('复制引用', () => { void copyNoteReference(node) }, 'ghost small'),
-      actionButton('重命名', () => openRenameNoteNode(node), 'ghost small'),
-      options.editable ? actionButton('保存', () => { void saveNoteDocument() }, 'primary small', { 'data-note-save': '', disabled: !state.notes.dirty }) : null,
+      options.enhanced ? actionButton('查找', () => markdownEditorHandle?.openFind(), 'ghost small', { 'data-note-find': '', 'data-note-mobile-overflow': '', 'aria-keyshortcuts': 'Control+F Meta+F', 'aria-pressed': 'false' }) : null,
+      options.enhanced ? actionButton([
+        interfaceIcon('outline', 'notes-toolbar-action-icon'),
+        element('span', {}, '大纲'),
+      ], () => markdownEditorHandle?.toggleOutline(), 'ghost small notes-outline-action', { 'data-note-outline': '', 'aria-label': '打开标题大纲', 'aria-controls': 'dsh-note-outline', 'aria-expanded': 'false', 'aria-pressed': 'false' }) : null,
+      options.editable ? actionButton('历史', () => { void openNoteHistory(node) }, 'ghost small', { 'data-note-history': '', 'data-note-mobile-overflow': '' }) : null,
+      noteDownloadButton(node, 'ghost small', '下载', { 'data-note-mobile-overflow': '' }),
+      actionButton('复制引用', () => { void copyNoteReference(node) }, 'ghost small', { 'data-note-mobile-overflow': '' }),
+      actionButton('重命名', () => openRenameNoteNode(node), 'ghost small', { 'data-note-mobile-overflow': '' }),
+      options.editable ? actionButton('保存', () => { void saveNoteDocument() }, 'primary small', { 'data-note-save': '', 'data-note-mobile-overflow': '', disabled: !state.notes.dirty }) : null,
+      renderNoteFileOverflowMenu(node, options),
     ),
   )
+}
+
+function renderNoteFileOverflowMenu(node, options) {
+  const details = element('details', {
+    class: 'notes-document-more',
+    onKeyDown: event => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      details.open = false
+      summary.focus()
+    },
+    onFocusOut: () => {
+      window.setTimeout(() => {
+        if (!details.contains(document.activeElement)) details.open = false
+      }, 0)
+    },
+  })
+  const summary = element('summary', { class: 'button ghost small', title: '更多操作', 'aria-label': `打开 ${node.name} 的更多操作` },
+    interfaceIcon('more', 'notes-document-more-icon'),
+  )
+  details.addEventListener('toggle', () => {
+    summary.setAttribute('aria-expanded', String(details.open))
+    summary.setAttribute('aria-label', `${details.open ? '关闭' : '打开'} ${node.name} 的更多操作`)
+  })
+  const closeThen = action => event => {
+    details.open = false
+    action(event)
+  }
+  const menuItems = []
+  if (options.editable && state.notes.dirty) {
+    menuItems.push(noteMenuAction('保存修改', 'save', closeThen(() => { void saveNoteDocument() })))
+    menuItems.push(noteMenuDivider())
+  }
+  if (options.enhanced) {
+    menuItems.push(noteMenuAction('查找', 'search', closeThen(() => markdownEditorHandle?.openFind())))
+  }
+  if (options.editable) menuItems.push(noteMenuAction('页面历史', 'history', closeThen(() => { void openNoteHistory(node) })))
+  if (options.enhanced || options.editable) menuItems.push(noteMenuDivider())
+  menuItems.push(
+    noteMenuAction('下载', 'download', closeThen(event => { void downloadNoteFile(node, event.currentTarget) })),
+    noteMenuAction('复制引用', 'link', closeThen(() => { void copyNoteReference(node) })),
+    noteMenuAction('重命名', 'rename', closeThen(() => openRenameNoteNode(node))),
+  )
+  const menu = element('div', { class: 'notes-document-more-menu', role: 'menu', 'aria-label': `${node.name} 的更多操作` }, menuItems)
+  summary.setAttribute('aria-expanded', 'false')
+  details.append(summary, menu)
+  return details
+}
+
+function noteMenuAction(label, icon, onClick, attributes = {}) {
+  return actionButton([
+    interfaceIcon(icon, 'notes-document-menu-icon'),
+    element('span', { class: 'notes-document-menu-label' }, label),
+  ], onClick, 'ghost small notes-document-menu-item', { role: 'menuitem', ...attributes })
+}
+
+function noteMenuDivider() {
+  return element('div', { class: 'notes-document-menu-divider', role: 'separator' })
 }
 
 function renderNoteFileStatusbar(node) {
@@ -3164,10 +3054,104 @@ async function saveNoteDocument() {
   }
 }
 
-function noteDownloadButton(node, variant = 'ghost small', label = '下载') {
+async function openNoteHistory(node) {
+  if (state.notes.selectedNode?.id === node.id && state.notes.dirty && !await saveNoteDocument()) return
+  try {
+    const current = state.notes.selectedNode?.id === node.id ? state.notes.selectedNode : await api(`notes/${encodeURIComponent(node.id)}`)
+    if (!current?.editable) throw new Error('只有可编辑的笔记文档支持页面历史。')
+    const versions = await api(`notes/${encodeURIComponent(node.id)}/versions?limit=100`)
+    if (!versions.length) {
+      showToast('这个文档还没有可查看的保存记录。')
+      return
+    }
+    let modal
+    const view = window.DshKnowledgeNoteHistory.createNoteHistoryView({
+      versions,
+      currentVersion: current.version,
+      currentContent: state.notes.selectedNode?.id === node.id ? state.notes.content : '',
+      loadContent: async (version, signal) => {
+        const blob = await binaryRequest(`notes/${encodeURIComponent(node.id)}/versions/${version.version}/content`, {
+          responseType: 'blob', accept: version.mediaType || 'text/plain', signal,
+        })
+        return blob.text()
+      },
+      renderPreview: content => renderHistoricalNotePreview(content, isMarkdownNote(current)),
+      renderDiff: renderNoteHistoryDiff,
+      formatDate,
+      formatBytes,
+      onRestore: async (version, content) => {
+        const updated = await api(`notes/${encodeURIComponent(node.id)}/versions/${version.version}/restore`, {
+          method: 'POST', body: { expectedVersion: current.version },
+        })
+        if (state.notes.selectedNode?.id === node.id) {
+          state.notes.selectedNode = updated
+          state.notes.content = content
+          state.notes.draft = content
+          state.notes.dirty = false
+          await loadNoteChildren(updated.parentId, true)
+        }
+        modal?.close(true)
+        renderShell()
+        showToast(`已将版本 ${version.version} 恢复为新的版本 ${updated.version}。`)
+      },
+      onError: error => showToast(friendlyError(error), 'error'),
+    })
+    modal = openModal({
+      title: `${current.name} · 页面历史`,
+      description: '每次内容保存都会形成不可变快照；恢复历史不会删除当前版本。',
+      body: view.element,
+      cancelLabel: '关闭',
+      onClose: () => view.destroy(),
+    })
+    modal.dialog.classList.add('note-history-dialog')
+    modal.dialog.classList.remove('narrow')
+  } catch (error) {
+    showToast(friendlyError(error), 'error')
+  }
+}
+
+function renderHistoricalNotePreview(content, markdown) {
+  if (!markdown) return element('pre', { class: 'note-history-plain-preview', role: 'document' }, content || '（空文档）')
+  const rendered = renderMarkdownPreview(content).cloneNode(true)
+  rendered.classList.add('note-history-markdown-preview')
+  rendered.querySelectorAll('a').forEach(link => {
+    link.removeAttribute('href')
+    link.removeAttribute('role')
+    link.removeAttribute('tabindex')
+    link.removeAttribute('title')
+  })
+  return rendered
+}
+
+function renderNoteHistoryDiff(historical, current) {
+  const diff = window.DshKnowledgeReview.createLineDiff(historical, current)
+  const lines = window.DshKnowledgeReview.compactDiffLines(diff.lines, 3)
+  return element('section', { class: 'note-history-diff', 'aria-label': '历史版本与当前版本的逐行差异' },
+    element('div', { class: 'note-history-diff-summary' },
+      element('strong', {}, '历史版本 → 当前版本'),
+      element('div', { class: 'diff-summary', 'aria-label': `新增 ${diff.additions} 行，删除 ${diff.deletions} 行` },
+        element('span', { class: 'diff-stat additions' }, `+${diff.additions}`),
+        element('span', { class: 'diff-stat deletions' }, `-${diff.deletions}`),
+      ),
+    ),
+    diff.simplified ? element('div', { class: 'diff-notice' }, '内容较长，已使用有界的简化差异视图。') : null,
+    element('div', { class: 'diff-viewer', role: 'table' },
+      element('div', { class: 'diff-column-headings', role: 'row' },
+        element('span', { role: 'columnheader' }, '旧'),
+        element('span', { role: 'columnheader' }, '新'),
+        element('span', { 'aria-hidden': 'true' }),
+        element('span', { role: 'columnheader' }, '正文'),
+      ),
+      lines.length ? lines.map(renderDiffLine) : element('div', { class: 'diff-empty' }, '所选版本与当前内容相同。'),
+    ),
+  )
+}
+
+function noteDownloadButton(node, variant = 'ghost small', label = '下载', attributes = {}) {
   return actionButton(label, event => { void downloadNoteFile(node, event.currentTarget) }, variant, {
     'aria-label': `下载 ${node.name}`,
     title: `下载 ${node.name}`,
+    ...attributes,
   })
 }
 

@@ -10,7 +10,7 @@ function computed(values) {
   return { getPropertyValue: name => values[name] || '' }
 }
 
-test('uses a stable dark workspace palette without depending on a theme id', () => {
+test('uses an opaque stable dark workspace palette without depending on a theme id', () => {
   const message = createKnowledgeHostTheme(computed({
     '--dsw-alias-bg-layer-1': 'rgb(11 24 27 / 70%)',
     '--dsw-alias-bg-layer-2': '#102022',
@@ -24,12 +24,14 @@ test('uses a stable dark workspace palette without depending on a theme id', () 
   assert.equal(message.type, KNOWLEDGE_THEME_MESSAGE)
   assert.equal(message.version, KNOWLEDGE_THEME_PROTOCOL_VERSION)
   assert.equal(message.colorScheme, 'dark')
-  assert.equal(message.tokens['--bg'], 'transparent')
-  assert.equal(message.tokens['--surface'], 'rgb(8 10 12 / 20%)')
-  assert.equal(message.tokens['--surface-raised'], 'rgb(10 12 15 / 44%)')
-  assert.equal(message.tokens['--dialog-surface'], 'rgb(10 12 15 / 72%)')
-  assert.equal(message.tokens['--text'], '#f5f5f7')
-  assert.equal(message.tokens['--accent'], '#e5e5ea')
+  assert.equal(message.tokens['--bg'], '#101719')
+  assert.equal(message.tokens['--surface'], '#182022')
+  assert.equal(message.tokens['--surface-raised'], '#20292b')
+  assert.equal(message.tokens['--dialog-surface'], '#20292b')
+  assert.equal(message.tokens['--text'], '#e3eaeb')
+  assert.equal(message.tokens['--accent'], '#69b6ba')
+  assert.equal(message.tokens['--accent-hover'], '#8aced0')
+  assert.equal(message.tokens['--accent-soft'], 'rgb(105 182 186 / 13%)')
   assert.equal(message.tokens['--success'], '#30d158')
   assert.equal('themeId' in message, false)
 })
@@ -44,10 +46,10 @@ test('does not let host material levels fragment the workspace hierarchy', () =>
     active: { colorScheme: 'dark', tokens: {} },
   })
 
-  assert.equal(message.tokens['--bg'], 'transparent')
-  assert.equal(message.tokens['--surface'], 'rgb(8 10 12 / 20%)')
-  assert.equal(message.tokens['--surface-raised'], 'rgb(10 12 15 / 44%)')
-  assert.equal(message.tokens['--surface-soft'], 'rgb(255 255 255 / 6%)')
+  assert.equal(message.tokens['--bg'], '#101719')
+  assert.equal(message.tokens['--surface'], '#182022')
+  assert.equal(message.tokens['--surface-raised'], '#20292b')
+  assert.equal(message.tokens['--surface-soft'], 'rgb(184 204 205 / 6%)')
 })
 
 test('uses the light workspace palette when the host is light', () => {
@@ -62,9 +64,9 @@ test('uses the light workspace palette when the host is light', () => {
     },
   })
 
-  assert.equal(message.tokens['--bg'], '#e9e9ed')
-  assert.equal(message.tokens['--surface'], '#f2f3f7')
-  assert.equal(message.tokens['--dialog-surface'], '#ffffff')
+  assert.equal(message.tokens['--bg'], '#ebebeb')
+  assert.equal(message.tokens['--surface'], '#f4f4f4')
+  assert.equal(message.tokens['--dialog-surface'], '#f4f4f4')
   assert.equal(message.tokens['--text'], '#1d1d1f')
   assert.equal(message.tokens['--accent'], '#3a3a3c')
   assert.equal(message.tokens['--accent-hover'], '#1d1d1f')

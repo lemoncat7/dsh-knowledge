@@ -43,8 +43,12 @@ The browser integration is compiled against the exact official client packages u
 - `recall.ts` owns the official prompt-assembly knowledge map and bounded first-step automatic retrieval. It also removes durable UI notices and prior recall snapshots before later model requests.
 - `tools.ts` registers the tool-first retrieval chain: mounted-base discovery, scoped document search and paginated reading, plus explicit knowledge-base administration. Content write-back is deliberately absent from the main Agent tool surface.
 - `api.ts` is a size-bounded HTTP adapter with two explicit authentication modes: same-origin administration for the embedded console and Bearer capabilities for remote clients.
-- `web.ts` serves a same-origin, CSP-constrained management console from package-owned static assets.
-- `web/` is a dependency-free browser application with a small API/state/view boundary.
+- `web.ts` serves a same-origin, CSP-constrained management console from package-owned, content-versioned static assets.
+- `web/app.js` is the browser composition root and owns navigation plus business view state. Transport, host integration and reusable DOM construction are deliberately outside it:
+  - `web/api-client.js` owns authenticated JSON, binary download and progress-aware upload requests.
+  - `web/host-theme.js` validates the parent-frame protocol and applies only the allowlisted light/dark palette.
+  - `web/ui-primitives.js` owns dependency-free DOM, button, badge and toast primitives.
+  - `web/styles.css` owns the management layout while `src/client.css` owns DSH-shell integrations; neither reads host component-fill or browser-default control styling.
 - `service-settings.ts` atomically persists the user-controlled public API state separately from provider connection settings.
 - `index.ts` validates configuration and wires lifecycle disposal.
 

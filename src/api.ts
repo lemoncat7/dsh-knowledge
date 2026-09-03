@@ -113,6 +113,24 @@ async function dispatch(
       requirePermission(actor.permissions, 'write')
       return sendJson(res, 200, await provider.notes.updateContent(id, await readBinary(req, MAX_NOTE_BODY_BYTES)))
     }
+    if (id !== undefined && method === 'GET' && segments[2] === 'versions' && segments.length === 3) {
+      requirePermission(actor.permissions, 'read')
+      return sendJson(res, 200, provider.notes.listVersions(id, integerParam(url, 'limit', 100, 1, 200)))
+    }
+    if (id !== undefined && method === 'GET' && segments[2] === 'versions' && segments[3] !== undefined && segments[4] === 'content' && segments.length === 5) {
+      requirePermission(actor.permissions, 'read')
+      const historical = await provider.notes.readVersion(id, pathInteger(segments[3], 'version'))
+      return sendOpaqueFile(res, historical.version.name, historical.version.mediaType ?? 'application/octet-stream', historical.content, false)
+    }
+    if (id !== undefined && method === 'POST' && segments[2] === 'versions' && segments[3] !== undefined && segments[4] === 'restore' && segments.length === 5) {
+      requirePermission(actor.permissions, 'write')
+      const body = await readObject(req)
+      return sendJson(res, 200, await provider.notes.restoreVersion(
+        id,
+        pathInteger(segments[3], 'version'),
+        Object.hasOwn(body, 'expectedVersion') ? boundedInteger(body.expectedVersion, 'expectedVersion', 1, 1, Number.MAX_SAFE_INTEGER) : undefined,
+      ))
+    }
     if (id !== undefined && method === 'GET' && segments[2] === 'references' && segments.length === 3) {
       requirePermission(actor.permissions, 'read')
       return sendJson(res, 200, await noteReferencesForSubtree(provider, id))
@@ -820,6 +838,12 @@ function integerParam(url: URL, name: string, fallback: number, min: number, max
   const value = Number(raw)
   if (!Number.isInteger(value) || value < min || value > max) throw httpError(400, `${name} must be an integer from ${min} to ${max}`)
   return value
+}
+
+function pathInteger(value: string, name: string): number {
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed < 1) throw httpError(400, `${name} must be a positive integer`)
+  return parsed
 }
 
 function boundedInteger(value: unknown, name: string, fallback: number, min: number, max: number): number {
