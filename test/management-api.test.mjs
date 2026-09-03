@@ -71,8 +71,22 @@ test('same-origin management API controls public access and deletes revoked toke
     method: 'PUT', headers: { ...headers, 'content-type': 'text/markdown' }, body: revisedNoteContent,
   })
   assert.equal(updatedNoteResponse.status, 200)
-  assert.equal((await updatedNoteResponse.json()).size, revisedNoteContent.byteLength)
+  const updatedNote = await updatedNoteResponse.json()
+  assert.equal(updatedNote.size, revisedNoteContent.byteLength)
+  assert.equal(updatedNote.version, 2)
   assert.deepEqual(Buffer.from(await (await fetch(`${base}/notes/${note.id}/content`, { headers })).arrayBuffer()), revisedNoteContent)
+  const versions = await (await fetch(`${base}/notes/${note.id}/versions`, { headers })).json()
+  assert.deepEqual(versions.map(version => version.version), [2, 1])
+  assert.equal(Object.hasOwn(versions[0], 'content'), false)
+  const originalVersion = await fetch(`${base}/notes/${note.id}/versions/1/content`, { headers })
+  assert.deepEqual(Buffer.from(await originalVersion.arrayBuffer()), noteContent)
+  const restoredResponse = await fetch(`${base}/notes/${note.id}/versions/1/restore`, {
+    method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ expectedVersion: 2 }),
+  })
+  assert.equal(restoredResponse.status, 200)
+  assert.equal((await restoredResponse.json()).version, 3)
+  assert.deepEqual(Buffer.from(await (await fetch(`${base}/notes/${note.id}/content`, { headers })).arrayBuffer()), noteContent)
 
   const entry = await (await fetch(`${base}/entries`, {
     method: 'POST', headers: { ...headers, 'content-type': 'application/json' },

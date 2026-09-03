@@ -78,7 +78,7 @@ async function dispatch(
   if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) throw httpError(405, '不支持此远程管理请求方法。')
   const base = settings.remoteUrl.endsWith('/') ? settings.remoteUrl : `${settings.remoteUrl}/`
   const target = new URL(`${relative}${incoming.search}`, base)
-  const noteContentRoute = relative.startsWith('notes/files') || /notes\/[^/]+\/content(?:\?|$)/.test(relative)
+  const noteContentRoute = relative.startsWith('notes/files') || /notes\/[^/]+\/(?:content|versions\/\d+\/content)(?:\?|$)/.test(relative)
   const body = method === 'GET' ? undefined : await readBody(req, noteContentRoute ? MAX_NOTE_FILE_BYTES : MAX_JSON_REQUEST_BYTES)
   const controller = new AbortController()
   const abort = () => { controller.abort() }

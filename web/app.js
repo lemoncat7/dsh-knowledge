@@ -2449,6 +2449,7 @@ function renderNoteFileToolbar(node, options = {}) {
       options.editable ? element('span', { class: 'notes-save-state', role: 'status', 'data-note-save-state': '', 'data-dirty': String(state.notes.dirty) }, state.notes.dirty ? '未保存' : '已保存') : null,
       options.enhanced ? actionButton('查找', () => markdownEditorHandle?.openFind(), 'ghost small', { 'data-note-find': '', 'aria-keyshortcuts': 'Control+F Meta+F', 'aria-pressed': 'false' }) : null,
       options.enhanced ? actionButton('大纲', () => markdownEditorHandle?.toggleOutline(), 'ghost small', { 'data-note-outline': '', 'aria-controls': 'dsh-note-outline', 'aria-expanded': 'false', 'aria-pressed': 'false' }) : null,
+      options.editable ? actionButton('历史', () => { void openNoteHistory(node) }, 'ghost small', { 'data-note-history': '' }) : null,
       noteDownloadButton(node, 'ghost small'),
       actionButton('复制引用', () => { void copyNoteReference(node) }, 'ghost small'),
       actionButton('重命名', () => openRenameNoteNode(node), 'ghost small'),
@@ -2989,6 +2990,99 @@ async function saveNoteDocument() {
     showToast(friendlyError(error), 'error')
     return false
   }
+}
+
+async function openNoteHistory(node) {
+  if (state.notes.selectedNode?.id === node.id && state.notes.dirty && !await saveNoteDocument()) return
+  try {
+    const current = state.notes.selectedNode?.id === node.id ? state.notes.selectedNode : await api(`notes/${encodeURIComponent(node.id)}`)
+    if (!current?.editable) throw new Error('只有可编辑的笔记文档支持页面历史。')
+    const versions = await api(`notes/${encodeURIComponent(node.id)}/versions?limit=100`)
+    if (!versions.length) {
+      showToast('这个文档还没有可查看的保存记录。')
+      return
+    }
+    let modal
+    const view = window.DshKnowledgeNoteHistory.createNoteHistoryView({
+      versions,
+      currentVersion: current.version,
+      currentContent: state.notes.selectedNode?.id === node.id ? state.notes.content : '',
+      loadContent: async (version, signal) => {
+        const blob = await binaryRequest(`notes/${encodeURIComponent(node.id)}/versions/${version.version}/content`, {
+          responseType: 'blob', accept: version.mediaType || 'text/plain', signal,
+        })
+        return blob.text()
+      },
+      renderPreview: content => renderHistoricalNotePreview(content, isMarkdownNote(current)),
+      renderDiff: renderNoteHistoryDiff,
+      formatDate,
+      formatBytes,
+      onRestore: async (version, content) => {
+        const updated = await api(`notes/${encodeURIComponent(node.id)}/versions/${version.version}/restore`, {
+          method: 'POST', body: { expectedVersion: current.version },
+        })
+        if (state.notes.selectedNode?.id === node.id) {
+          state.notes.selectedNode = updated
+          state.notes.content = content
+          state.notes.draft = content
+          state.notes.dirty = false
+          await loadNoteChildren(updated.parentId, true)
+        }
+        modal?.close(true)
+        renderShell()
+        showToast(`已将版本 ${version.version} 恢复为新的版本 ${updated.version}。`)
+      },
+      onError: error => showToast(friendlyError(error), 'error'),
+    })
+    modal = openModal({
+      title: `${current.name} · 页面历史`,
+      description: '每次内容保存都会形成不可变快照；恢复历史不会删除当前版本。',
+      body: view.element,
+      cancelLabel: '关闭',
+      onClose: () => view.destroy(),
+    })
+    modal.dialog.classList.add('note-history-dialog')
+    modal.dialog.classList.remove('narrow')
+  } catch (error) {
+    showToast(friendlyError(error), 'error')
+  }
+}
+
+function renderHistoricalNotePreview(content, markdown) {
+  if (!markdown) return element('pre', { class: 'note-history-plain-preview', role: 'document' }, content || '（空文档）')
+  const rendered = renderMarkdownPreview(content).cloneNode(true)
+  rendered.classList.add('note-history-markdown-preview')
+  rendered.querySelectorAll('a').forEach(link => {
+    link.removeAttribute('href')
+    link.removeAttribute('role')
+    link.removeAttribute('tabindex')
+    link.removeAttribute('title')
+  })
+  return rendered
+}
+
+function renderNoteHistoryDiff(historical, current) {
+  const diff = window.DshKnowledgeReview.createLineDiff(historical, current)
+  const lines = window.DshKnowledgeReview.compactDiffLines(diff.lines, 3)
+  return element('section', { class: 'note-history-diff', 'aria-label': '历史版本与当前版本的逐行差异' },
+    element('div', { class: 'note-history-diff-summary' },
+      element('strong', {}, '历史版本 → 当前版本'),
+      element('div', { class: 'diff-summary', 'aria-label': `新增 ${diff.additions} 行，删除 ${diff.deletions} 行` },
+        element('span', { class: 'diff-stat additions' }, `+${diff.additions}`),
+        element('span', { class: 'diff-stat deletions' }, `-${diff.deletions}`),
+      ),
+    ),
+    diff.simplified ? element('div', { class: 'diff-notice' }, '内容较长，已使用有界的简化差异视图。') : null,
+    element('div', { class: 'diff-viewer', role: 'table' },
+      element('div', { class: 'diff-column-headings', role: 'row' },
+        element('span', { role: 'columnheader' }, '旧'),
+        element('span', { role: 'columnheader' }, '新'),
+        element('span', { 'aria-hidden': 'true' }),
+        element('span', { role: 'columnheader' }, '正文'),
+      ),
+      lines.length ? lines.map(renderDiffLine) : element('div', { class: 'diff-empty' }, '所选版本与当前内容相同。'),
+    ),
+  )
 }
 
 function noteDownloadButton(node, variant = 'ghost small', label = '下载') {

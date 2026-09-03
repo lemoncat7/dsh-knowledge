@@ -29,7 +29,7 @@ import type {
   SearchHit,
   SearchRequest,
 } from './domain.js'
-import type { KnowledgeNoteReference, KnowledgeNoteReferenceSource, NoteListRequest, NoteNode } from './notes/domain.js'
+import type { KnowledgeNoteReference, KnowledgeNoteReferenceSource, NoteListRequest, NoteNode, NoteVersion } from './notes/domain.js'
 
 /** Stable storage boundary shared by local SQLite and remote HTTP clients. */
 export interface KnowledgeProvider {
@@ -67,6 +67,9 @@ export interface KnowledgeProvider {
   listNotes(request?: NoteListRequest, signal?: AbortSignal): Promise<NoteNode[]>
   getNote(id: string, signal?: AbortSignal): Promise<NoteNode | undefined>
   readNote(id: string, signal?: AbortSignal): Promise<{ node: NoteNode; content: Uint8Array }>
+  listNoteVersions(id: string, limit?: number, signal?: AbortSignal): Promise<NoteVersion[]>
+  readNoteVersion(id: string, version: number, signal?: AbortSignal): Promise<{ node: NoteNode; version: NoteVersion; content: Uint8Array }>
+  restoreNoteVersion(id: string, version: number, expectedVersion?: number, signal?: AbortSignal): Promise<NoteNode>
   createNoteFolder(name: string, parentId?: string | null, signal?: AbortSignal): Promise<NoteNode>
   createNoteDocument(name: string, parentId?: string | null, content?: string, signal?: AbortSignal): Promise<NoteNode>
   updateNoteContent(id: string, content: Uint8Array, signal?: AbortSignal): Promise<NoteNode>

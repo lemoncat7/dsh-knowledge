@@ -60,6 +60,7 @@ import {
   type NoteListRequest,
   type NoteNode,
   type NoteReference,
+  type NoteVersion,
 } from './notes/domain.js'
 
 type SqlRow = Record<string, unknown>
@@ -1147,6 +1148,21 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   async readNote(id: string): Promise<{ node: NoteNode; content: Uint8Array }> {
     this.assertOpen()
     return this.notes.read(id)
+  }
+
+  async listNoteVersions(id: string, limit = 100): Promise<NoteVersion[]> {
+    this.assertOpen()
+    return this.notes.listVersions(id, limit)
+  }
+
+  async readNoteVersion(id: string, version: number): Promise<{ node: NoteNode; version: NoteVersion; content: Uint8Array }> {
+    this.assertOpen()
+    return this.notes.readVersion(id, version)
+  }
+
+  async restoreNoteVersion(id: string, version: number, expectedVersion?: number): Promise<NoteNode> {
+    this.assertOpen()
+    return this.notes.restoreVersion(id, version, expectedVersion)
   }
 
   async createNoteFolder(name: string, parentId: string | null = null): Promise<NoteNode> {

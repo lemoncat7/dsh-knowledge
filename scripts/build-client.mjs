@@ -50,6 +50,17 @@ await build({
 })
 
 await build({
+  entryPoints: ['src/web-note-history.ts'],
+  outfile: 'web/note-history.js',
+  bundle: true,
+  format: 'iife',
+  globalName: 'DshKnowledgeNoteHistory',
+  platform: 'browser',
+  target: 'es2022',
+  minify: true,
+})
+
+await build({
   entryPoints: ['src/web-change-review.ts'],
   outfile: 'web/change-review.js',
   bundle: true,

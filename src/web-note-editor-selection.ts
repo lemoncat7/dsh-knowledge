@@ -193,6 +193,16 @@ export function createNoteSelectionMenu(options: NoteSelectionMenuOptions): Note
   function positionMenu(): void {
     positionFrame = undefined
     if (menu.hidden || editor.isDestroyed) return
+    if (window.matchMedia('(max-width: 760px)').matches) {
+      menu.dataset.placement = 'bottom'
+      menu.style.left = 'max(8px, env(safe-area-inset-left))'
+      menu.style.right = 'max(8px, env(safe-area-inset-right))'
+      menu.style.bottom = 'max(8px, env(safe-area-inset-bottom))'
+      menu.style.top = 'auto'
+      return
+    }
+    menu.style.right = ''
+    menu.style.bottom = ''
     const { from, to } = editor.state.selection
     const start = editor.view.coordsAtPos(from)
     const end = editor.view.coordsAtPos(to)
