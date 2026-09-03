@@ -27,7 +27,7 @@ test('uses an opaque stable dark workspace palette without depending on a theme 
   assert.equal(message.tokens['--bg'], '#1c1c1e')
   assert.equal(message.tokens['--surface'], '#2c2c2e')
   assert.equal(message.tokens['--surface-raised'], '#323235')
-  assert.equal(message.tokens['--dialog-surface'], '#323235')
+  assert.equal(message.tokens['--dialog-surface'], '#2c2c2e')
   assert.equal(message.tokens['--text'], '#f5f5f7')
   assert.equal(message.tokens['--accent'], '#e5e5ea')
   assert.equal(message.tokens['--success'], '#30d158')
@@ -64,7 +64,7 @@ test('uses the light workspace palette when the host is light', () => {
 
   assert.equal(message.tokens['--bg'], '#ebebeb')
   assert.equal(message.tokens['--surface'], '#f4f4f4')
-  assert.equal(message.tokens['--dialog-surface'], '#fafafa')
+  assert.equal(message.tokens['--dialog-surface'], '#f4f4f4')
   assert.equal(message.tokens['--text'], '#1d1d1f')
   assert.equal(message.tokens['--accent'], '#3a3a3c')
   assert.equal(message.tokens['--accent-hover'], '#1d1d1f')

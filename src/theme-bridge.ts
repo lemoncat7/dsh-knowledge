@@ -31,7 +31,7 @@ interface ComputedStyleLike {
 const WORKSPACE_TOKENS: Record<KnowledgeColorScheme, Readonly<Record<string, string>>> = {
   light: {
     '--bg': '#ebebeb', '--surface': '#f4f4f4', '--surface-raised': '#fafafa',
-    '--surface-soft': '#eeeeef', '--surface-hover': 'rgb(118 118 128 / 9%)', '--dialog-surface': '#fafafa',
+    '--surface-soft': '#eeeeef', '--surface-hover': 'rgb(118 118 128 / 9%)', '--dialog-surface': '#f4f4f4',
     '--text': '#1d1d1f', '--text-secondary': '#515154', '--text-tertiary': '#6e6e73',
     '--border': 'rgb(60 60 67 / 14%)', '--border-strong': 'rgb(60 60 67 / 24%)',
     '--accent': '#3a3a3c', '--accent-hover': '#1d1d1f', '--accent-soft': '#e2e2e5', '--on-accent': '#ffffff',
@@ -40,7 +40,7 @@ const WORKSPACE_TOKENS: Record<KnowledgeColorScheme, Readonly<Record<string, str
   },
   dark: {
     '--bg': '#1c1c1e', '--surface': '#2c2c2e', '--surface-raised': '#323235',
-    '--surface-soft': 'rgb(255 255 255 / 6%)', '--surface-hover': 'rgb(255 255 255 / 7.5%)', '--dialog-surface': '#323235',
+    '--surface-soft': 'rgb(255 255 255 / 6%)', '--surface-hover': 'rgb(255 255 255 / 7.5%)', '--dialog-surface': '#2c2c2e',
     '--text': '#f5f5f7', '--text-secondary': '#d1d1d6', '--text-tertiary': '#98989d',
     '--border': 'rgb(255 255 255 / 10%)', '--border-strong': 'rgb(255 255 255 / 18%)',
     '--accent': '#e5e5ea', '--accent-hover': '#ffffff', '--accent-soft': 'rgb(255 255 255 / 9%)', '--on-accent': '#1d1d1f',

@@ -10,7 +10,7 @@
   --surface-raised: #fafafa;
   --surface-soft: #eeeeef;
   --surface-hover: rgb(118 118 128 / 9%);
-  --dialog-surface: #fafafa;
+  --dialog-surface: #f4f4f4;
   --text: #1d1d1f;
   --text-secondary: #515154;
   --text-tertiary: #6e6e73;
@@ -92,7 +92,7 @@
     --surface-raised: #323235;
     --surface-soft: rgb(255 255 255 / 6%);
     --surface-hover: rgb(255 255 255 / 7.5%);
-    --dialog-surface: #323235;
+    --dialog-surface: #2c2c2e;
     --text: #f5f5f7;
     --text-secondary: #d1d1d6;
     --text-tertiary: #98989d;
@@ -159,8 +159,10 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* The workspace owns an opaque canvas; host themes only select light/dark. */
-:root[data-dsh-host-theme="true"] body { background: var(--surface-canvas); }
+/* Embedded workspaces expose the host canvas only between their own opaque
+   panels. Standalone management pages still keep a stable plugin-owned base. */
+:root[data-dsh-host-theme="true"],
+:root[data-dsh-host-theme="true"] body { background: transparent; }
 
 button, input, select, textarea { font: inherit; }
 
@@ -1487,16 +1489,16 @@ html,
 
 .dialog-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 20px; background: transparent; animation: dialog-backdrop-enter var(--motion-base) ease both; }
 .dialog {
-  width: min(100%, 640px);
-  max-height: min(88vh, 820px);
+  width: min(560px, 100%);
+  max-height: min(680px, calc(100dvh - 64px));
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 15px;
+  border: 1px solid color-mix(in srgb, var(--text) 18%, var(--border));
+  border-radius: 16px;
   background: var(--dialog-surface);
-  box-shadow: inset 0 1px 0 var(--surface-highlight), var(--shadow-floating);
-  animation: dialog-enter var(--motion-base) var(--ease-spring) both;
+  box-shadow: 0 22px 58px color-mix(in srgb, #000 18%, transparent), 0 4px 14px color-mix(in srgb, #000 8%, transparent), inset 0 1px 0 var(--surface-highlight);
+  animation: dialog-enter 200ms var(--ease-out) both;
 }
 @keyframes dialog-backdrop-enter { from { opacity: 0; } }
 @keyframes dialog-enter { from { opacity: 0; transform: translateY(8px) scale(.985); } }
@@ -1516,11 +1518,12 @@ html,
   animation: sheet-enter .2s cubic-bezier(.2, .8, .2, 1);
 }
 @keyframes sheet-enter { from { opacity: .75; transform: translateX(18px); } }
-.dialog-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--separator); padding: 18px 20px; background: var(--surface); }
+.dialog-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--separator); padding: 22px 22px 18px; background: var(--surface-raised); }
 .dialog-header h2 { margin: 0; font-size: var(--font-title); font-weight: 650; letter-spacing: -.02em; }
 .dialog-header p { margin: 4px 0 0; color: var(--text-tertiary); font-size: var(--font-caption); }
-.dialog-body { overflow: auto; padding: 20px; }
-.dialog-footer { display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--separator); padding: 13px 20px; background: var(--surface); }
+.dialog-header .button { display: grid; place-items: center; width: 32px; min-width: 32px; min-height: 32px; padding: 0; border-color: transparent; border-radius: 9px; box-shadow: none; }
+.dialog-body { overflow: auto; padding: 20px 22px 24px; }
+.dialog-footer { display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--separator); padding: 14px 22px; background: var(--surface-raised); }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 16px; }
 .form-grid .span-2 { grid-column: 1 / -1; }
 .check-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
@@ -1607,15 +1610,6 @@ html,
 .notes-browser.knowledge-glass-surface {
   background: var(--liquid-glass-clear);
   box-shadow: none;
-}
-
-.dialog.knowledge-glass-surface {
-  background: var(--liquid-glass-dialog);
-  box-shadow:
-    inset 0 1px 0 var(--glass-rim-light),
-    inset 0 -1px 0 var(--glass-rim-shadow),
-    0 2px 8px rgb(0 0 0 / 8%),
-    0 28px 76px rgb(0 0 0 / 25%);
 }
 
 .knowledge-card-surface {
@@ -1815,7 +1809,6 @@ html,
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
-  .dialog.knowledge-glass-surface { background: var(--dialog-surface); }
   .knowledge-border-surface::before,
   .knowledge-border-surface::after,
   .knowledge-glare-surface::after { display: none; }

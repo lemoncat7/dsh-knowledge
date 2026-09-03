@@ -206,7 +206,7 @@ div:has(> div[data-slot="sidebar.footer.action"] .dsh-knowledge-trigger--rail) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--knowledge-canvas);
+  background: transparent;
 }
 
 .dsh-knowledge-workspace-header {
@@ -308,7 +308,7 @@ div:has(> div[data-slot="sidebar.footer.action"] .dsh-knowledge-trigger--rail) {
   margin: 0;
   border: 0;
   border-radius: 0;
-  background: var(--knowledge-canvas);
+  background: transparent;
   box-shadow: none;
 }
 
