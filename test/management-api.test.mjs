@@ -62,6 +62,10 @@ test('same-origin management API controls public access and deletes revoked toke
   assert.match(downloaded.headers.get('content-disposition'), /inline/)
   assert.equal(downloaded.headers.get('content-security-policy'), "sandbox; default-src 'none'")
   assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), noteContent)
+  const attachment = await fetch(`${base}/notes/${note.id}/content?download=1`, { headers })
+  assert.equal(attachment.headers.get('content-type'), 'text/markdown')
+  assert.match(attachment.headers.get('content-disposition'), /attachment/)
+  assert.match(attachment.headers.get('content-disposition'), /filename\*=UTF-8''%E9%83%A8%E7%BD%B2%E7%AC%94%E8%AE%B0\.md/)
   const revisedNoteContent = Buffer.from('# 更新后的部署笔记\n\n现在可以在笔记工作区直接编辑。')
   const updatedNoteResponse = await fetch(`${base}/notes/${note.id}/content`, {
     method: 'PUT', headers: { ...headers, 'content-type': 'text/markdown' }, body: revisedNoteContent,

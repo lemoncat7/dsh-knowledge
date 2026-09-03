@@ -2223,8 +2223,8 @@ function openNoteAgentGuide() {
     element('section', { class: 'notes-agent-guide-rule' },
       element('span', { class: 'notes-agent-guide-index', 'aria-hidden': 'true' }, '01'),
       element('div', {},
-        element('h3', {}, '在当前消息里明确授权'),
-        element('p', {}, '写清动作、对象和位置，并明确使用“笔记文档”“笔记目录”或“笔记工作区”。为了避免误写，不能只依赖上一轮说过的授权。'))),
+        element('h3', {}, '在当前消息里指定笔记文档'),
+        element('p', {}, '只要当前消息明确提到“笔记文档”“笔记目录”或“笔记工作区”，会话就可以按你的要求查看和维护；无需套用固定句式。为了避免误操作，删除仍需明确说出删除，授权也不会从上一轮延续。'))),
     element('section', { class: 'notes-agent-guide-rule' },
       element('span', { class: 'notes-agent-guide-index', 'aria-hidden': 'true' }, '02'),
       element('div', {},
@@ -2234,7 +2234,7 @@ function openNoteAgentGuide() {
     element('section', { class: 'notes-agent-examples' },
       element('h3', {}, '可以直接这样说'),
       element('ul', {}, examples)),
-    element('p', { class: 'notes-agent-guide-note' }, '只说“新建 Markdown”或“创建本地目录”不会获得笔记写入权限；请明确指出这是笔记工作区中的文档或目录。'))
+    element('p', { class: 'notes-agent-guide-note' }, '只说“新建 Markdown”或“创建本地目录”仍不会获得笔记权限；在当前消息中带上“笔记文档”即可。'))
   return openSheet({
     title: '让会话整理笔记',
     description: '会话可以操作笔记工作区，但每次写入都需要当前用户消息明确授权。',
@@ -2370,6 +2370,7 @@ function renderNoteFolderContent(folder) {
         element('time', { datetime: node.updatedAt }, formatDate(node.updatedAt)),
         element('span', { class: 'notes-file-size' }, node.kind === 'folder' ? '' : formatBytes(node.size)),
         element('div', { class: 'notes-file-actions' },
+          node.kind !== 'folder' ? noteDownloadButton(node, 'ghost tiny') : null,
           actionButton('重命名', () => openRenameNoteNode(node), 'ghost tiny'),
           actionButton('复制', () => { void copyNoteNode(node) }, 'ghost tiny'),
           actionButton('删除', () => { void confirmDeleteNoteNode(node) }, 'ghost tiny danger-text'),
@@ -2416,16 +2417,19 @@ function renderEditableNote(node) {
   else mountPlainTextNoteEditor(editor, node)
   return element('main', { class: `notes-content is-document${markdown ? '' : ' has-line-numbers'}` },
     renderNoteFileToolbar(node, { editable: true }),
-    element('h1', {
-      class: 'notes-document-title', contenteditable: 'plaintext-only', spellcheck: 'false',
-      'aria-label': `修改 ${node.name} 的标题`, title: '点击修改标题',
-      onBlur: event => { void saveEditableNoteTitle(event.currentTarget, node) },
-      onKeyDown: event => {
-        if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur() }
-        if (event.key === 'Escape') { event.preventDefault(); event.currentTarget.textContent = title; event.currentTarget.blur() }
-      },
-    }, title),
-    editor,
+    element('div', { class: 'notes-document-scroll', 'data-scroll-key': `notes-document:${node.id}` },
+      element('h1', {
+        class: 'notes-document-title', contenteditable: 'plaintext-only', spellcheck: 'false',
+        'aria-label': `修改 ${node.name} 的标题`, title: '点击修改标题',
+        onBlur: event => { void saveEditableNoteTitle(event.currentTarget, node) },
+        onKeyDown: event => {
+          if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur() }
+          if (event.key === 'Escape') { event.preventDefault(); event.currentTarget.textContent = title; event.currentTarget.blur() }
+        },
+      }, title),
+      editor,
+    ),
+    renderNoteFileStatusbar(node),
   )
 }
 
@@ -2601,12 +2605,13 @@ function renderNoteFile(node) {
       renderNoteIcon(node, true),
       element('h2', {}, node.name),
       element('p', {}, '该格式不能在浏览器中直接编辑，可以下载后使用本地应用打开。'),
-      actionButton('下载文件', () => { void downloadNoteFile(node) }, 'primary small'),
+      noteDownloadButton(node, 'primary small', '下载文件'),
     )
   }
   return element('main', { class: 'notes-content is-file' },
     renderNoteFileToolbar(node),
     element('section', { class: `notes-inline-viewer is-${previewKind}`, 'aria-label': `${node.name}内容` }, preview),
+    renderNoteFileStatusbar(node),
   )
 }
 
@@ -2614,19 +2619,24 @@ function renderNoteFileToolbar(node, options = {}) {
   return element('header', { class: 'notes-document-toolbar' },
     element('div', { class: 'notes-toolbar-leading' },
       renderNoteDocumentBreadcrumb(node),
-      element('div', { class: 'notes-file-info', 'aria-label': '文件信息' },
-        noteInfoItem('编号', shortNoteId(node.id), node.id),
-        noteInfoItem('类型', node.kind === 'document' ? 'Markdown' : node.mediaType || '未知'),
-        noteInfoItem('大小', formatBytes(node.size), '', 'size'),
-        noteInfoItem('更新', formatDate(node.updatedAt), '', 'updated'),
-      ),
     ),
     element('div', { class: 'notes-document-actions' },
       options.editable ? element('span', { class: 'notes-save-state', role: 'status', 'data-note-save-state': '', 'data-dirty': String(state.notes.dirty) }, state.notes.dirty ? '未保存' : '已保存') : null,
-      node.kind === 'file' ? actionButton('下载', () => { void downloadNoteFile(node) }, 'ghost small') : null,
+      noteDownloadButton(node, 'ghost small'),
       actionButton('复制引用', () => { void copyNoteReference(node) }, 'ghost small'),
       actionButton('重命名', () => openRenameNoteNode(node), 'ghost small'),
       options.editable ? actionButton('保存', () => { void saveNoteDocument() }, 'primary small', { 'data-note-save': '', disabled: !state.notes.dirty }) : null,
+    ),
+  )
+}
+
+function renderNoteFileStatusbar(node) {
+  return element('footer', { class: 'notes-document-statusbar', 'aria-label': '文档信息' },
+    element('div', { class: 'notes-file-info' },
+      noteInfoItem('编号', shortNoteId(node.id), node.id, 'id'),
+      noteInfoItem('类型', node.kind === 'document' ? 'Markdown' : node.mediaType || '未知'),
+      noteInfoItem('大小', formatBytes(node.size), '', 'size'),
+      noteInfoItem('更新', formatDate(node.updatedAt), '', 'updated'),
     ),
   )
 }
@@ -3154,14 +3164,38 @@ async function saveNoteDocument() {
   }
 }
 
-async function downloadNoteFile(node) {
+function noteDownloadButton(node, variant = 'ghost small', label = '下载') {
+  return actionButton(label, event => { void downloadNoteFile(node, event.currentTarget) }, variant, {
+    'aria-label': `下载 ${node.name}`,
+    title: `下载 ${node.name}`,
+  })
+}
+
+async function downloadNoteFile(node, button) {
+  const originalLabel = button?.textContent || ''
+  if (button) {
+    button.disabled = true
+    button.setAttribute('aria-busy', 'true')
+    button.textContent = '下载中'
+  }
   try {
-    const blob = await binaryRequest(`notes/${encodeURIComponent(node.id)}/content?download=1`, { responseType: 'blob', accept: node.mediaType || 'application/octet-stream' })
+    if (state.notes.selectedNode?.id === node.id && state.notes.dirty && !await saveNoteDocument()) return
+    const current = state.notes.selectedNode?.id === node.id ? state.notes.selectedNode : node
+    const blob = await binaryRequest(`notes/${encodeURIComponent(current.id)}/content?download=1`, { responseType: 'blob', accept: current.mediaType || 'application/octet-stream' })
     const url = URL.createObjectURL(blob)
-    const anchor = element('a', { href: url, download: node.name })
+    const anchor = element('a', { href: url, download: current.name })
     document.body.append(anchor); anchor.click(); anchor.remove()
     window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-  } catch (error) { showToast(friendlyError(error), 'error') }
+    showToast(`已下载 ${current.name}。`)
+  } catch (error) {
+    showToast(`下载失败：${friendlyError(error)}`, 'error')
+  } finally {
+    if (button?.isConnected) {
+      button.disabled = false
+      button.removeAttribute('aria-busy')
+      button.textContent = originalLabel
+    }
+  }
 }
 
 async function copyNoteReference(node) {

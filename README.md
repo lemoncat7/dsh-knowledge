@@ -147,7 +147,7 @@ pnpm dsh web
 
 知识库的 `description` 同时用于读取和回写路由：它以轻量目录形式告诉模型每个挂载库覆盖什么主题，`knowledge_base_search` 也用它匹配当前信息需求；文档正文不会随目录注入。主模型不执行内容回写，所有回答都在完整结束后进行一次独立的严格提取，同时判断长期价值、目标知识库、重复、更新与冲突；用户明确要求保存时也走同一条回答后链路。挂载只表示“可选”，不代表每次回答都要写入。`extractionInstructions` 用于匹配后继续限定具体收录规则。
 
-笔记工具与知识回写相互独立。AI 只有在当前用户直接要求查看或维护笔记时才能调用：先用 `knowledge_note_list` 浏览目录或按名称搜索，也可用 `knowledge_note_search` 查找非目录节点；随后把返回的精确句柄传给 `knowledge_note_read / update / move / delete`。`knowledge_note_create` 未指定父目录时写入笔记根目录，指定目录时必须使用 `knowledge_note_list` 返回的文件夹句柄。本地和远程模式由当前 Provider 决定，工具不接受也不猜测存储位置。
+笔记工具与知识回写相互独立。当前用户消息只要明确提到“笔记文档”“笔记目录”或“笔记工作区”，AI 就可以按该消息的要求查看和维护笔记，不需要固定授权句式；永久删除仍必须在当前消息中明确提出，并且授权不会从历史消息延续。工具会先用 `knowledge_note_list` 浏览目录或按名称搜索，也可用 `knowledge_note_search` 查找非目录节点；随后把返回的精确句柄传给 `knowledge_note_read / update / move / delete`。`knowledge_note_create` 未指定父目录时写入笔记根目录，指定目录时必须使用 `knowledge_note_list` 返回的文件夹句柄。本地和远程模式由当前 Provider 决定，工具不接受也不猜测存储位置。管理台中的笔记文档和普通文件均可从目录列表或打开后的工具栏下载。
 
 创建示例：
 

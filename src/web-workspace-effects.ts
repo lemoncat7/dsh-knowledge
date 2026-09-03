@@ -6,6 +6,7 @@ const GLASS_SURFACE_SELECTOR = [
   '.notes-browser',
   '.notes-content-header',
   '.notes-document-toolbar',
+  '.notes-document-statusbar',
   '.note-editor-toolbar',
   '.dialog',
 ].join(',')

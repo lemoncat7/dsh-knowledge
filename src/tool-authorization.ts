@@ -125,23 +125,16 @@ function clauseRequestsKnowledgeNote(
   const hasQualifiedTarget = noteSubject.test(text)
     || (workspaceSubject.test(text) && targetSubject.test(text))
   if (!hasQualifiedTarget) return false
-  if (operation === 'inspect') {
-    const inspectIntent = /(?:查看|查询|检索|读取|读一下|打开|搜索|查找|找一下|列出|浏览|检查|看看|内容|引用|关联|连接|绑定|创建|新建|建立|添加|写入|记录|修改|更新|编辑|追加|重命名|改名|移动|整理|删除|移除|read|open|search|query|find|list|browse|inspect|reference|link|attach|create|add|write|record|update|edit|append|rename|move|delete|remove)/iu
-    const clarification = /(?:我说的?是|我指的?是|指的是|说的是|就是|那个|这个).{0,32}(?:笔记|筆記|文档|文檔|markdown|md\s*文件|notes?|notebook|document)/iu
-    return inspectIntent.test(text) || clarification.test(text)
-  }
+  if (operation === 'inspect') return true
   if (deniesKnowledgeNoteMutation(text, operation)) return false
-  if (operation === 'create') {
-    const createVerb = /(?:创建|新建|建立|新增|加一个|建一个|写一篇|记一篇|记录一篇|保存|存到|写到|放到|整理到|create|add|make|write|record|save)/iu
-    return createVerb.test(text) && targetSubject.test(text)
-  }
-  if (operation === 'update') {
-    return /(?:修改|更新|编辑|追加|补充|写入|写到|改写|替换|重命名|改名|update|edit|append|write|replace|rename)/iu.test(text)
-      && targetSubject.test(text)
-  }
-  if (operation === 'move') {
-    return /(?:移动|挪到|放到|整理到|move|relocate)/iu.test(text) && targetSubject.test(text)
-  }
+  // Naming the note workspace in the current direct user turn is the consent
+  // boundary for non-destructive note work. The selected tool and its signed
+  // handles still constrain the concrete operation and target. This keeps the
+  // boundary easy to express in natural language without carrying consent
+  // forward from an earlier turn.
+  if (operation !== 'delete') return true
+  // Permanent deletion remains deliberately stricter than browsing and
+  // reversible maintenance: the current message must also say to delete.
   return /(?:删除|移除|清理|delete|remove)/iu.test(text) && targetSubject.test(text)
 }
 
