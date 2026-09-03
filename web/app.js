@@ -2,16 +2,15 @@ const API_BASE = document.querySelector('meta[name="dsh-knowledge-api"]')?.conte
 const AUTH_MODE = document.querySelector('meta[name="dsh-knowledge-auth-mode"]')?.content || 'bearer'
 const WEB_PATH = document.querySelector('meta[name="dsh-knowledge-web"]')?.content || '/knowledge'
 const ASSET_VERSION = document.querySelector('meta[name="dsh-knowledge-asset-version"]')?.content || ''
-const HOST_THEME_MESSAGE = '@lemoncat7/dsh-knowledge/host-theme'
-const HOST_THEME_READY_MESSAGE = '@lemoncat7/dsh-knowledge/host-theme-ready'
-const HOST_THEME_PROTOCOL_VERSION = 1
-const HOST_THEME_COLOR_TOKENS = new Set([
-  '--bg', '--surface', '--surface-raised', '--surface-soft', '--surface-hover', '--dialog-surface',
-  '--text', '--text-secondary', '--text-tertiary', '--border', '--border-strong',
-  '--accent', '--accent-hover', '--accent-soft', '--on-accent',
-  '--success', '--success-soft', '--warning', '--warning-soft', '--danger', '--danger-soft',
+const moduleUrl = name => `./${name}.js${ASSET_VERSION ? `?v=${encodeURIComponent(ASSET_VERSION)}` : ''}`
+const [apiModule, themeModule, uiModule] = await Promise.all([
+  import(moduleUrl('api-client')),
+  import(moduleUrl('host-theme')),
+  import(moduleUrl('ui-primitives')),
 ])
-const HOST_THEME_STYLE_TOKENS = new Set(['--shadow'])
+const { createApiClient } = apiModule
+const { installHostThemeBridge } = themeModule
+const { actionButton, badge, createToastPresenter, element, interfaceIcon, paneToggleButton } = uiModule
 const TOKEN_KEY = 'dsh-knowledge.session-token'
 const TYPES = ['preference', 'fact', 'decision', 'procedure', 'lesson']
 const TYPE_LABELS = { preference: '偏好', fact: '事实', decision: '决策', procedure: '流程', lesson: '经验' }
@@ -33,6 +32,7 @@ const mountContext = {
 }
 const app = document.querySelector('#app')
 const toastRegion = document.querySelector('#toast-region')
+const showToast = createToastPresenter(toastRegion)
 const savedDocumentLayout = readDocumentLayout()
 
 function createDocumentViewState(overrides = {}) {
@@ -121,62 +121,10 @@ let noteSelectionRequest = 0
 let knowledgeDocumentDrag = null
 let movingDocumentId = ''
 
-function installHostThemeBridge() {
-  if (window.parent === window) return Promise.resolve()
-  const parentOrigin = referrerOrigin()
-  return new Promise(resolve => {
-    let initialThemeSettled = false
-    const settleInitialTheme = () => {
-      if (initialThemeSettled) return
-      initialThemeSettled = true
-      window.clearTimeout(fallback)
-      resolve()
-    }
-    const fallback = window.setTimeout(settleInitialTheme, 160)
-    window.addEventListener('message', event => {
-      if (event.source !== window.parent) return
-      if (parentOrigin && event.origin !== parentOrigin) return
-      const message = event.data
-      if (!message || message.type !== HOST_THEME_MESSAGE || message.version !== HOST_THEME_PROTOCOL_VERSION) return
-      if (message.colorScheme !== 'light' && message.colorScheme !== 'dark') return
-      if (!message.tokens || typeof message.tokens !== 'object' || Array.isArray(message.tokens)) return
-
-      const root = document.documentElement
-      for (const name of [...HOST_THEME_COLOR_TOKENS, ...HOST_THEME_STYLE_TOKENS]) root.style.removeProperty(name)
-      for (const [name, value] of Object.entries(message.tokens)) {
-        if (typeof value !== 'string' || value.length === 0 || value.length > 512) continue
-        if (HOST_THEME_COLOR_TOKENS.has(name) && CSS.supports('color', value)) root.style.setProperty(name, value)
-        else if (HOST_THEME_STYLE_TOKENS.has(name) && CSS.supports('box-shadow', value)) root.style.setProperty(name, value)
-      }
-      root.dataset.dshHostTheme = 'true'
-      root.dataset.colorScheme = message.colorScheme
-      root.style.colorScheme = message.colorScheme
-      document.querySelector('meta[name="color-scheme"]')?.setAttribute('content', message.colorScheme)
-      const background = root.style.getPropertyValue('--bg')
-      if (background) document.querySelector('meta[name="theme-color"]')?.setAttribute('content', background)
-      settleInitialTheme()
-    })
-    window.parent.postMessage({
-      type: HOST_THEME_READY_MESSAGE,
-      version: HOST_THEME_PROTOCOL_VERSION,
-    }, parentOrigin || '*')
-  })
-}
-
-function referrerOrigin() {
-  if (!document.referrer) return ''
-  try {
-    const origin = new URL(document.referrer).origin
-    return origin === 'null' ? '' : origin
-  } catch {
-    return ''
-  }
-}
-
 function readDocumentLayout() {
   const fallback = {
     sidebarHidden: false,
-    sidebarWidth: 236,
+    sidebarWidth: 214,
   }
   try {
     const value = JSON.parse(localStorage.getItem(DOCUMENT_LAYOUT_KEY) || '{}')
@@ -236,153 +184,15 @@ function restoreScrollPosition(view) {
   })
 }
 
-function element(tag, attributes = {}, ...children) {
-  const node = document.createElement(tag)
-  for (const [key, value] of Object.entries(attributes)) {
-    if (value === undefined || value === null || value === false) continue
-    if (key === 'class') node.className = value
-    else if (key === 'text') node.textContent = value
-    else if (key.startsWith('on') && typeof value === 'function') node.addEventListener(key.slice(2).toLowerCase(), value)
-    else if (key === 'checked' || key === 'selected' || key === 'disabled') node[key] = Boolean(value)
-    else node.setAttribute(key, String(value))
-  }
-  for (const child of children.flat(Infinity)) {
-    if (child === undefined || child === null || child === false) continue
-    node.append(child instanceof Node ? child : document.createTextNode(String(child)))
-  }
-  return node
-}
-
 function refreshWorkspaceEffects(root = document) {
   window.DshKnowledgeEffects?.refresh(root)
 }
 
-function actionButton(label, onClick, variant = '', attributes = {}) {
-  return element('button', { type: 'button', class: `button ${variant}`.trim(), onClick, ...attributes }, label)
-}
-
-function paneToggleButton(pane, visible, onClick, label) {
-  const action = `${visible ? '隐藏' : '显示'}${label}`
-  return element('button', {
-    type: 'button', class: 'pane-toggle-button', 'data-pane': pane,
-    'aria-label': action, 'aria-pressed': String(visible), title: action, onClick,
-  }, element('span', { class: `pane-icon pane-icon-${pane}`, 'aria-hidden': 'true' }))
-}
-
-function interfaceIcon(name, className = 'interface-icon') {
-  const paths = {
-    search: 'M10.8 4.5a6.3 6.3 0 1 0 0 12.6 6.3 6.3 0 0 0 0-12.6Zm4.6 11 4.1 4',
-  }
-  return element('svg', {
-    class: className, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
-    'stroke-width': '1.8', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true',
-  }, element('path', { d: paths[name] }))
-}
-
-function badge(label, variant = '') {
-  return element('span', { class: `badge ${variant}`.trim() }, label)
-}
-
-function showToast(message, kind = '') {
-  const toast = element('div', { class: `toast ${kind}`.trim(), role: kind === 'error' ? 'alert' : 'status' },
-    element('span', {}, message),
-    kind === 'error' ? actionButton('关闭', () => toast.remove(), 'ghost small toast-close', { 'aria-label': '关闭错误提示' }) : null,
-  )
-  toastRegion.append(toast)
-  if (kind !== 'error') window.setTimeout(() => toast.remove(), 4200)
-}
-
-async function api(path, options = {}) {
-  const headers = { accept: 'application/json', ...(options.body === undefined ? {} : { 'content-type': 'application/json' }) }
-  if (AUTH_MODE === 'same-origin') headers['x-dsh-knowledge-client'] = 'management-web'
-  if (state.token) headers.authorization = `Bearer ${state.token}`
-  const response = await fetch(`${API_BASE}/${path.replace(/^\/+/, '')}`, {
-    method: options.method || 'GET',
-    headers,
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    signal: options.signal,
-  })
-  const text = await response.text()
-  let payload
-  if (text) {
-    try { payload = JSON.parse(text) } catch { throw new Error('服务返回了无法识别的数据') }
-  }
-  if (!response.ok) {
-    const error = new Error(payload?.error || `请求失败（HTTP ${response.status}）`)
-    error.status = response.status
-    throw error
-  }
-  return payload
-}
-
-async function binaryRequest(path, options = {}) {
-  const headers = { accept: options.accept || 'application/json' }
-  if (AUTH_MODE === 'same-origin') headers['x-dsh-knowledge-client'] = 'management-web'
-  if (state.token) headers.authorization = `Bearer ${state.token}`
-  if (options.contentType) headers['content-type'] = options.contentType
-  const response = await fetch(`${API_BASE}/${path.replace(/^\/+/, '')}`, {
-    method: options.method || 'GET',
-    headers,
-    body: options.body,
-    signal: options.signal,
-  })
-  if (options.responseType === 'blob') {
-    if (!response.ok) throw await responseError(response)
-    return response.blob()
-  }
-  const text = await response.text()
-  let payload
-  if (text) {
-    try { payload = JSON.parse(text) } catch { throw new Error('服务返回了无法识别的数据') }
-  }
-  if (!response.ok) {
-    const error = new Error(payload?.error || `请求失败（HTTP ${response.status}）`)
-    error.status = response.status
-    throw error
-  }
-  return payload
-}
-
-function binaryUploadRequest(path, body, options = {}) {
-  return new Promise((resolve, reject) => {
-    const request = new XMLHttpRequest()
-    request.open(options.method || 'POST', `${API_BASE}/${path.replace(/^\/+/, '')}`)
-    request.responseType = 'text'
-    request.setRequestHeader('accept', 'application/json')
-    if (AUTH_MODE === 'same-origin') request.setRequestHeader('x-dsh-knowledge-client', 'management-web')
-    if (state.token) request.setRequestHeader('authorization', `Bearer ${state.token}`)
-    if (options.contentType) request.setRequestHeader('content-type', options.contentType)
-    request.upload.addEventListener('progress', event => {
-      if (event.lengthComputable) options.onProgress?.(event.loaded, event.total)
-    })
-    request.addEventListener('load', () => {
-      let payload
-      if (request.responseText) {
-        try { payload = JSON.parse(request.responseText) }
-        catch { return reject(new Error('服务返回了无法识别的数据')) }
-      }
-      if (request.status < 200 || request.status >= 300) {
-        const error = new Error(payload?.error || `请求失败（HTTP ${request.status}）`)
-        error.status = request.status
-        reject(error)
-        return
-      }
-      resolve(payload)
-    })
-    request.addEventListener('error', () => reject(new Error('上传连接中断，请检查网络后重试')))
-    request.addEventListener('abort', () => reject(new DOMException('上传已取消', 'AbortError')))
-    request.send(body)
-  })
-}
-
-async function responseError(response) {
-  let message = `请求失败（HTTP ${response.status}）`
-  try {
-    const payload = await response.json()
-    if (payload?.error) message = payload.error
-  } catch {}
-  return Object.assign(new Error(message), { status: response.status })
-}
+const { api, binaryRequest, binaryUploadRequest } = createApiClient({
+  apiBase: API_BASE,
+  authMode: AUTH_MODE,
+  getToken: () => state.token,
+})
 
 async function boot() {
   if (AUTH_MODE === 'same-origin') {
