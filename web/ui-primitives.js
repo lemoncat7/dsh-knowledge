@@ -24,6 +24,18 @@ export function actionButton(label, onClick, variant = '', attributes = {}) {
   return element('button', { type: 'button', class: `button ${variant}`.trim(), onClick, ...attributes }, label)
 }
 
+function vectorElement(tag, attributes = {}, ...children) {
+  const node = document.createElementNS('http://www.w3.org/2000/svg', tag)
+  for (const [key, value] of Object.entries(attributes)) {
+    if (value === undefined || value === null || value === false) continue
+    node.setAttribute(key === 'class' ? 'class' : key, String(value))
+  }
+  for (const child of children.flat(Infinity)) {
+    if (child instanceof Node) node.append(child)
+  }
+  return node
+}
+
 export function paneToggleButton(pane, visible, onClick, label) {
   const action = `${visible ? '隐藏' : '显示'}${label}`
   return element('button', {
@@ -43,10 +55,10 @@ export function interfaceIcon(name, className = 'interface-icon') {
     link: 'M9.5 14.5l5-5M8.5 17H6a5 5 0 0 1 0-10h3M15.5 7H18a5 5 0 0 1 0 10h-3',
     rename: 'M4 20l4.2-1 10.4-10.4a2.1 2.1 0 0 0-3-3L5.2 16zM14.5 6.5l3 3',
   }
-  return element('svg', {
+  return vectorElement('svg', {
     class: className, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
     'stroke-width': '1.8', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true',
-  }, element('path', { d: paths[name] }))
+  }, vectorElement('path', { d: paths[name] }))
 }
 
 export function badge(label, variant = '') {

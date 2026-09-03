@@ -1056,7 +1056,7 @@ html,
 .notes-document-more > summary { width: 44px; min-width: 44px; display: inline-grid; place-items: center; list-style: none; padding: 0; color: var(--text); user-select: none; }
 .notes-document-more > summary::-webkit-details-marker { display: none; }
 .notes-document-more > summary:hover, .notes-document-more[open] > summary { background: var(--surface-hover); color: var(--text); }
-.notes-document-more-icon { width: 21px; height: 21px; display: block; stroke-width: 2.8; }
+.notes-document-more-icon { width: 22px; height: 22px; display: block; color: var(--text); stroke-width: 3.2; }
 .notes-document-more-menu {
   position: absolute;
   top: calc(100% + 7px);
@@ -1087,7 +1087,7 @@ html,
 .notes-document-more:not([open]) > .notes-document-more-menu { display: none; }
 .notes-document-more-menu .button { min-width: 0; width: 100%; display: grid; grid-template-columns: 20px minmax(0, 1fr); align-items: center; justify-content: stretch; gap: 10px; border-color: transparent; padding: 8px 10px; box-shadow: none; text-align: left; }
 .notes-document-more-menu .button:hover:not(:disabled) { border-color: transparent; background: var(--surface-hover); box-shadow: none; transform: none; }
-.notes-document-menu-icon { width: 18px; height: 18px; display: block; color: var(--text-tertiary); }
+.notes-document-menu-icon { width: 18px; height: 18px; display: block; color: var(--text); stroke-width: 2; }
 .notes-document-menu-label { min-width: 0; overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
 .notes-document-menu-divider { height: 1px; margin: 4px 7px; background: var(--separator); }
 .notes-document-scroll { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; }

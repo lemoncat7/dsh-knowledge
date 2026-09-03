@@ -420,6 +420,11 @@ test('management console serves a secured same-origin application', async (t) =>
     const response = await fetch(`${base}/knowledge/${moduleName}`)
     assert.equal(response.status, 200)
     assert.match(response.headers.get('content-type'), /text\/javascript/)
+    if (moduleName === 'ui-primitives.js') {
+      const primitives = await response.text()
+      assert.match(primitives, /createElementNS\('http:\/\/www\.w3\.org\/2000\/svg'/)
+      assert.match(primitives, /vectorElement\('path'/)
+    }
   }
 
   const markdownPreview = await fetch(`${base}/knowledge/markdown-preview.js`)
