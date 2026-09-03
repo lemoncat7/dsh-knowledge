@@ -35,8 +35,8 @@ body[data-ds-dark-theme] :is(
 ) {
   color-scheme: dark;
   --knowledge-canvas: #1c1c1e;
-  --knowledge-accent: #e5e5ea;
-  --knowledge-on-accent: #1d1d1f;
+  --knowledge-accent: #69b6ba;
+  --knowledge-on-accent: #101819;
   --knowledge-danger: #ff453a;
   --knowledge-success: #30d158;
   --knowledge-pane: #2c2c2e;

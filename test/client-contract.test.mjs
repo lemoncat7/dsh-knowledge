@@ -27,6 +27,7 @@ test('browser integration is type-checked against the official DSH client contra
   assert.match(css, /--knowledge-pane: #f4f4f4/)
   assert.match(css, /body\[data-ds-dark-theme\][\s\S]*--knowledge-canvas: #1c1c1e/)
   assert.match(css, /body\[data-ds-dark-theme\][\s\S]*--knowledge-pane: #2c2c2e/)
+  assert.match(css, /body\[data-ds-dark-theme\][\s\S]*--knowledge-accent: #69b6ba/)
   assert.match(css, /\.dsh-knowledge-workspace \{[\s\S]*?background: transparent;/)
   assert.doesNotMatch(css, /--dsw-|--xiaohei-plugin-/)
   assert.doesNotMatch(source, /interface\s+(?:ClientContext|SlotService)\b/)

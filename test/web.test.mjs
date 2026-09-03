@@ -287,6 +287,7 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(styles, /scrollbar-color: var\(--scrollbar-thumb\) transparent/)
   assert.match(styles, /--material-panel: color-mix\(in srgb, var\(--surface-raised\) 88%, var\(--surface\)\)/)
   assert.match(styles, /--accent: #3a3a3c/)
+  assert.match(styles, /@media \(prefers-color-scheme: dark\)[\s\S]*--accent: #69b6ba/)
   assert.match(styles, /--glass-filter: saturate\(1\.08\) contrast\(1\.02\) blur\(18px\)/)
   assert.match(styles, /@media \(prefers-color-scheme: dark\)[\s\S]*:root:not\(\[data-color-scheme\]\)/)
   assert.match(styles, /:root\[data-color-scheme="dark"\]/)
