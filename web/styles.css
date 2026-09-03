@@ -1052,6 +1052,39 @@ html,
 .notes-document-actions { display: flex; flex: none; align-items: center; justify-content: flex-end; gap: 5px; }
 .notes-save-state { color: var(--text-tertiary); font-size: 10px; }
 .notes-save-state[data-dirty="true"] { color: var(--warning); }
+.notes-document-more { position: relative; display: none; flex: none; }
+.notes-document-more > summary { width: 44px; min-width: 44px; list-style: none; padding: 0; user-select: none; }
+.notes-document-more > summary::-webkit-details-marker { display: none; }
+.notes-document-more-icon { width: 4px; height: 4px; border-radius: 50%; background: currentColor; box-shadow: -6px 0 currentColor, 6px 0 currentColor; }
+.notes-document-more-menu {
+  position: absolute;
+  top: calc(100% + 7px);
+  right: 0;
+  z-index: 24;
+  width: min(230px, calc(100vw - 16px));
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  padding: 6px;
+  background: var(--dialog-surface);
+  box-shadow: var(--shadow-floating);
+}
+.notes-document-more-menu::before {
+  position: absolute;
+  top: -5px;
+  right: 17px;
+  width: 8px;
+  height: 8px;
+  border-top: 1px solid var(--panel-border);
+  border-left: 1px solid var(--panel-border);
+  background: var(--dialog-surface);
+  content: "";
+  transform: rotate(45deg);
+}
+.notes-document-more:not([open]) > .notes-document-more-menu { display: none; }
+.notes-document-more-menu .button { min-width: 0; width: 100%; justify-content: flex-start; border-color: transparent; box-shadow: none; }
 .notes-document-scroll { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 .notes-document-scroll { scroll-padding-block: 72px 48px; }
 .notes-document-title { min-width: 0; margin: 0; padding: clamp(26px, 4vw, 48px) var(--notes-document-inline) 0; outline: 0; color: var(--text); font-family: var(--font-reading); font-size: clamp(25px, 2.5vw, 32px); font-weight: 700; line-height: 1.22; letter-spacing: -.025em; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; caret-color: var(--accent); }
@@ -2005,11 +2038,13 @@ html,
   .notes-editor-outline-header { padding-right: max(9px, env(safe-area-inset-right)); }
   .notes-editor-outline-close, .notes-editor-outline-link { min-height: 44px; touch-action: manipulation; }
   .notes-editor-outline-list { padding-bottom: max(20px, env(safe-area-inset-bottom)); }
-  .notes-document-toolbar { align-items: stretch; flex-direction: column; gap: 3px; overflow: visible; padding: 4px max(8px, env(safe-area-inset-right)) 5px max(8px, env(safe-area-inset-left)); }
-  .notes-toolbar-leading { width: 100%; min-height: 34px; flex: none; }
-  .notes-document-actions { width: 100%; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
-  .notes-document-actions > .button { min-width: 0; width: 100%; overflow: hidden; padding-inline: 5px; text-overflow: ellipsis; }
-  .notes-save-state { min-height: 44px; display: grid; place-items: center; }
+  .notes-document-toolbar { align-items: center; flex-direction: row; gap: 6px; overflow: visible; padding: 4px max(8px, env(safe-area-inset-right)) 4px max(8px, env(safe-area-inset-left)); }
+  .notes-toolbar-leading { width: auto; min-height: 44px; flex: 1 1 auto; }
+  .notes-document-actions { width: auto; display: flex; gap: 4px; }
+  .notes-document-actions > [data-note-mobile-overflow], .notes-save-state { display: none; }
+  .notes-document-actions > .button, .notes-document-more > summary { min-height: 44px; justify-content: center; touch-action: manipulation; }
+  .notes-document-more { display: block; }
+  .notes-document-more-menu .button { min-height: 44px; touch-action: manipulation; }
   .notes-content.is-document { --notes-document-inline: 16px; }
   .notes-content.is-document.has-line-numbers { --notes-document-inline: 30px; }
   .notes-document-scroll > .notes-live-editor, .notes-document-scroll > .notes-plain-editor { padding-bottom: max(64px, calc(48px + env(safe-area-inset-bottom))); }
@@ -2121,7 +2156,6 @@ html,
   .topbar { gap: 8px; padding-inline: 10px; }
   .topbar-title { gap: 6px; }
   .topbar-heading { max-width: 118px; }
-  .notes-document-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .notes-file-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .candidate-actions { display: grid; grid-template-columns: 1fr; }
   .candidate-actions .button { width: 100%; }

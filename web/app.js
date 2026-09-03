@@ -2447,15 +2447,56 @@ function renderNoteFileToolbar(node, options = {}) {
     ),
     element('div', { class: 'notes-document-actions' },
       options.editable ? element('span', { class: 'notes-save-state', role: 'status', 'data-note-save-state': '', 'data-dirty': String(state.notes.dirty) }, state.notes.dirty ? '未保存' : '已保存') : null,
-      options.enhanced ? actionButton('查找', () => markdownEditorHandle?.openFind(), 'ghost small', { 'data-note-find': '', 'aria-keyshortcuts': 'Control+F Meta+F', 'aria-pressed': 'false' }) : null,
-      options.enhanced ? actionButton('大纲', () => markdownEditorHandle?.toggleOutline(), 'ghost small', { 'data-note-outline': '', 'aria-controls': 'dsh-note-outline', 'aria-expanded': 'false', 'aria-pressed': 'false' }) : null,
-      options.editable ? actionButton('历史', () => { void openNoteHistory(node) }, 'ghost small', { 'data-note-history': '' }) : null,
-      noteDownloadButton(node, 'ghost small'),
-      actionButton('复制引用', () => { void copyNoteReference(node) }, 'ghost small'),
-      actionButton('重命名', () => openRenameNoteNode(node), 'ghost small'),
-      options.editable ? actionButton('保存', () => { void saveNoteDocument() }, 'primary small', { 'data-note-save': '', disabled: !state.notes.dirty }) : null,
+      options.enhanced ? actionButton('查找', () => markdownEditorHandle?.openFind(), 'ghost small', { 'data-note-find': '', 'data-note-mobile-overflow': '', 'aria-keyshortcuts': 'Control+F Meta+F', 'aria-pressed': 'false' }) : null,
+      options.enhanced ? actionButton('大纲', () => markdownEditorHandle?.toggleOutline(), 'ghost small', { 'data-note-outline': '', 'data-note-mobile-overflow': '', 'aria-controls': 'dsh-note-outline', 'aria-expanded': 'false', 'aria-pressed': 'false' }) : null,
+      options.editable ? actionButton('历史', () => { void openNoteHistory(node) }, 'ghost small', { 'data-note-history': '', 'data-note-mobile-overflow': '' }) : null,
+      noteDownloadButton(node, 'ghost small', '下载', { 'data-note-mobile-overflow': '' }),
+      actionButton('复制引用', () => { void copyNoteReference(node) }, 'ghost small', { 'data-note-mobile-overflow': '' }),
+      actionButton('重命名', () => openRenameNoteNode(node), 'ghost small', { 'data-note-mobile-overflow': '' }),
+      options.editable ? actionButton('保存', () => { void saveNoteDocument() }, 'primary small', { 'data-note-save': '', 'data-note-mobile-overflow': '', disabled: !state.notes.dirty }) : null,
+      renderNoteFileOverflowMenu(node, options),
     ),
   )
+}
+
+function renderNoteFileOverflowMenu(node, options) {
+  const details = element('details', {
+    class: 'notes-document-more',
+    onKeyDown: event => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      details.open = false
+      summary.focus()
+    },
+    onFocusOut: () => {
+      window.setTimeout(() => {
+        if (!details.contains(document.activeElement)) details.open = false
+      }, 0)
+    },
+  })
+  const summary = element('summary', { class: 'button ghost small', 'aria-label': `打开 ${node.name} 的更多操作` },
+    element('span', { class: 'notes-document-more-icon', 'aria-hidden': 'true' }),
+  )
+  details.addEventListener('toggle', () => {
+    summary.setAttribute('aria-expanded', String(details.open))
+    summary.setAttribute('aria-label', `${details.open ? '关闭' : '打开'} ${node.name} 的更多操作`)
+  })
+  const closeThen = action => event => {
+    details.open = false
+    action(event)
+  }
+  const menu = element('div', { class: 'notes-document-more-menu', role: 'menu', 'aria-label': `${node.name} 的更多操作` },
+    options.editable ? actionButton(state.notes.dirty ? '保存修改' : '已保存', closeThen(() => { void saveNoteDocument() }), state.notes.dirty ? 'primary small' : 'ghost small', { role: 'menuitem', disabled: !state.notes.dirty }) : null,
+    options.enhanced ? actionButton('查找', closeThen(() => markdownEditorHandle?.openFind()), 'ghost small', { role: 'menuitem' }) : null,
+    options.enhanced ? actionButton('大纲', closeThen(() => markdownEditorHandle?.toggleOutline()), 'ghost small', { role: 'menuitem' }) : null,
+    options.editable ? actionButton('页面历史', closeThen(() => { void openNoteHistory(node) }), 'ghost small', { role: 'menuitem' }) : null,
+    noteDownloadButton(node, 'ghost small', '下载', { role: 'menuitem', onClick: closeThen(event => { void downloadNoteFile(node, event.currentTarget) }) }),
+    actionButton('复制引用', closeThen(() => { void copyNoteReference(node) }), 'ghost small', { role: 'menuitem' }),
+    actionButton('重命名', closeThen(() => openRenameNoteNode(node)), 'ghost small', { role: 'menuitem' }),
+  )
+  summary.setAttribute('aria-expanded', 'false')
+  details.append(summary, menu)
+  return details
 }
 
 function renderNoteFileStatusbar(node) {
@@ -3085,10 +3126,11 @@ function renderNoteHistoryDiff(historical, current) {
   )
 }
 
-function noteDownloadButton(node, variant = 'ghost small', label = '下载') {
+function noteDownloadButton(node, variant = 'ghost small', label = '下载', attributes = {}) {
   return actionButton(label, event => { void downloadNoteFile(node, event.currentTarget) }, variant, {
     'aria-label': `下载 ${node.name}`,
     title: `下载 ${node.name}`,
+    ...attributes,
   })
 }
 
