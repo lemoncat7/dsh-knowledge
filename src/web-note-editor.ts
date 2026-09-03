@@ -6,12 +6,19 @@ import { TableKit } from '@tiptap/extension-table'
 import TaskItem from '@tiptap/extension-task-item'
 import TaskList from '@tiptap/extension-task-list'
 import Text from '@tiptap/extension-text'
-import { UndoRedo } from '@tiptap/extensions'
+import { Placeholder, UndoRedo } from '@tiptap/extensions'
 import { Markdown } from '@tiptap/markdown'
 import StarterKit from '@tiptap/starter-kit'
+import { createNoteEditorChrome, type NoteEditorChrome } from './web-note-editor-chrome.js'
+import { NoteSearch } from './web-note-editor-search.js'
 
 export interface MarkdownEditorOptions {
   host: HTMLElement
+  frame?: HTMLElement
+  scrollHost?: HTMLElement
+  outlineHost?: HTMLElement
+  findButton?: HTMLButtonElement | null
+  outlineButton?: HTMLButtonElement | null
   markdown: string
   label: string
   onChange(markdown: string): void
@@ -22,6 +29,8 @@ export interface MarkdownEditorHandle {
   getMarkdown(): string
   focus(): void
   insertMarkdown(markdown: string): void
+  openFind(): void
+  toggleOutline(): void
   destroy(): void
 }
 
@@ -46,6 +55,7 @@ export interface PlainTextEditorHandle {
  * independent from the surrounding vanilla DOM renderer.
  */
 export function createMarkdownEditor(options: MarkdownEditorOptions): MarkdownEditorHandle {
+  let chrome: NoteEditorChrome | undefined
   const editor = new Editor({
     element: options.host,
     content: options.markdown,
@@ -59,6 +69,8 @@ export function createMarkdownEditor(options: MarkdownEditorOptions): MarkdownEd
         },
       }),
       Markdown,
+      NoteSearch,
+      Placeholder.configure({ placeholder: '输入正文，或使用 Markdown 快捷语法…' }),
       Image.configure({ allowBase64: false, inline: false }),
       TableKit.configure({ table: { resizable: false } }),
       TaskList,
@@ -73,14 +85,34 @@ export function createMarkdownEditor(options: MarkdownEditorOptions): MarkdownEd
         spellcheck: 'false',
       },
       handleKeyDown: (_view, event) => {
-        if (!(event.metaKey || event.ctrlKey) || event.key.toLocaleLowerCase() !== 's') return false
-        event.preventDefault()
-        options.onSave()
-        return true
+        if (!(event.metaKey || event.ctrlKey)) return false
+        const key = event.key.toLocaleLowerCase()
+        if (key === 's') {
+          event.preventDefault()
+          options.onSave()
+          return true
+        }
+        if (key === 'f') {
+          event.preventDefault()
+          chrome?.openFind()
+          return true
+        }
+        return false
       },
     },
     onUpdate: ({ editor: current }) => options.onChange(current.getMarkdown()),
   })
+
+  if (options.frame && options.scrollHost && options.outlineHost) {
+    chrome = createNoteEditorChrome({
+      editor,
+      frame: options.frame,
+      scrollHost: options.scrollHost,
+      outlineHost: options.outlineHost,
+      ...(options.findButton !== undefined ? { findButton: options.findButton } : {}),
+      ...(options.outlineButton !== undefined ? { outlineButton: options.outlineButton } : {}),
+    })
+  }
 
   return {
     getMarkdown: () => editor.getMarkdown(),
@@ -89,7 +121,13 @@ export function createMarkdownEditor(options: MarkdownEditorOptions): MarkdownEd
       editor.commands.insertContent(markdown, { contentType: 'markdown' })
       editor.commands.focus()
     },
-    destroy: () => editor.destroy(),
+    openFind: () => chrome?.openFind(),
+    toggleOutline: () => chrome?.toggleOutline(),
+    destroy: () => {
+      chrome?.destroy()
+      chrome = undefined
+      editor.destroy()
+    },
   }
 }
 

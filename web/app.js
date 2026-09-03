@@ -2223,22 +2223,27 @@ function renderEditableNote(node) {
     ? element('div', { class: 'notes-live-editor', role: 'status', 'aria-label': `正在打开 ${node.name}` },
       element('div', { class: 'notes-editor-loading' }, '正在打开文档…'))
     : createPlainTextNoteEditor(node)
-  if (markdown) mountMarkdownNoteEditor(editor, node)
+  const scrollHost = element('div', { class: 'notes-document-scroll', 'data-scroll-key': `notes-document:${node.id}` },
+    element('h1', {
+      class: 'notes-document-title', contenteditable: 'plaintext-only', spellcheck: 'false',
+      'aria-label': `修改 ${node.name} 的标题`, title: '点击修改标题',
+      onBlur: event => { void saveEditableNoteTitle(event.currentTarget, node) },
+      onKeyDown: event => {
+        if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur() }
+        if (event.key === 'Escape') { event.preventDefault(); event.currentTarget.textContent = title; event.currentTarget.blur() }
+      },
+    }, title),
+    editor,
+  )
+  const outlineHost = markdown ? element('aside', { id: 'dsh-note-outline', class: 'notes-editor-outline', 'aria-label': '文档大纲', 'aria-hidden': 'true' }) : null
+  const editorFrame = markdown
+    ? element('div', { class: 'notes-editor-frame', 'data-outline-open': 'false', 'data-find-open': 'false' }, scrollHost, outlineHost)
+    : scrollHost
+  if (markdown) mountMarkdownNoteEditor(editor, node, editorFrame, scrollHost, outlineHost)
   else mountPlainTextNoteEditor(editor, node)
   return element('main', { class: `notes-content is-document${markdown ? '' : ' has-line-numbers'}` },
-    renderNoteFileToolbar(node, { editable: true }),
-    element('div', { class: 'notes-document-scroll', 'data-scroll-key': `notes-document:${node.id}` },
-      element('h1', {
-        class: 'notes-document-title', contenteditable: 'plaintext-only', spellcheck: 'false',
-        'aria-label': `修改 ${node.name} 的标题`, title: '点击修改标题',
-        onBlur: event => { void saveEditableNoteTitle(event.currentTarget, node) },
-        onKeyDown: event => {
-          if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur() }
-          if (event.key === 'Escape') { event.preventDefault(); event.currentTarget.textContent = title; event.currentTarget.blur() }
-        },
-      }, title),
-      editor,
-    ),
+    renderNoteFileToolbar(node, { editable: true, enhanced: markdown }),
+    editorFrame,
     renderNoteFileStatusbar(node),
   )
 }
@@ -2293,8 +2298,11 @@ function updateNoteDraft(value) {
   syncNoteEditorChrome()
 }
 
-function mountMarkdownNoteEditor(host, node) {
+function mountMarkdownNoteEditor(host, node, frame, scrollHost, outlineHost) {
   mountMarkdownEditor(host, {
+    frame,
+    scrollHost,
+    outlineHost,
     markdown: state.notes.draft,
     label: `编辑 ${node.name}`,
     isCurrent: () => state.notes.selectedNode?.id === node.id,
@@ -2340,6 +2348,13 @@ function mountMarkdownEditor(host, options) {
       host.removeAttribute('role')
       markdownEditorHandle = runtime.createMarkdownEditor({
         host,
+        ...(options.frame ? {
+          frame: options.frame,
+          scrollHost: options.scrollHost,
+          outlineHost: options.outlineHost,
+          findButton: host.closest('.notes-content')?.querySelector('[data-note-find]') || null,
+          outlineButton: host.closest('.notes-content')?.querySelector('[data-note-outline]') || null,
+        } : {}),
         markdown: options.markdown,
         label: options.label,
         onChange: options.onChange,
@@ -2432,6 +2447,8 @@ function renderNoteFileToolbar(node, options = {}) {
     ),
     element('div', { class: 'notes-document-actions' },
       options.editable ? element('span', { class: 'notes-save-state', role: 'status', 'data-note-save-state': '', 'data-dirty': String(state.notes.dirty) }, state.notes.dirty ? '未保存' : '已保存') : null,
+      options.enhanced ? actionButton('查找', () => markdownEditorHandle?.openFind(), 'ghost small', { 'data-note-find': '', 'aria-keyshortcuts': 'Control+F Meta+F', 'aria-pressed': 'false' }) : null,
+      options.enhanced ? actionButton('大纲', () => markdownEditorHandle?.toggleOutline(), 'ghost small', { 'data-note-outline': '', 'aria-controls': 'dsh-note-outline', 'aria-expanded': 'false', 'aria-pressed': 'false' }) : null,
       noteDownloadButton(node, 'ghost small'),
       actionButton('复制引用', () => { void copyNoteReference(node) }, 'ghost small'),
       actionButton('重命名', () => openRenameNoteNode(node), 'ghost small'),

@@ -1,12 +1,40 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import test from 'node:test'
+import { Schema } from '@tiptap/pm/model'
 import { registerKnowledgeWeb } from '../lib/web.js'
 import { plainTextFromDocument, plainTextToDocument } from '../lib/web-note-editor.js'
+import { findNoteSearchRanges } from '../lib/web-note-editor-search.js'
 
 test('plain text note documents preserve logical lines exactly', () => {
   const source = '第一行\n会自动折行但仍是一行的长内容\n\n最后一行\n'
   assert.equal(plainTextFromDocument(plainTextToDocument(source)), source)
+})
+
+test('note search finds literal text across inline formatting without regex surprises', () => {
+  const schema = new Schema({
+    nodes: {
+      doc: { content: 'paragraph+' },
+      paragraph: { content: 'inline*', group: 'block' },
+      text: { group: 'inline' },
+      hard_break: { inline: true, group: 'inline' },
+    },
+    marks: { strong: {} },
+  })
+  const strong = schema.marks.strong.create()
+  const document = schema.node('doc', null, [
+    schema.node('paragraph', null, [schema.text('Doc'), schema.text('most', [strong]), schema.text(' docmost.')]),
+  ])
+  assert.deepEqual(findNoteSearchRanges(document, 'docmost', false), [
+    { from: 1, to: 8 },
+    { from: 9, to: 16 },
+  ])
+  assert.deepEqual(findNoteSearchRanges(document, '.', true), [{ from: 16, to: 17 }])
+  const broken = schema.node('doc', null, [schema.node('paragraph', null, [
+    schema.text('Doc'), schema.node('hard_break'), schema.text('most'),
+  ])])
+  assert.deepEqual(findNoteSearchRanges(broken, 'docmost', false), [])
+  assert.deepEqual(findNoteSearchRanges(broken, 'most', false), [{ from: 5, to: 9 }])
 })
 
 test('management console serves a secured same-origin application', async (t) => {
@@ -74,6 +102,10 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(application, /表格内容，可横向滚动/)
   assert.match(application, /loadMarkdownNoteEditor/)
   assert.match(application, /DshKnowledgeNoteEditor/)
+  assert.match(application, /data-note-find/)
+  assert.match(application, /data-note-outline/)
+  assert.match(application, /aria-keyshortcuts': 'Control\+F Meta\+F'/)
+  assert.match(application, /notes-editor-frame/)
   assert.match(application, /createPlainTextEditor/)
   assert.match(application, /createApiClient/)
   assert.match(application, /function collectNoteEntry\(/)
@@ -301,6 +333,9 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(styles, /\.notes-tree-chevron::before/)
   assert.match(styles, /\.notes-file-info/)
   assert.match(styles, /\.notes-live-editor-surface/)
+  assert.match(styles, /\.notes-editor-outline/)
+  assert.match(styles, /\.notes-find-panel/)
+  assert.match(styles, /\.notes-selection-menu/)
   assert.match(styles, /\.knowledge-live-editor/)
   assert.doesNotMatch(styles, /\.note-mode-switch/)
   assert.doesNotMatch(styles, /\.notes-document-paper/)
@@ -382,6 +417,9 @@ test('management console serves a secured same-origin application', async (t) =>
   const noteEditorSource = await noteEditor.text()
   assert.match(noteEditorSource, /DshKnowledgeNoteEditor/)
   assert.match(noteEditorSource, /spellcheck:"false"/)
+  assert.match(noteEditorSource, /notes-search-result-current/)
+  assert.match(noteEditorSource, /notes-editor-outline-header/)
+  assert.match(noteEditorSource, /notes-selection-primary/)
 
   const plainTextEditor = await fetch(`${base}/knowledge/plain-text-editor.js`)
   assert.equal(plainTextEditor.status, 404)
