@@ -87,17 +87,17 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-color-scheme]) {
-    --bg: #1c1c1e;
-    --surface: #2c2c2e;
-    --surface-raised: #323235;
+    --bg: #101719;
+    --surface: #182022;
+    --surface-raised: #20292b;
     --surface-soft: rgb(255 255 255 / 6%);
     --surface-hover: rgb(255 255 255 / 7.5%);
-    --dialog-surface: #2c2c2e;
-    --text: #f5f5f7;
-    --text-secondary: #d1d1d6;
-    --text-tertiary: #98989d;
-    --border: rgb(255 255 255 / 10%);
-    --border-strong: rgb(255 255 255 / 18%);
+    --dialog-surface: #20292b;
+    --text: #e3eaeb;
+    --text-secondary: #bbc9cc;
+    --text-tertiary: #95a7ab;
+    --border: rgb(184 204 205 / 10%);
+    --border-strong: rgb(184 204 205 / 18%);
     --accent: #69b6ba;
     --accent-hover: #8aced0;
     --accent-soft: rgb(105 182 186 / 13%);

@@ -24,11 +24,11 @@ test('uses an opaque stable dark workspace palette without depending on a theme 
   assert.equal(message.type, KNOWLEDGE_THEME_MESSAGE)
   assert.equal(message.version, KNOWLEDGE_THEME_PROTOCOL_VERSION)
   assert.equal(message.colorScheme, 'dark')
-  assert.equal(message.tokens['--bg'], '#1c1c1e')
-  assert.equal(message.tokens['--surface'], '#2c2c2e')
-  assert.equal(message.tokens['--surface-raised'], '#323235')
-  assert.equal(message.tokens['--dialog-surface'], '#2c2c2e')
-  assert.equal(message.tokens['--text'], '#f5f5f7')
+  assert.equal(message.tokens['--bg'], '#101719')
+  assert.equal(message.tokens['--surface'], '#182022')
+  assert.equal(message.tokens['--surface-raised'], '#20292b')
+  assert.equal(message.tokens['--dialog-surface'], '#20292b')
+  assert.equal(message.tokens['--text'], '#e3eaeb')
   assert.equal(message.tokens['--accent'], '#69b6ba')
   assert.equal(message.tokens['--accent-hover'], '#8aced0')
   assert.equal(message.tokens['--accent-soft'], 'rgb(105 182 186 / 13%)')
@@ -46,10 +46,10 @@ test('does not let host material levels fragment the workspace hierarchy', () =>
     active: { colorScheme: 'dark', tokens: {} },
   })
 
-  assert.equal(message.tokens['--bg'], '#1c1c1e')
-  assert.equal(message.tokens['--surface'], '#2c2c2e')
-  assert.equal(message.tokens['--surface-raised'], '#323235')
-  assert.equal(message.tokens['--surface-soft'], 'rgb(255 255 255 / 6%)')
+  assert.equal(message.tokens['--bg'], '#101719')
+  assert.equal(message.tokens['--surface'], '#182022')
+  assert.equal(message.tokens['--surface-raised'], '#20292b')
+  assert.equal(message.tokens['--surface-soft'], 'rgb(184 204 205 / 6%)')
 })
 
 test('uses the light workspace palette when the host is light', () => {
