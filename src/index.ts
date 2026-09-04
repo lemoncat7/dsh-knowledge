@@ -463,11 +463,12 @@ function rememberWritebackStatus(
 }
 
 function snapshotAgent(agent: AgentLike): AgentLike {
+  const events = agent.session.snapshotEvents()
   return {
     session: {
       id: agent.session.id,
       header: { ...agent.session.header },
-      events: [...agent.session.events],
+      snapshotEvents: () => events,
     },
   }
 }

@@ -81,7 +81,7 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
     source: { kind: 'plugin', plugin: 'dsh-knowledge', form: 'recall' },
   }
   const session = {
-    id: 'session-1', header: { cwd: '/workspace/demo' }, events: [
+    id: 'session-1', header: { cwd: '/workspace/demo' }, snapshotEvents() { return this.events }, events: [
       { type: 'turn/start', seq: 0, data: { turn: 1 } },
       { type: 'user/message', seq: 1, data: staleNotice },
       { type: 'user/message', seq: 2, data: user },
@@ -331,7 +331,7 @@ test('conservative write-back accepts durable source-backed GitHub research with
     enabled: true, recallEnabled: true, writeMode: 'direct', includeTags: [], excludeTags: [], extractionInstructions: '',
   })
   const session = {
-    id: 'github-session', header: {}, events: [
+    id: 'github-session', header: {}, snapshotEvents() { return this.events }, events: [
       { type: 'turn/start', seq: 0, data: { turn: 1 } },
       { type: 'user/message', seq: 1, data: { id: 'u-github', role: 'user', content: [{ type: 'text', text: '帮我搜索并评估这个 GitHub 项目。' }], source: { kind: 'user' } } },
       { type: 'assistant/message', seq: 2, data: { turn: 1, message: {
@@ -477,7 +477,7 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
   })
 
   const sessionFor = (id, turn) => ({
-    id, header: { cwd: '/workspace/direct' }, events: [
+    id, header: { cwd: '/workspace/direct' }, snapshotEvents() { return this.events }, events: [
       { type: 'turn/start', seq: 0, data: { turn } },
       { type: 'user/message', seq: 1, data: { id: `u-${id}`, role: 'user', content: [{ type: 'text', text: 'Record the durable policy.' }], source: { kind: 'user' } } },
       { type: 'assistant/message', seq: 2, data: { turn, step: 1, message: {

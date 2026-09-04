@@ -12,7 +12,9 @@ test('browser integration is type-checked against the official DSH client contra
 
   assert.ok(tsconfig.include.includes('src/**/*.tsx'))
   assert.equal(tsconfig.compilerOptions.jsx, 'react-jsx')
-  assert.match(source, /ClientContext.*@deepseek-ai\/dsh-client-runtime\/client/)
+  assert.match(source, /Context as ClientContext.*@deepseek-ai\/cordis/)
+  assert.match(source, /@deepseek-ai\/dsh-client-ui-session\/client/)
+  assert.match(source, /@deepseek-ai\/dsh-client-ui-chat\/client/)
   assert.match(source, /PropsRuntime.*@deepseek-ai\/dsh-client-ui-slots/)
   assert.match(source, /type ConversationSlotProps = PropsRuntime<'conversation'>/)
   assert.doesNotMatch(source, /dsh-knowledge-workspace-close/)

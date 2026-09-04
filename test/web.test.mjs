@@ -74,6 +74,7 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(index.headers.get('content-security-policy'), /frame-ancestors 'self'/)
   assert.match(index.headers.get('content-security-policy'), /img-src 'self' data: blob:/)
   assert.match(index.headers.get('content-security-policy'), /frame-src blob:/)
+  assert.match(index.headers.get('content-security-policy'), /style-src 'self' 'sha256-[^']+'; style-src-attr 'unsafe-inline'/)
   const html = await index.text()
   assert.match(html, /name="dsh-knowledge-api" content="\/knowledge-local\/v1"/)
   assert.match(html, /name="dsh-knowledge-auth-mode" content="same-origin"/)

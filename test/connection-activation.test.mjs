@@ -161,7 +161,7 @@ test('plugin verifies, persists, hot-switches, and restores remote connections',
   assert.equal(JSON.parse(await readFile(connectionPath, 'utf8')).remoteToken, token)
 
   const toolExec = {
-    agent: { session: { id: 'remote-tool-session', header: {}, events: [
+    agent: { session: { id: 'remote-tool-session', header: {}, snapshotEvents() { return this.events }, events: [
       { type: 'turn/start', seq: 0, data: { turn: 1 } },
       { type: 'user/message', seq: 1, data: {
         id: 'create-remote-base', role: 'user', content: [{ type: 'text', text: '创建一个中央知识库并设置专用回写模型。' }], source: { kind: 'user' },

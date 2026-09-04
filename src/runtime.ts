@@ -18,7 +18,7 @@ export interface SessionEventLike {
 export interface SessionLike {
   id: string
   header: { cwd?: string }
-  events: readonly SessionEventLike[]
+  snapshotEvents(): readonly SessionEventLike[]
 }
 
 export interface AgentLike {

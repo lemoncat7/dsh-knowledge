@@ -84,7 +84,10 @@ function sendAsset(res: ServerResponse, method: string, asset: Asset, embedded =
 }
 
 function securityHeaders(embedded = false): Record<string, string> {
-  const policy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; frame-src blob:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"
+  // The editor and workspace effects position their own controls and expose
+  // validated host-theme tokens through element.style. Keep stylesheet
+  // sources locked to this origin while allowing those style attributes.
+  const policy = "default-src 'self'; script-src 'self'; style-src 'self' 'sha256-PlumsSlvJ7vvWzjqibGAYKq92O3y/4JTxWWsWJvyUYA='; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; frame-src blob:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"
   return {
     'content-security-policy': embedded ? policy : `${policy}; frame-ancestors 'self'`,
     'referrer-policy': 'no-referrer',

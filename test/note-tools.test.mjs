@@ -40,7 +40,7 @@ test('AI note tools create, browse, read, update, move, and safely delete sessio
     await rm(root, { recursive: true, force: true })
   })
 
-  const session = { id: 'note-workspace-session', header: { cwd: '/workspace/demo' }, events: [] }
+  const session = { id: 'note-workspace-session', header: { cwd: '/workspace/demo' }, snapshotEvents() { return this.events }, events: [] }
   const exec = { agent: { session }, signal: new AbortController().signal }
   directUserTurn(session, 1, '请新建一个项目笔记目录，并在里面创建一篇发布计划笔记。')
   const folderResult = JSON.parse(await tools.get('knowledge_note_create').execute({ kind: 'folder', name: '项目笔记' }, exec))
@@ -73,7 +73,7 @@ test('AI note tools create, browse, read, update, move, and safely delete sessio
   const updated = await observer.readNote(renamedNode.id)
   assert.match(new TextDecoder().decode(updated.content), /第一阶段。[\s\S]*第二阶段。/)
 
-  const otherSession = { id: 'other-note-workspace-session', header: { cwd: '/workspace/demo' }, events: [] }
+  const otherSession = { id: 'other-note-workspace-session', header: { cwd: '/workspace/demo' }, snapshotEvents() { return this.events }, events: [] }
   directUserTurn(otherSession, 1, '请查看正式发布计划笔记。')
   await assert.rejects(
     () => tools.get('knowledge_note_read').execute({ noteHandle: noteResult.note.handle }, {
@@ -127,7 +127,7 @@ test('AI note deletion preserves notes referenced by knowledge documents', async
     for (const dispose of disposers.reverse()) await dispose()
     await rm(root, { recursive: true, force: true })
   })
-  const session = { id: 'protected-note-session', header: { cwd: '/workspace/demo' }, events: [] }
+  const session = { id: 'protected-note-session', header: { cwd: '/workspace/demo' }, snapshotEvents() { return this.events }, events: [] }
   const exec = { agent: { session }, signal: new AbortController().signal }
   directUserTurn(session, 1, '请搜索并删除原始依据笔记。')
   const search = await tools.get('knowledge_note_search').execute({ query: '原始依据' }, exec)

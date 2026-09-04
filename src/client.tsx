@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
+import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+import type {} from '@deepseek-ai/dsh-client-ui-session/client'
+import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
@@ -444,7 +448,7 @@ function KnowledgeWorkspace({
   const [managementPath, setManagementPath] = useState<string | undefined>(cachedManagementPath)
   const [panelError, setPanelError] = useState('')
   const [target, setTarget] = useState<KnowledgeDocumentTarget | undefined>(workspace.currentTarget())
-  const projectId = useSessions(state => sessionId === undefined ? undefined : state.byId[sessionId]?.cwd)
+  const projectId = useSessions((state: SessionListState) => sessionId === undefined ? undefined : state.byId[sessionId]?.cwd)
   const knowledgeUrl = managementPath === undefined ? undefined : knowledgePanelUrl(managementPath, sessionId, projectId, target)
   const frame = useRef<HTMLIFrameElement | null>(null)
   const themeFrame = useRef(0)

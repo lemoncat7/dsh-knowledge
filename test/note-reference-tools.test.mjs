@@ -58,7 +58,7 @@ test('AI note-reference tools use session handles, mounted write policy, and met
     await rm(root, { recursive: true, force: true })
   })
 
-  const session = { id: 'note-tool-session', header: { cwd: '/workspace/demo' }, events: [] }
+  const session = { id: 'note-tool-session', header: { cwd: '/workspace/demo' }, snapshotEvents() { return this.events }, events: [] }
   directUserTurn(session, 1, '请把生产部署知识文档关联到部署清单笔记。')
   const exec = { agent: { session }, signal: new AbortController().signal }
   const knowledgeOutput = await tools.get('knowledge_search').execute({ query: '生产部署', base: 'default' }, exec)
@@ -81,7 +81,7 @@ test('AI note-reference tools use session handles, mounted write policy, and met
   assert.equal(listed.changed, 0)
   assert.equal(listed.references.length, 1)
 
-  const otherSession = { id: 'other-note-session', header: { cwd: '/workspace/demo' }, events: [] }
+  const otherSession = { id: 'other-note-session', header: { cwd: '/workspace/demo' }, snapshotEvents() { return this.events }, events: [] }
   directUserTurn(otherSession, 1, '请把生产部署知识文档关联到部署清单笔记。')
   const otherExec = { agent: { session: otherSession }, signal: new AbortController().signal }
   const otherKnowledgeOutput = await tools.get('knowledge_search').execute({ query: '生产部署', base: 'default' }, otherExec)

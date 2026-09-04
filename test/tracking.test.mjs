@@ -16,7 +16,7 @@ test('records knowledge-linked partner observations through the mounted write po
     recallEnabled: true, writeMode: 'direct', includeTags: ['dsh'], excludeTags: [], extractionInstructions: '',
   })
   const service = createKnowledgeTrackingService(provider)
-  const agent = { session: { id: 'partner-session', header: { cwd: '/workspace/dsh' }, events: [] } }
+  const agent = { session: { id: 'partner-session', header: { cwd: '/workspace/dsh' }, snapshotEvents() { return this.events }, events: [] } }
   const result = await service.record(agent, {
     id: 'observation-1', subject: 'Canvas 拖动稳定性', event: '新版修复了拖动丢帧', evidence: '发行说明与测试一致',
     source: 'release notes', reference: 'DSH/Canvas 稳定性', at: Date.parse('2026-08-28T08:00:00Z'),
@@ -56,7 +56,7 @@ test('lists only recallable documents mounted for the partner session', async (t
     recallEnabled: true, writeMode: 'none', includeTags: [], excludeTags: [], extractionInstructions: '',
   })
   const service = createKnowledgeTrackingService(provider)
-  const agent = { session: { id: 'partner-session', header: {}, events: [] } }
+  const agent = { session: { id: 'partner-session', header: {}, snapshotEvents() { return this.events }, events: [] } }
   const items = await service.list(agent, '路线', 20)
   assert.deepEqual(items, [{
     kind: 'knowledge', label: '工作资料 / 路线图', detail: '已挂载知识文档 · 1 条知识', token: '@知识库[工作资料/路线图]',

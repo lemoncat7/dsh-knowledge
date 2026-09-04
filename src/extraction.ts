@@ -256,18 +256,19 @@ function pendingDestination(
 }
 
 function snapshotTurn(session: SessionLike, turn: number, maxChars: number): TurnSnapshot | undefined {
+  const events = session.snapshotEvents()
   let start = -1
-  for (let index = session.events.length - 1; index >= 0; index -= 1) {
-    const event = session.events[index]
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
     if (event?.type === 'turn/start' && event.data.turn === turn) { start = index; break }
   }
   if (start < 0) return undefined
-  const events = session.events.slice(start)
-  const userMessages = events
+  const turnEvents = events.slice(start)
+  const userMessages = turnEvents
     .filter(event => event.type === 'user/message')
     .map(event => event.data as unknown as MessageLike)
     .filter(message => message.source?.kind === 'user')
-  const assistantMessages = events
+  const assistantMessages = turnEvents
     .filter(event => event.type === 'assistant/message' && event.data.turn === turn)
     .map(event => (event.data as { message?: MessageLike }).message)
     .filter((message): message is MessageLike => message !== undefined)
