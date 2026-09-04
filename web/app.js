@@ -26,6 +26,8 @@ const NOTE_MAX_FILE_SIZE = 64 * 1024 * 1024
 const pageParams = new URLSearchParams(location.search)
 const initialKnowledgeBaseId = pageParams.get('knowledgeBaseId')?.trim() || ''
 const initialDocumentId = pageParams.get('documentId')?.trim() || ''
+const initialView = pageParams.get('view') === 'notes' ? 'notes' : 'entries'
+const initialNoteId = pageParams.get('noteId')?.trim() || ''
 const mountContext = {
   sessionId: pageParams.get('sessionId')?.trim() || '',
   projectId: pageParams.get('projectId')?.trim() || '',
@@ -46,7 +48,7 @@ function createDocumentViewState(overrides = {}) {
 
 const state = {
   token: sessionStorage.getItem(TOKEN_KEY) || '',
-  view: 'entries',
+  view: initialView,
   menuOpen: false,
   stats: null,
   overview: null,
@@ -88,7 +90,7 @@ const state = {
   tokens: [],
   notes: {
     children: new Map(), loadedFolders: new Set(), expandedFolders: new Set(),
-    selectedId: '', selectedNode: null, currentFolderId: null, breadcrumbs: [],
+    selectedId: initialNoteId, selectedNode: null, currentFolderId: null, breadcrumbs: [],
     content: '', draft: '', dirty: false, assetUrl: '', query: '', searchResults: [],
     transfer: null, loadingNodeId: '', shares: [], shareError: '', browserOpen: false,
   },
@@ -195,7 +197,7 @@ async function boot() {
     state.token = ''
     await Promise.all([
       api('service').then(service => { state.service = service }).catch(() => {}),
-      navigate('entries'),
+      navigate(initialView),
     ])
     renderShell()
     return
@@ -206,7 +208,7 @@ async function boot() {
   }
   try {
     await api('entries?limit=1')
-    await navigate('entries')
+    await navigate(initialView)
   } catch (error) {
     sessionStorage.removeItem(TOKEN_KEY)
     state.token = ''
@@ -233,7 +235,7 @@ function renderLogin(message = '') {
       try {
         await api('entries?limit=1')
         sessionStorage.setItem(TOKEN_KEY, token)
-        await navigate('entries')
+        await navigate(initialView)
       } catch (requestError) {
         state.token = ''
         error.textContent = requestError.status === 401 ? '令牌无效或已被撤销。' : '连接失败，请检查服务状态后重试。'
@@ -484,7 +486,7 @@ async function loadNotes(signal, onPhase = () => {}) {
       ? state.notes.selectedNode
       : await api(`notes/${encodeURIComponent(state.notes.selectedId)}`, { signal }).catch(() => null)
     if (!selected) clearNoteSelection()
-    else state.notes.selectedNode = selected
+    else await selectNoteNode(selected)
   }
 }
 
@@ -1079,7 +1081,7 @@ function applySidebarVisibility(shell, hidden) {
   const resizer = shell.querySelector(':scope > .app-sidebar-resizer')
   const main = shell.querySelector(':scope > .main')
   const toggle = shell.querySelector('.pane-toggle-button[data-pane="main"]')
-  const compact = window.matchMedia('(max-width: 760px)').matches
+  const compact = window.matchMedia('(max-width: 1120px), (hover: none) and (pointer: coarse) and (max-width: 1400px)').matches
   const sidebarUnavailable = compact ? !state.menuOpen : hidden
   sidebar?.toggleAttribute('inert', sidebarUnavailable)
   resizer?.toggleAttribute('inert', hidden)

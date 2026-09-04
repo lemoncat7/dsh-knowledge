@@ -15,6 +15,8 @@ import {
   IconChevronLeftOutline14, IconDataOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import cssText from './client.css'
+import activityCss from './knowledge-activity.css'
+import { createKnowledgeActivityController, type KnowledgeActivityController } from './knowledge-activity-controller.js'
 import { KNOWLEDGE_SETTINGS_NAMESPACE } from './constants.js'
 import {
   createKnowledgeHostTheme,
@@ -25,6 +27,7 @@ import {
 
 const PLUGIN_ID = '@lemoncat7/dsh-knowledge'
 const STYLE_ID = `${PLUGIN_ID}/client`
+const COMPACT_KNOWLEDGE_VIEWPORT = '(max-width: 1120px), (hover: none) and (pointer: coarse) and (max-width: 1400px)'
 
 type SidebarActionProps = PropsRuntime<'sidebar.footer.action'>
 type ConversationSlotProps = PropsRuntime<'conversation'>
@@ -40,8 +43,9 @@ interface KnowledgeConnectionView {
   managementPath?: string
 }
 
-interface KnowledgeWorkspaceController {
+export interface KnowledgeWorkspaceController {
   isOpen(): boolean
+  open(): void
   toggle(): void
   openDocument(target: KnowledgeDocumentTarget): void
   currentTarget(): KnowledgeDocumentTarget | undefined
@@ -49,10 +53,9 @@ interface KnowledgeWorkspaceController {
   subscribe(listener: () => void): () => void
 }
 
-interface KnowledgeDocumentTarget {
-  knowledgeBaseId: string
-  documentId: string
-}
+export type KnowledgeDocumentTarget =
+  | { view?: 'entries'; knowledgeBaseId: string; documentId: string }
+  | { view: 'notes'; noteId?: string }
 
 interface WritebackDestinationView {
   knowledgeBaseId: string
@@ -75,19 +78,24 @@ const CONNECTION_CONTROL_PATH = '/knowledge-control/v1/connection'
 let cachedConnectionView: KnowledgeConnectionView | undefined
 
 /** Cordis services needed by the browser half. */
-export const inject = ['slots', 'theme']
+export const inject = ['slots', 'theme', 'layout', 'sessions']
 
 /** Register the knowledge launcher in the sidebar's official extension slot. */
 export function apply(ctx: ClientContext): void {
   ctx.effect(installStyles, 'dsh-knowledge: client styles')
-  const workspace = createKnowledgeWorkspaceController(ctx)
-  ctx.effect(() => observePluginWorkspace(PLUGIN_ID, workspace.close), 'dsh-knowledge: exclusive workspace')
-  ctx.effect(() => () => { workspace.close() }, 'dsh-knowledge: workspace lifecycle')
+  let activity: KnowledgeActivityController | undefined
+  const workspace = createKnowledgeWorkspaceController(ctx, () => activity?.close())
+  activity = createKnowledgeActivityController(ctx, {
+    beforeOpen: () => { workspace.close(); activatePluginWorkspace(PLUGIN_ID) },
+    openWorkspace: target => { if (target === undefined) workspace.open(); else workspace.openDocument(target) },
+  })
+  ctx.effect(() => observePluginWorkspace(PLUGIN_ID, () => { workspace.close(); activity?.close() }), 'dsh-knowledge: exclusive workspace')
+  ctx.effect(() => () => { workspace.close(); activity?.dispose() }, 'dsh-knowledge: workspace lifecycle')
   ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
     name: 'sidebar.footer.action',
     id: 'knowledge',
     order: -10,
-  }, props => <KnowledgeLauncher {...props} workspace={workspace} />))
+  }, props => <KnowledgeLauncher {...props} workspace={workspace} activity={activity!} />))
 
   ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
     name: 'settings.plugin.item',
@@ -182,7 +190,7 @@ function KnowledgeWritebackStatus({
   </div>
 }
 
-function createKnowledgeWorkspaceController(client: ClientContext): KnowledgeWorkspaceController {
+function createKnowledgeWorkspaceController(client: ClientContext, beforeOpen: () => void): KnowledgeWorkspaceController {
   const listeners = new Set<() => void>()
   let disposeWorkspace: (() => void) | undefined
   let target: KnowledgeDocumentTarget | undefined
@@ -197,6 +205,7 @@ function createKnowledgeWorkspaceController(client: ClientContext): KnowledgeWor
   let controller: KnowledgeWorkspaceController
   const open = (): void => {
     if (disposeWorkspace !== undefined) return
+    beforeOpen()
     activatePluginWorkspace(PLUGIN_ID)
     disposeWorkspace = client.slots.register({ name: 'conversation', priority: -1 }, props => (
       <KnowledgeWorkspace {...props} client={client} workspace={controller} />
@@ -204,6 +213,7 @@ function createKnowledgeWorkspaceController(client: ClientContext): KnowledgeWor
   }
   controller = {
     isOpen: () => disposeWorkspace !== undefined,
+    open: () => { target = undefined; open(); notify() },
     toggle: () => {
       if (disposeWorkspace !== undefined) return close()
       target = undefined
@@ -417,22 +427,47 @@ function isManagementPath(value: unknown): value is string {
   return typeof value === 'string' && value.startsWith('/') && !value.startsWith('//')
 }
 
-function KnowledgeLauncher({ wide, workspace }: SidebarActionProps & { workspace: KnowledgeWorkspaceController }) {
+function KnowledgeLauncher({ wide, useSessions, workspace, activity }: SidebarActionProps & { workspace: KnowledgeWorkspaceController; activity: KnowledgeActivityController }) {
   const [open, setOpen] = useState(workspace.isOpen())
+  const sessionId = useSessions((state: SessionListState) => state.current)
+  const currentSessionId = sessionId === undefined ? undefined : String(sessionId)
+  const [activityOpen, setActivityOpen] = useState(currentSessionId === undefined ? false : activity.isOpen(currentSessionId))
+  const [compactViewport, setCompactViewport] = useState(() => window.matchMedia(COMPACT_KNOWLEDGE_VIEWPORT).matches)
 
   useEffect(() => workspace.subscribe(() => { setOpen(workspace.isOpen()) }), [workspace])
+  useEffect(() => {
+    const sync = (): void => {
+      setActivityOpen(currentSessionId === undefined ? false : activity.isOpen(currentSessionId))
+    }
+    sync()
+    return activity.subscribe(sync)
+  }, [activity, currentSessionId])
+  useEffect(() => {
+    const query = window.matchMedia(COMPACT_KNOWLEDGE_VIEWPORT)
+    const sync = (): void => { setCompactViewport(query.matches) }
+    sync()
+    query.addEventListener('change', sync)
+    return () => { query.removeEventListener('change', sync) }
+  }, [])
+
+  const active = open || activityOpen
+  const activate = (): void => {
+    if (open) return workspace.close()
+    if (compactViewport || currentSessionId === undefined) return workspace.open()
+    if (currentSessionId !== undefined) activity.toggle(currentSessionId)
+  }
 
   return (
     <button
       type="button"
-      className={`dsh-knowledge-trigger${wide ? '' : ' dsh-knowledge-trigger--rail'}${open ? ' is-active' : ''}`}
-      aria-label={open ? '返回对话' : '知识库'}
-      aria-pressed={open}
-      title={wide ? undefined : open ? '返回对话' : '知识库'}
-      onClick={() => { workspace.toggle() }}
+      className={`dsh-knowledge-trigger${wide ? '' : ' dsh-knowledge-trigger--rail'}${active ? ' is-active' : ''}`}
+      aria-label={active ? '返回对话' : compactViewport || currentSessionId === undefined ? '打开知识库工作区' : '展开会话知识库'}
+      aria-pressed={active}
+      title={wide ? undefined : active ? '返回对话' : '知识库'}
+      onClick={activate}
     >
       <IconDataOutline16 size={wide ? 16 : 18} />
-      {wide && <span>{open ? '返回对话' : '知识库'}</span>}
+      {wide && <span>知识库</span>}
     </button>
   )
 }
@@ -549,8 +584,13 @@ function knowledgePanelUrl(managementPath: string, sessionId?: string, projectId
   if (sessionId !== undefined) params.set('sessionId', sessionId)
   if (projectId !== undefined) params.set('projectId', projectId)
   if (target !== undefined) {
-    params.set('knowledgeBaseId', target.knowledgeBaseId)
-    params.set('documentId', target.documentId)
+    if (target.view === 'notes') {
+      params.set('view', 'notes')
+      if (target.noteId !== undefined) params.set('noteId', target.noteId)
+    } else {
+      params.set('knowledgeBaseId', target.knowledgeBaseId)
+      params.set('documentId', target.documentId)
+    }
   }
   const query = params.toString()
   return query.length === 0 ? managementPath : `${managementPath}${managementPath.includes('?') ? '&' : '?'}${query}`
@@ -571,7 +611,7 @@ function installStyles(): () => void {
   const style = document.createElement('style')
   style.dataset.plugin = PLUGIN_ID
   style.dataset.pluginCss = STYLE_ID
-  style.textContent = cssText
+  style.textContent = `${cssText}\n${activityCss}`
   document.head.appendChild(style)
   return () => { style.remove() }
 }

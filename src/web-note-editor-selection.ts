@@ -194,7 +194,7 @@ export function createNoteSelectionMenu(options: NoteSelectionMenuOptions): Note
   function positionMenu(): void {
     positionFrame = undefined
     if (menu.hidden || editor.isDestroyed) return
-    if (window.matchMedia('(max-width: 760px)').matches) {
+    if (window.matchMedia('(max-width: 1120px), (hover: none) and (pointer: coarse) and (max-width: 1400px)').matches) {
       menu.dataset.placement = 'bottom'
       menu.style.left = 'max(8px, env(safe-area-inset-left))'
       menu.style.right = 'max(8px, env(safe-area-inset-right))'

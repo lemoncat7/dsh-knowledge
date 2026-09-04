@@ -48,6 +48,7 @@ test('real Cordis context dynamically mounts API and Web routes', async (t) => {
   }).await()
 
   assert.deepEqual(routes.map(route => [route.kind, route.path]), [
+    ['prefix', '/knowledge-control/v1/activity'],
     ['prefix', '/knowledge-local/v1'],
     ['prefix', '/knowledge'],
     ['prefix', '/knowledge-api/v1'],

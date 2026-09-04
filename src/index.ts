@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { randomBytes } from 'node:crypto'
 import { assertKnowledgeBrowserRequest, LOCAL_MANAGEMENT_API_PREFIX, registerKnowledgeApi } from './api.js'
+import { registerKnowledgeActivityControl } from './activity-control.js'
 import {
   connectionSettingsBase,
   createConnectionProvider,
@@ -186,6 +187,8 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   }
 
   const registerHttpSurfaces = (httpRuntime: RuntimeContextLike): void => {
+    const disposeActivityControl = registerKnowledgeActivityControl(httpRuntime, provider)
+    httpRuntime.effect(() => disposeActivityControl, 'dsh-knowledge.activity-control')
     let disposePublicApi: (() => void) | undefined
     const publicApiView = () => ({
       publicApiEnabled,

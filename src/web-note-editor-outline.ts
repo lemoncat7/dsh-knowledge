@@ -116,7 +116,7 @@ export function createNoteOutlineController(options: NoteOutlineOptions): NoteOu
       })
     }
     setActive(item.position)
-    if (window.matchMedia('(max-width: 760px)').matches) {
+    if (window.matchMedia('(max-width: 1120px), (hover: none) and (pointer: coarse) and (max-width: 1400px)').matches) {
       open = false
       syncOpenState()
     }
@@ -174,7 +174,7 @@ export function createNoteOutlineController(options: NoteOutlineOptions): NoteOu
     })
     headings = next
     if (changed) renderHeadings()
-    if (!manuallyToggled && headings.length && !window.matchMedia('(max-width: 980px)').matches) open = true
+    if (!manuallyToggled && headings.length && !window.matchMedia('(max-width: 1120px), (hover: none) and (pointer: coarse) and (max-width: 1400px)').matches) open = true
     if (!headings.length && !manuallyToggled) open = false
     syncOpenState()
   }
