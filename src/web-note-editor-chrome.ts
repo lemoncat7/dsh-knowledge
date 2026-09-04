@@ -32,6 +32,7 @@ export function createNoteEditorChrome(options: NoteEditorChromeOptions): NoteEd
     editor: options.editor,
     frame: options.frame,
     host: options.outlineHost,
+    scrollHost: options.scrollHost,
     ...(options.outlineButton !== undefined ? { toggleButton: options.outlineButton } : {}),
   })
   selectionMenu = createNoteSelectionMenu({

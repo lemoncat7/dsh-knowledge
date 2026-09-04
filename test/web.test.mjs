@@ -5,6 +5,7 @@ import { Schema } from '@tiptap/pm/model'
 import { registerKnowledgeWeb } from '../lib/web.js'
 import { plainTextFromDocument, plainTextToDocument } from '../lib/web-note-editor.js'
 import { findNoteSearchRanges } from '../lib/web-note-editor-search.js'
+import { calculateHeadingScrollTop } from '../lib/web-note-editor-outline.js'
 
 test('plain text note documents preserve logical lines exactly', () => {
   const source = '第一行\n会自动折行但仍是一行的长内容\n\n最后一行\n'
@@ -35,6 +36,13 @@ test('note search finds literal text across inline formatting without regex surp
   ])])
   assert.deepEqual(findNoteSearchRanges(broken, 'docmost', false), [])
   assert.deepEqual(findNoteSearchRanges(broken, 'most', false), [{ from: 5, to: 9 }])
+})
+
+test('outline heading navigation stays within the document scroll range', () => {
+  assert.equal(calculateHeadingScrollTop(120, 480, 80, 900), 504)
+  assert.equal(calculateHeadingScrollTop(20, 75, 80, 900), 0)
+  assert.equal(calculateHeadingScrollTop(860, 300, 80, 900), 900)
+  assert.equal(calculateHeadingScrollTop(120, 480, 80, -20), 0)
 })
 
 test('management console serves a secured same-origin application', async (t) => {
@@ -448,6 +456,8 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(noteEditorSource, /spellcheck:"false"/)
   assert.match(noteEditorSource, /notes-search-result-current/)
   assert.match(noteEditorSource, /notes-editor-outline-header/)
+  assert.match(noteEditorSource, /\.scrollTo\(\{top:/)
+  assert.doesNotMatch(noteEditorSource, /element\?\.scrollIntoView/)
   assert.match(noteEditorSource, /notes-selection-primary/)
 
   const noteHistory = await fetch(`${base}/knowledge/note-history.js`)
