@@ -90,7 +90,7 @@ const state = {
     children: new Map(), loadedFolders: new Set(), expandedFolders: new Set(),
     selectedId: '', selectedNode: null, currentFolderId: null, breadcrumbs: [],
     content: '', draft: '', dirty: false, assetUrl: '', query: '', searchResults: [],
-    transfer: null, loadingNodeId: '', shares: [], shareError: '',
+    transfer: null, loadingNodeId: '', shares: [], shareError: '', browserOpen: false,
   },
   service: { publicApiEnabled: false, publicApiPrefix: '/knowledge-api/v1', remote: false },
   scrollPositions: new Map(),
@@ -263,7 +263,7 @@ function signOut() {
   releaseNoteAsset()
   sessionStorage.removeItem(TOKEN_KEY)
   Object.assign(state, { token: '', stats: null, overview: null, knowledgeBases: [], mounts: [], resolvedMounts: [], entries: [], documents: [], candidates: [], candidateTargets: new Map(), settings: { writebackPolicy: 'conservative', updatedAt: '' }, tokens: [] })
-  state.notes = { children: new Map(), loadedFolders: new Set(), expandedFolders: new Set(), selectedId: '', selectedNode: null, currentFolderId: null, breadcrumbs: [], content: '', draft: '', dirty: false, assetUrl: '', query: '', searchResults: [], transfer: null, loadingNodeId: '', shares: [], shareError: '' }
+  state.notes = { children: new Map(), loadedFolders: new Set(), expandedFolders: new Set(), selectedId: '', selectedNode: null, currentFolderId: null, breadcrumbs: [], content: '', draft: '', dirty: false, assetUrl: '', query: '', searchResults: [], transfer: null, loadingNodeId: '', shares: [], shareError: '', browserOpen: false }
   if (AUTH_MODE === 'same-origin') void boot()
   else renderLogin()
 }
@@ -973,12 +973,7 @@ function renderShell() {
             'aria-expanded': String(state.menuOpen),
           }),
           paneToggleButton('main', !state.documentView.sidebarHidden, () => setSidebarHidden(!state.documentView.sidebarHidden), '主导航栏'),
-          activeDocumentWorkspace() ? paneToggleButton('library', activeDocumentWorkspace().view.treeOpen, () => {
-            const workspace = activeDocumentWorkspace()
-            if (!workspace) return
-            workspace.view.treeOpen = !workspace.view.treeOpen
-            renderShell()
-          }, '知识目录') : null,
+          renderContextPaneToggle(),
           element('div', { class: 'topbar-heading' },
             element('span', { class: 'topbar-kicker' }, `KNOWLEDGE / ${viewIndexes[state.view] || '00'}`),
             element('h1', {}, title),
@@ -995,6 +990,21 @@ function renderShell() {
   app.replaceChildren(shell)
   applySidebarVisibility(shell, state.documentView.sidebarHidden)
   restoreScrollPosition(currentScrollState())
+}
+
+function renderContextPaneToggle() {
+  if (state.view === 'notes') {
+    return paneToggleButton('library', state.notes.browserOpen, () => {
+      state.notes.browserOpen = !state.notes.browserOpen
+      renderShell()
+    }, '笔记目录')
+  }
+  const workspace = activeDocumentWorkspace()
+  if (!workspace) return null
+  return paneToggleButton('library', workspace.view.treeOpen, () => {
+    workspace.view.treeOpen = !workspace.view.treeOpen
+    renderShell()
+  }, '知识目录')
 }
 
 function renderAppSidebarResizer() {
@@ -1972,6 +1982,7 @@ function renderNotes() {
   const tree = state.notes.query.trim() ? renderNoteSearchResults() : renderNoteTreeBranch(null)
   const workspace = element('section', {
     class: 'notes-workspace', 'data-drop-active': 'false',
+    'data-browser-open': String(state.notes.browserOpen),
     onDragEnter: noteWorkspaceDragEnter, onDragOver: noteWorkspaceDragEnter,
     onDragLeave: noteWorkspaceDragLeave,
     onDrop: event => {
@@ -1981,6 +1992,10 @@ function renderNotes() {
       void importDroppedNotes(event.dataTransfer, state.notes.currentFolderId)
     },
   },
+    state.notes.browserOpen ? element('button', {
+      type: 'button', class: 'notes-browser-scrim', 'aria-label': '关闭笔记目录',
+      onClick: () => { state.notes.browserOpen = false; renderShell() },
+    }) : null,
     element('aside', { class: 'notes-browser', 'aria-label': '笔记目录' },
       element('header', { class: 'notes-browser-header' },
         element('div', {}, element('h2', {}, '目录'), element('span', {}, `${rootNodes.length} 个根目录项目`)),
@@ -2767,6 +2782,7 @@ async function selectNoteNode(node, options = {}) {
   releaseNoteAsset()
   state.notes.selectedId = node.id
   state.notes.selectedNode = node
+  state.notes.browserOpen = false
   Object.assign(state.notes, { content: '', draft: '', dirty: false })
   state.notes.loadingNodeId = node.id
   renderShell()
