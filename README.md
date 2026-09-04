@@ -36,7 +36,7 @@
 - 认证 HTTP API，可作为其他 DSH 客户端和未来桌面端的中央知识库。
 - 笔记软件式双栏文档界面：左侧以“知识库 → 文档”树形目录浏览和新建，右侧支持 Markdown 编辑与安全预览；目录按知识库懒加载并分页，只有打开文档时才读取正文。已有文档默认预览，新建文档默认编辑。
 - 每个生效主题对应一篇真实 Markdown 文档；相似知识作为章节或增量内容写入同一文档。创建、改名、保存、归档和删除会同步 SQLite、全文索引、版本历史与物理文件。
-- 独立的笔记工作区：在知识工作区上方提供可无限嵌套的目录树，支持 Markdown 与常见文本文件直接编辑，图片和 PDF 就地浏览，以及任意文件的拖拽移动、复制、重命名和下载。Markdown 编辑器提供标题大纲定位、文内查找与替换、选区浮动格式菜单和 `Ctrl/Cmd + F` 快捷键；每次保存会形成按需读取的页面历史，可预览、比较并恢复为新版本。笔记默认不参与知识检索、自动召回或 AI 回写。
+- 独立的笔记工作区：在知识工作区上方提供可无限嵌套的目录树，支持 Markdown 与常见文本文件直接编辑，图片和 PDF 就地浏览，以及任意文件的拖拽移动、复制、重命名、下载和只读分享。主侧栏中的独立“已分享”页面集中管理本机链接，也能读取其他 DSH 的分享清单并将文档或完整目录复制到指定笔记目录。Markdown 编辑器提供标题大纲定位、文内查找与替换、选择结束后出现的浮动格式菜单和 `Ctrl/Cmd + F` 快捷键；每次保存会形成按需读取的页面历史，可预览、比较并恢复为新版本。笔记默认不参与知识检索、自动召回或 AI 回写。
 - 知识文档使用独立的“关联笔记”列表引用笔记文档或文件，正文不再插入引用语法。关系绑定稳定编号，笔记移动或改名不会失效；旧 `note://` 引用会在升级时安全回填为结构化关系。
 - 用户明确要求时，AI 可使用 `knowledge_note_list / search / read / create / update / move / delete` 浏览和维护笔记工作区；所有目标都使用当前会话签名句柄，远程操作继续服从令牌权限，删除被知识文档引用的笔记会被拒绝。
 - `knowledge_note_references` 单独负责查看、添加或移除知识文档与笔记的结构化关联，并在执行时重新检查知识挂载范围、写入模式和文档封存状态。
@@ -196,6 +196,13 @@ pnpm dsh web
 | POST | `/notes/:id/copy` | write | 复制文档、文件或完整目录树 |
 | GET/PUT | `/notes/:id/content` | read/write | 读取文件内容，或保存 Markdown 与受支持的文本文件；支持 `?download=1` |
 | GET | `/notes/:id/references` | read | 列出引用该节点或其目录后代的知识文档 |
+| GET | `/notes/shares` | admin | 列出当前笔记工作区的分享记录 |
+| POST/DELETE | `/notes/:id/share` | admin | 创建或停止文档/目录的只读分享 |
+| POST | `/notes/import-share/inspect` | read | 校验分享链接并读取有大小上限的清单，不写入内容 |
+| POST | `/notes/import-share` | write | 从分享链接复制文档或完整目录到指定笔记目录 |
+| GET | `/shared/:token` | public | 打开只读分享页；目录分享只允许访问对应子树 |
+| GET | `/shared/:token/content` | public | 读取分享范围内的文件内容，支持 `noteId` 与 `download=1` |
+| GET | `/shared/:token/manifest` | public | 返回供导入使用的只读目录清单与内容摘要 |
 | GET/POST | `/entries` | read/write | 列表和直接创建 |
 | GET/PUT/DELETE | `/entries/:id` | read/write/admin | 详情、更新、彻底删除 |
 | GET/POST | `/entries/:id/note-references` | read/write | 查看或添加结构化笔记关联 |

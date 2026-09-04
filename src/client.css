@@ -3,23 +3,24 @@
 .dsh-knowledge-settings-card,
 .dsh-knowledge-writeback-status {
   color-scheme: light;
-  --knowledge-canvas: #ebebeb;
+  --knowledge-canvas: transparent;
   --knowledge-accent: #3a3a3c;
   --knowledge-on-accent: #fff;
   --knowledge-danger: #d70015;
   --knowledge-success: #248a3d;
-  --knowledge-pane: #f4f4f4;
-  --knowledge-raised: #fafafa;
-  --knowledge-control: #fff;
+  --knowledge-pane: rgba(255, 255, 255, 0.16);
+  --knowledge-raised: rgba(255, 255, 255, 0.38);
+  --knowledge-control: rgba(255, 255, 255, 0.27);
   --knowledge-border: rgb(60 60 67 / 14%);
   --knowledge-text: #1d1d1f;
   --knowledge-text-secondary: #515154;
   --knowledge-text-tertiary: #747478;
   --knowledge-hover: rgba(118, 118, 128, .1);
-  --knowledge-glare-light: rgb(255 255 255 / 82%);
-  --knowledge-glare-rim: rgb(60 60 67 / 15%);
-  --knowledge-glass-filter: saturate(1.18) contrast(1.025) blur(28px);
-  --knowledge-glass-shadow: inset 0 1px 0 rgb(255 255 255 / 58%), inset 0 -1px 0 rgb(60 60 67 / 12%);
+  --knowledge-glare-light: rgb(255 255 255 / 70%);
+  --knowledge-glare-rim: rgb(60 60 67 / 11%);
+  --knowledge-glass-filter: saturate(1.22) contrast(1.03) blur(32px);
+  --knowledge-host-glass-filter: saturate(.18) contrast(1.015) blur(24px);
+  --knowledge-glass-shadow: inset 0 1px 0 rgb(255 255 255 / 70%), inset 0 -1px 0 rgb(60 60 67 / 11%), 0 10px 28px rgb(31 31 35 / 8.5%);
   --knowledge-font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
   color: var(--knowledge-text);
   font-family: var(--knowledge-font-family);
@@ -34,22 +35,23 @@ body[data-ds-dark-theme] :is(
   .dsh-knowledge-writeback-status
 ) {
   color-scheme: dark;
-  --knowledge-canvas: #101719;
+  --knowledge-canvas: transparent;
   --knowledge-accent: #69b6ba;
   --knowledge-on-accent: #101819;
   --knowledge-danger: #ff453a;
   --knowledge-success: #30d158;
-  --knowledge-pane: #182022;
-  --knowledge-raised: #20292b;
-  --knowledge-control: #273235;
-  --knowledge-border: rgb(184 204 205 / 10%);
+  --knowledge-pane: rgb(25 33 35 / 90%);
+  --knowledge-raised: rgb(32 41 43 / 94%);
+  --knowledge-control: rgb(39 50 53 / 92%);
+  --knowledge-border: rgb(184 204 205 / 11%);
   --knowledge-text: #e3eaeb;
   --knowledge-text-secondary: #bbc9cc;
   --knowledge-text-tertiary: #95a7ab;
   --knowledge-hover: rgb(105 182 186 / 9%);
-  --knowledge-glare-light: rgb(255 255 255 / 42%);
-  --knowledge-glare-rim: rgb(0 0 0 / 24%);
-  --knowledge-glass-shadow: inset 0 1px 0 rgb(255 255 255 / 18%), inset 0 -1px 0 rgb(0 0 0 / 30%);
+  --knowledge-glare-light: rgb(255 255 255 / 16%);
+  --knowledge-glare-rim: rgb(0 0 0 / 30%);
+  --knowledge-host-glass-filter: saturate(.45) contrast(1.02) blur(24px);
+  --knowledge-glass-shadow: inset 0 1px 0 rgb(255 255 255 / 16%), inset 0 -1px 0 rgb(0 0 0 / 30%), 0 12px 32px rgb(0 0 0 / 30%);
 }
 
 :is(
@@ -169,7 +171,7 @@ div:has(> div[data-slot="sidebar.footer.action"] .dsh-knowledge-trigger--rail) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: transparent;
+  background: var(--knowledge-canvas);
 }
 
 .dsh-knowledge-workspace-header {
@@ -186,12 +188,10 @@ div:has(> div[data-slot="sidebar.footer.action"] .dsh-knowledge-trigger--rail) {
   box-sizing: border-box;
   border: 1px solid var(--knowledge-border);
   border-radius: 14px 14px 11px 11px;
-  background:
-    linear-gradient(145deg, color-mix(in srgb, var(--knowledge-glare-light) 20%, transparent), transparent 58%),
-    var(--knowledge-pane);
+  background: transparent;
   box-shadow: var(--knowledge-glass-shadow);
-  -webkit-backdrop-filter: var(--knowledge-glass-filter);
-  backdrop-filter: var(--knowledge-glass-filter);
+  -webkit-backdrop-filter: var(--knowledge-host-glass-filter);
+  backdrop-filter: var(--knowledge-host-glass-filter);
 }
 
 .dsh-knowledge-workspace-header > div {
@@ -273,6 +273,8 @@ div:has(> div[data-slot="sidebar.footer.action"] .dsh-knowledge-trigger--rail) {
   border-radius: 0;
   background: transparent;
   box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .dsh-knowledge-panel-state {
@@ -289,8 +291,8 @@ div:has(> div[data-slot="sidebar.footer.action"] .dsh-knowledge-trigger--rail) {
   border-radius: 15px;
   background: var(--knowledge-pane);
   box-shadow: var(--knowledge-glass-shadow);
-  -webkit-backdrop-filter: var(--knowledge-glass-filter);
-  backdrop-filter: var(--knowledge-glass-filter);
+  -webkit-backdrop-filter: var(--knowledge-host-glass-filter);
+  backdrop-filter: var(--knowledge-host-glass-filter);
   color: var(--knowledge-text);
 }
 

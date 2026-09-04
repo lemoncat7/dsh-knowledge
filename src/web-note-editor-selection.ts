@@ -150,6 +150,7 @@ export function createNoteSelectionMenu(options: NoteSelectionMenuOptions): Note
 
   let positionFrame: number | undefined
   let scrollTimer: number | undefined
+  let activeSelectionPointerId: number | undefined
 
   function currentBlockLabel(): string {
     if (editor.isActive('heading', { level: 1 })) return '标题 1'
@@ -226,6 +227,10 @@ export function createNoteSelectionMenu(options: NoteSelectionMenuOptions): Note
   }
 
   function refresh(): void {
+    if (activeSelectionPointerId !== undefined) {
+      hide()
+      return
+    }
     if (!shouldShow()) {
       hide()
       return
@@ -253,10 +258,25 @@ export function createNoteSelectionMenu(options: NoteSelectionMenuOptions): Note
     if (!menu.hidden && !menu.contains(event.target as Node) && !editor.view.dom.contains(event.target as Node)) hide()
   }
 
+  function onEditorPointerDown(event: PointerEvent): void {
+    if (event.pointerType === 'mouse' && event.button !== 0) return
+    activeSelectionPointerId = event.pointerId
+    hide()
+  }
+
+  function onSelectionPointerEnd(event: PointerEvent): void {
+    if (activeSelectionPointerId === undefined || event.pointerId !== activeSelectionPointerId) return
+    activeSelectionPointerId = undefined
+    window.requestAnimationFrame(() => window.requestAnimationFrame(refresh))
+  }
+
   editor.on('selectionUpdate', refresh)
   editor.on('transaction', refresh)
   scrollHost.addEventListener('scroll', onScroll, { passive: true })
+  editor.view.dom.addEventListener('pointerdown', onEditorPointerDown, { passive: true })
   window.addEventListener('resize', schedulePosition, { passive: true })
+  window.addEventListener('pointerup', onSelectionPointerEnd, { passive: true })
+  window.addEventListener('pointercancel', onSelectionPointerEnd, { passive: true })
   document.addEventListener('pointerdown', onOutsidePointer)
 
   return {
@@ -266,7 +286,10 @@ export function createNoteSelectionMenu(options: NoteSelectionMenuOptions): Note
       editor.off('selectionUpdate', refresh)
       editor.off('transaction', refresh)
       scrollHost.removeEventListener('scroll', onScroll)
+      editor.view.dom.removeEventListener('pointerdown', onEditorPointerDown)
       window.removeEventListener('resize', schedulePosition)
+      window.removeEventListener('pointerup', onSelectionPointerEnd)
+      window.removeEventListener('pointercancel', onSelectionPointerEnd)
       document.removeEventListener('pointerdown', onOutsidePointer)
       if (positionFrame !== undefined) window.cancelAnimationFrame(positionFrame)
       if (scrollTimer !== undefined) window.clearTimeout(scrollTimer)

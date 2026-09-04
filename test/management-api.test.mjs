@@ -88,6 +88,56 @@ test('same-origin management API controls public access and deletes revoked toke
   assert.equal((await restoredResponse.json()).version, 3)
   assert.deepEqual(Buffer.from(await (await fetch(`${base}/notes/${note.id}/content`, { headers })).arrayBuffer()), noteContent)
 
+  const shareResponse = await fetch(`${base}/notes/${folder.id}/share`, { method: 'POST', headers })
+  assert.equal(shareResponse.status, 201)
+  const share = await shareResponse.json()
+  assert.match(share.token, /^share_[A-Za-z0-9_-]{32}$/)
+  assert.equal(share.node.id, folder.id)
+  const shares = await (await fetch(`${base}/notes/shares`, { headers })).json()
+  assert.deepEqual(shares.map(item => item.noteId), [folder.id])
+  const sharedPage = await fetch(`${base}/shared/${share.token}?note=${note.id}`)
+  assert.equal(sharedPage.status, 200)
+  assert.match(sharedPage.headers.get('content-type'), /text\/html/)
+  assert.match(sharedPage.headers.get('content-security-policy'), /frame-ancestors 'none'/)
+  const sharedHtml = await sharedPage.text()
+  assert.match(sharedHtml, /项目资料/)
+  assert.match(sharedHtml, /部署笔记\.md/)
+  assert.match(sharedHtml, /内容默认不参与知识索引/)
+  const sharedDownload = await fetch(`${base}/shared/${share.token}/content?noteId=${note.id}&download=1`)
+  assert.equal(sharedDownload.status, 200)
+  assert.match(sharedDownload.headers.get('content-disposition'), /attachment/)
+  assert.deepEqual(Buffer.from(await sharedDownload.arrayBuffer()), noteContent)
+  const manifestResponse = await fetch(`${base}/shared/${share.token}/manifest`)
+  assert.equal(manifestResponse.status, 200)
+  const manifest = await manifestResponse.json()
+  assert.equal(manifest.version, 1)
+  assert.equal(manifest.share.name, '项目资料')
+  assert.equal(manifest.share.fileCount, 1)
+  assert.deepEqual(manifest.nodes.map(item => item.path), ['项目资料', '项目资料/部署笔记.md'])
+  const inspectResponse = await fetch(`${base}/notes/import-share/inspect`, {
+    method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ url: `${base}/shared/${share.token}` }),
+  })
+  assert.equal(inspectResponse.status, 200)
+  assert.equal((await inspectResponse.json()).manifest.share.name, '项目资料')
+  const blockedInspectResponse = await fetch(`${base}/notes/import-share/inspect`, {
+    method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ url: `http://127.0.0.1:${address.port}${LOCAL_MANAGEMENT_API_PREFIX}/shared/share_${'x'.repeat(32)}` }),
+  })
+  assert.equal(blockedInspectResponse.status, 400)
+  assert.match((await blockedInspectResponse.json()).error, /私有网络/)
+  const importResponse = await fetch(`${base}/notes/import-share`, {
+    method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ url: `${base}/shared/${share.token}`, parentId: null }),
+  })
+  assert.equal(importResponse.status, 201)
+  const imported = await importResponse.json()
+  assert.equal(imported.root.name, '项目资料 副本')
+  assert.equal(imported.importedNodes, 2)
+  assert.equal((await provider.notes.read(provider.notes.list({ parentId: imported.root.id })[0].id)).content.toString('utf8'), noteContent.toString('utf8'))
+  await provider.notes.delete(imported.root.id)
+  assert.equal((await fetch(`${base}/shared/${share.token}?note=not-a-note`)).status, 404)
+
   const entry = await (await fetch(`${base}/entries`, {
     method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
     body: JSON.stringify({ draft: {
@@ -135,6 +185,8 @@ test('same-origin management API controls public access and deletes revoked toke
   assert.equal((await fetch(`${base}/notes/${folder.id}`, { method: 'DELETE', headers })).status, 409)
   assert.equal((await fetch(`${base}/entries/${entry.id}/note-references/${note.id}`, { method: 'DELETE', headers })).status, 204)
   assert.deepEqual(await (await fetch(`${base}/entries/${entry.id}/note-references`, { headers })).json(), [])
+  assert.equal((await fetch(`${base}/notes/${folder.id}/share`, { method: 'DELETE', headers })).status, 204)
+  assert.equal((await fetch(`${base}/shared/${share.token}`)).status, 404)
   assert.equal((await fetch(`${base}/notes/${folder.id}`, { method: 'DELETE', headers })).status, 204)
 
   assert.equal((await (await fetch(`${base}/settings`, { headers })).json()).writebackPolicy, 'conservative')

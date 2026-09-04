@@ -32,15 +32,17 @@ export function registerKnowledgeWeb(
 ): () => void {
   const webServer = ctx.webServer ?? ctx.get('webServer') as RuntimeContextLike['webServer']
   if (webServer === undefined) throw new Error('exposeWeb requires the DSH webServer service')
-  const index = Buffer.from(INDEX_TEMPLATE
+  const indexTemplate = INDEX_TEMPLATE
     .replaceAll('__DSH_KNOWLEDGE_API_PREFIX__', escapeHtmlAttribute(apiPrefix))
     .replaceAll('__DSH_KNOWLEDGE_AUTH_MODE__', escapeHtmlAttribute(authMode))
     .replaceAll('__DSH_KNOWLEDGE_WEB_PATH__', escapeHtmlAttribute(webPath))
-    .replaceAll('__DSH_KNOWLEDGE_ASSET_VERSION__', ASSET_VERSION))
+    .replaceAll('__DSH_KNOWLEDGE_ASSET_VERSION__', ASSET_VERSION)
+  const standaloneIndex = Buffer.from(indexTemplate.replaceAll('__DSH_KNOWLEDGE_EMBED_MODE__', 'standalone'))
+  const embeddedIndex = Buffer.from(indexTemplate.replaceAll('__DSH_KNOWLEDGE_EMBED_MODE__', 'embedded'))
   return webServer.register({
     kind: 'prefix',
     path: webPath,
-    handler: (req, res) => serveWeb(req, res, webPath, index, embedToken),
+    handler: (req, res) => serveWeb(req, res, webPath, standaloneIndex, embeddedIndex, embedToken),
   })
 }
 
@@ -48,7 +50,8 @@ function serveWeb(
   req: IncomingMessage,
   res: ServerResponse,
   webPath: string,
-  index: Buffer,
+  standaloneIndex: Buffer,
+  embeddedIndex: Buffer,
   embedToken?: string,
 ): void {
   const method = req.method ?? 'GET'
@@ -61,7 +64,7 @@ function serveWeb(
   const relative = pathname.slice(webPath.length).replace(/^\/+|\/+$/g, '')
   if (relative.length === 0) {
     const embedded = embedToken !== undefined && hasValidEmbedToken(req.url, embedToken)
-    sendAsset(res, method, { body: index, contentType: 'text/html; charset=utf-8' }, embedded)
+    sendAsset(res, method, { body: embedded ? embeddedIndex : standaloneIndex, contentType: 'text/html; charset=utf-8' }, embedded)
     return
   }
   const asset = STATIC_ASSETS.get(relative)

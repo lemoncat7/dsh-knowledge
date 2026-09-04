@@ -6,10 +6,13 @@ import {
 } from './domain.js'
 import { LocalKnowledgeProvider } from './local-provider.js'
 import type { RuntimeContextLike } from './runtime.js'
-import type { NoteReference } from './notes/domain.js'
+import { isNoteId, type NoteReference } from './notes/domain.js'
+import { renderNoteSharePage } from './notes/share-page.js'
+import { createNoteShareManifest, importNoteShare, inspectNoteShareUrl } from './notes/share-import.js'
 
 const MAX_BODY_BYTES = 1_048_576
 const MAX_NOTE_BODY_BYTES = 64 * 1024 * 1024
+const MAX_SHARED_NOTE_PREVIEW_BYTES = 512 * 1024
 export const LOCAL_MANAGEMENT_API_PREFIX = '/knowledge-local/v1'
 
 export interface KnowledgeApiOptions {
@@ -62,6 +65,53 @@ async function dispatch(
     return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 13 })
   }
 
+  if (segments[0] === 'shared') {
+    if (method !== 'GET') throw httpError(405, 'shared notes are read-only')
+    const token = segments[1]
+    if (token === undefined) throw httpError(404, 'shared note was not found')
+    const share = provider.notes.getShareByToken(token)
+    if (share === undefined) throw httpError(404, 'shared note was not found or is no longer available')
+    if (segments[2] === 'content' && segments.length === 3) {
+      const requestedId = url.searchParams.get('noteId') ?? share.noteId
+      if (!isNoteId(requestedId) || !provider.notes.isWithin(share.noteId, requestedId)) throw httpError(404, 'shared note content was not found')
+      const note = await provider.notes.read(requestedId)
+      return sendOpaqueFile(res, note.node.name, note.node.mediaType ?? 'application/octet-stream', note.content, url.searchParams.get('download') === '1')
+    }
+    if (segments[2] === 'manifest' && segments.length === 3) {
+      const sharedNodes = share.node.kind === 'folder' ? provider.notes.listSharedSubtree(share.noteId, 501) : [share.node]
+      const truncated = sharedNodes.length > 500
+      return sendJson(res, 200, createNoteShareManifest(share, sharedNodes.slice(0, 500), truncated))
+    }
+    if (segments.length !== 2) throw httpError(404, 'shared note route was not found')
+    const sharedNodes = share.node.kind === 'folder' ? provider.notes.listSharedSubtree(share.noteId, 501) : [share.node]
+    const listTruncated = sharedNodes.length > 500
+    const nodes = sharedNodes.slice(0, 500)
+    const requestedId = url.searchParams.get('note')
+    let selectedNode = share.node.kind === 'folder' ? undefined : share.node
+    if (requestedId !== null) {
+      if (!isNoteId(requestedId) || !provider.notes.isWithin(share.noteId, requestedId)) throw httpError(404, 'shared note content was not found')
+      const requested = provider.notes.get(requestedId)
+      if (requested === undefined || requested.kind === 'folder') throw httpError(404, 'shared note content was not found')
+      selectedNode = requested
+    }
+    let selectedText: string | undefined
+    let contentTruncated = false
+    if (selectedNode?.editable) {
+      const preview = await provider.notes.readPreview(selectedNode.id, MAX_SHARED_NOTE_PREVIEW_BYTES)
+      selectedText = preview.content.toString('utf8')
+      contentTruncated = preview.truncated
+    }
+    return sendHtml(res, 200, renderNoteSharePage({
+      apiPrefix: prefix,
+      share,
+      nodes,
+      ...selectedNode === undefined ? {} : { selectedNode },
+      ...selectedText === undefined ? {} : { selectedText },
+      contentTruncated,
+      listTruncated,
+    }))
+  }
+
   const actor = options.authMode === 'same-origin' ? authenticateSameOrigin(req) : authenticateBearer(provider, req)
 
   if (segments[0] === 'notes') {
@@ -96,6 +146,24 @@ async function dispatch(
       const mediaType = firstHeader(req.headers['content-type']) ?? 'application/octet-stream'
       const content = await readBinary(req, MAX_NOTE_BODY_BYTES)
       return sendJson(res, 201, await provider.notes.upload({ name, parentId, mediaType, content }))
+    }
+    if (method === 'GET' && segments[1] === 'shares' && segments.length === 2) {
+      requirePermission(actor.permissions, 'admin')
+      return sendJson(res, 200, provider.notes.listShares())
+    }
+    if (method === 'POST' && segments[1] === 'import-share' && segments[2] === 'inspect' && segments.length === 3) {
+      requirePermission(actor.permissions, 'read')
+      const body = await readObject(req)
+      return sendJson(res, 200, await inspectNoteShareUrl(requiredString(body.url, 'url'), provider.notes))
+    }
+    if (method === 'POST' && segments[1] === 'import-share' && segments.length === 2) {
+      requirePermission(actor.permissions, 'write')
+      const body = await readObject(req)
+      return sendJson(res, 201, await importNoteShare(
+        provider.notes,
+        requiredString(body.url, 'url'),
+        nullableString(body.parentId, 'parentId'),
+      ))
     }
     const id = segments[1]
     if (id !== undefined && method === 'GET' && segments.length === 2) {
@@ -134,6 +202,15 @@ async function dispatch(
     if (id !== undefined && method === 'GET' && segments[2] === 'references' && segments.length === 3) {
       requirePermission(actor.permissions, 'read')
       return sendJson(res, 200, await noteReferencesForSubtree(provider, id))
+    }
+    if (id !== undefined && method === 'POST' && segments[2] === 'share' && segments.length === 3) {
+      requirePermission(actor.permissions, 'admin')
+      return sendJson(res, 201, provider.notes.createShare(id))
+    }
+    if (id !== undefined && method === 'DELETE' && segments[2] === 'share' && segments.length === 3) {
+      requirePermission(actor.permissions, 'admin')
+      if (!provider.notes.deleteShare(id)) throw httpError(404, `note share for "${id}" was not found`)
+      return sendJson(res, 204, undefined)
     }
     if (id !== undefined && method === 'PATCH' && segments.length === 2) {
       requirePermission(actor.permissions, 'write')
@@ -877,6 +954,19 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
     'x-content-type-options': 'nosniff',
   })
   res.end(payload)
+}
+
+function sendHtml(res: ServerResponse, status: number, body: string): void {
+  res.writeHead(status, {
+    'content-type': 'text/html; charset=utf-8',
+    'content-length': Buffer.byteLength(body),
+    'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    'cache-control': 'private, no-store',
+    'referrer-policy': 'no-referrer',
+    'x-content-type-options': 'nosniff',
+    'x-frame-options': 'DENY',
+  })
+  res.end(body)
 }
 
 function sendOpaqueFile(

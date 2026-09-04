@@ -1,6 +1,6 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { constants as fileConstants, copyFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
-import { readFile, rename, rm } from 'node:fs/promises'
+import { open, readFile, rename, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { atomicWriteFile } from '../atomic-file.js'
@@ -11,6 +11,7 @@ import {
   type NoteListRequest,
   type NoteNode,
   type NoteNodeKind,
+  type NoteShare,
   type NoteVersion,
 } from './domain.js'
 
@@ -18,6 +19,7 @@ type SqlRow = Record<string, unknown>
 
 const MAX_NOTE_BYTES = 64 * 1024 * 1024
 const MAX_NOTE_NAME_LENGTH = 255
+const NOTE_SHARE_TOKEN_PATTERN = /^share_[A-Za-z0-9_-]{32}$/
 
 export class NoteStore {
   private readonly db: DatabaseSync
@@ -82,6 +84,93 @@ export class NoteStore {
     return rows.map(mapNoteNode)
   }
 
+  listSharedSubtree(id: string, limit = 500): NoteNode[] {
+    this.assertOpen()
+    assertNoteId(id)
+    const boundedLimit = Number.isInteger(limit) ? Math.min(1000, Math.max(1, limit)) : 500
+    const rows = this.db.prepare(`
+      WITH RECURSIVE descendants(id) AS (
+        SELECT id FROM note_nodes WHERE id=?
+        UNION ALL
+        SELECT child.id FROM note_nodes child JOIN descendants parent ON child.parent_id=parent.id
+      )
+      SELECT ${NOTE_COLUMNS} FROM note_nodes WHERE id IN (SELECT id FROM descendants)
+      ORDER BY CASE kind WHEN 'folder' THEN 0 ELSE 1 END, name COLLATE NOCASE, id
+      LIMIT ?
+    `).all(id, boundedLimit) as SqlRow[]
+    if (rows.length === 0) throw notFound(`note node "${id}" was not found`)
+    return rows.map(mapNoteNode)
+  }
+
+  isWithin(rootId: string, candidateId: string): boolean {
+    this.assertOpen()
+    assertNoteId(rootId)
+    assertNoteId(candidateId)
+    if (rootId === candidateId) return this.get(rootId) !== undefined
+    return this.db.prepare(`
+      WITH RECURSIVE descendants(id) AS (
+        SELECT id FROM note_nodes WHERE parent_id=?
+        UNION ALL
+        SELECT child.id FROM note_nodes child JOIN descendants parent ON child.parent_id=parent.id
+      )
+      SELECT 1 FROM descendants WHERE id=? LIMIT 1
+    `).get(rootId, candidateId) !== undefined
+  }
+
+  listShares(): NoteShare[] {
+    this.assertOpen()
+    const rows = this.db.prepare(`
+      SELECT ${NOTE_SHARE_COLUMNS}
+      FROM note_shares s JOIN note_nodes n ON n.id=s.note_id
+      ORDER BY s.updated_at DESC, s.id
+    `).all() as SqlRow[]
+    return rows.map(row => this.mapShare(row))
+  }
+
+  getShareByNoteId(noteId: string): NoteShare | undefined {
+    this.assertOpen()
+    assertNoteId(noteId)
+    const row = this.db.prepare(`
+      SELECT ${NOTE_SHARE_COLUMNS}
+      FROM note_shares s JOIN note_nodes n ON n.id=s.note_id
+      WHERE s.note_id=?
+    `).get(noteId) as SqlRow | undefined
+    return row === undefined ? undefined : this.mapShare(row)
+  }
+
+  getShareByToken(token: string): NoteShare | undefined {
+    this.assertOpen()
+    if (!NOTE_SHARE_TOKEN_PATTERN.test(token)) return undefined
+    const row = this.db.prepare(`
+      SELECT ${NOTE_SHARE_COLUMNS}
+      FROM note_shares s JOIN note_nodes n ON n.id=s.note_id
+      WHERE s.token=?
+    `).get(token) as SqlRow | undefined
+    return row === undefined ? undefined : this.mapShare(row)
+  }
+
+  createShare(noteId: string): NoteShare {
+    this.assertOpen()
+    const node = this.requireNode(noteId)
+    const existing = this.getShareByNoteId(noteId)
+    if (existing !== undefined) return existing
+    const id = `share_${randomUUID().replaceAll('-', '')}`
+    const token = `share_${randomBytes(24).toString('base64url')}`
+    const timestamp = new Date().toISOString()
+    const result = this.db.prepare(`
+      INSERT INTO note_shares(id,note_id,token,created_at,updated_at) VALUES(?,?,?,?,?)
+      ON CONFLICT(note_id) DO NOTHING
+    `).run(id, noteId, token, timestamp, timestamp)
+    if (result.changes === 0) return this.getShareByNoteId(noteId) as NoteShare
+    return { id, noteId, token, createdAt: timestamp, updatedAt: timestamp, node }
+  }
+
+  deleteShare(noteId: string): boolean {
+    this.assertOpen()
+    assertNoteId(noteId)
+    return this.db.prepare('DELETE FROM note_shares WHERE note_id=?').run(noteId).changes === 1
+  }
+
   async createFolder(name: string, parentId: string | null = null): Promise<NoteNode> {
     return this.createNode('folder', name, parentId, null, Buffer.alloc(0))
   }
@@ -106,6 +195,27 @@ export class NoteStore {
     } catch (error) {
       if (isNodeError(error, 'ENOENT')) throw notFound(`note content "${id}" was not found`)
       throw error
+    }
+  }
+
+  async readPreview(id: string, maximumBytes: number): Promise<{ node: NoteNode; content: Buffer; truncated: boolean }> {
+    const node = this.get(id)
+    if (node === undefined) throw notFound(`note node "${id}" was not found`)
+    if (node.kind === 'folder') throw inputError('folders do not have file content')
+    const limit = Number.isInteger(maximumBytes) ? Math.min(MAX_NOTE_BYTES, Math.max(1, maximumBytes)) : 512 * 1024
+    const size = Math.min(node.size, limit)
+    const content = Buffer.alloc(size)
+    let file: Awaited<ReturnType<typeof open>> | undefined
+    try {
+      file = await open(this.objectPath(id), 'r')
+      const { bytesRead } = await file.read(content, 0, size, 0)
+      if (bytesRead !== size) throw new Error(`note node "${id}" has an invalid stored size`)
+      return { node, content, truncated: node.size > size }
+    } catch (error) {
+      if (isNodeError(error, 'ENOENT')) throw notFound(`note content "${id}" was not found`)
+      throw error
+    } finally {
+      await file?.close().catch(() => {})
     }
   }
 
@@ -423,9 +533,34 @@ export class NoteStore {
     `).get(ancestorId, candidateId) !== undefined
   }
 
+  private mapShare(row: SqlRow): NoteShare {
+    const noteId = String(row.note_id)
+    const node = mapNoteNode({
+      id: row.node_id,
+      parent_id: row.node_parent_id,
+      parent_key: row.node_parent_key,
+      kind: row.node_kind,
+      name: row.node_name,
+      media_type: row.node_media_type,
+      size: row.node_size,
+      sha256: row.node_sha256,
+      version: row.node_version,
+      created_at: row.node_created_at,
+      updated_at: row.node_updated_at,
+    })
+    return {
+      id: String(row.share_id),
+      noteId,
+      token: String(row.token),
+      createdAt: String(row.share_created_at),
+      updatedAt: String(row.share_updated_at),
+      node,
+    }
+  }
+
   private migrate(): void {
-    const version = Number((this.db.prepare('PRAGMA user_version').get() as SqlRow).user_version ?? 0)
-    if (version > 2) throw new Error(`note database schema ${version} is newer than this plugin supports`)
+    let version = Number((this.db.prepare('PRAGMA user_version').get() as SqlRow).user_version ?? 0)
+    if (version > 3) throw new Error(`note database schema ${version} is newer than this plugin supports`)
     if (version === 0) this.db.exec(`
       BEGIN IMMEDIATE;
       CREATE TABLE note_nodes (
@@ -451,14 +586,27 @@ export class NoteStore {
         created_at TEXT NOT NULL,
         PRIMARY KEY(note_id, version)
       );
+      CREATE TABLE note_shares (
+        id TEXT PRIMARY KEY,
+        note_id TEXT NOT NULL UNIQUE REFERENCES note_nodes(id) ON DELETE CASCADE,
+        token TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
       CREATE UNIQUE INDEX note_sibling_name ON note_nodes(parent_key, name COLLATE NOCASE);
       CREATE INDEX note_parent_order ON note_nodes(parent_key, kind, name COLLATE NOCASE);
       CREATE INDEX note_name ON note_nodes(name COLLATE NOCASE);
       CREATE INDEX note_versions_recent ON note_versions(note_id, version DESC);
-      PRAGMA user_version = 2;
+      CREATE INDEX note_shares_recent ON note_shares(updated_at DESC);
+      PRAGMA user_version = 3;
       COMMIT;
     `)
-    if (version === 1) this.migrateVersionOne()
+    if (version === 0) return
+    if (version === 1) {
+      this.migrateVersionOne()
+      version = 2
+    }
+    if (version === 2) this.migrateVersionTwo()
   }
 
   private migrateVersionOne(): void {
@@ -532,6 +680,22 @@ export class NoteStore {
     }
   }
 
+  private migrateVersionTwo(): void {
+    this.db.exec(`
+      BEGIN IMMEDIATE;
+      CREATE TABLE note_shares (
+        id TEXT PRIMARY KEY,
+        note_id TEXT NOT NULL UNIQUE REFERENCES note_nodes(id) ON DELETE CASCADE,
+        token TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX note_shares_recent ON note_shares(updated_at DESC);
+      PRAGMA user_version = 3;
+      COMMIT;
+    `)
+  }
+
   private objectPath(id: string): string {
     assertNoteId(id)
     return join(this.objectsPath, id)
@@ -563,6 +727,12 @@ export class NoteStore {
 }
 
 const NOTE_COLUMNS = 'id,parent_id,parent_key,kind,name,media_type,size,sha256,version,created_at,updated_at'
+const NOTE_SHARE_COLUMNS = `
+  s.id AS share_id,s.note_id,s.token,s.created_at AS share_created_at,s.updated_at AS share_updated_at,
+  n.id AS node_id,n.parent_id AS node_parent_id,n.parent_key AS node_parent_key,n.kind AS node_kind,
+  n.name AS node_name,n.media_type AS node_media_type,n.size AS node_size,n.sha256 AS node_sha256,
+  n.version AS node_version,n.created_at AS node_created_at,n.updated_at AS node_updated_at
+`
 
 export function normalizeNoteName(value: string): string {
   const name = value.trim().normalize('NFC')

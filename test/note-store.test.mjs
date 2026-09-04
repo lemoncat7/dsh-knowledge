@@ -32,6 +32,18 @@ test('note store provides a stable, nested document tree independent from knowle
     content: Buffer.from('初始说明'),
   })
 
+  const folderShare = store.createShare(dsh.id)
+  const noteShare = store.createShare(note.id)
+  assert.match(folderShare.token, /^share_[A-Za-z0-9_-]{32}$/)
+  assert.equal(store.createShare(dsh.id).token, folderShare.token)
+  assert.deepEqual(new Set(store.listShares().map(share => share.noteId)), new Set([dsh.id, note.id]))
+  assert.equal(store.getShareByToken(folderShare.token)?.node.name, 'DSH')
+  assert.equal(store.isWithin(dsh.id, textFile.id), true)
+  assert.equal(store.isWithin(note.id, textFile.id), false)
+  assert.equal(store.listSharedSubtree(dsh.id).length, 4)
+  assert.equal(store.deleteShare(note.id), true)
+  assert.equal(store.deleteShare(note.id), false)
+
   assert.match(note.id, /^note_[a-f0-9]{32}$/)
   assert.equal(note.name, '部署记录.md')
   assert.equal(note.version, 1)
@@ -76,6 +88,7 @@ test('note store provides a stable, nested document tree independent from knowle
   assert.equal(store.get(projects.id), undefined)
   assert.equal(store.get(note.id), undefined)
   assert.deepEqual(await readdir(join(root, 'versions')), [])
+  assert.deepEqual(store.listShares(), [])
 })
 
 test('note store migrates existing files into immutable version one snapshots', async (t) => {
@@ -117,4 +130,6 @@ test('note store migrates existing files into immutable version one snapshots', 
   assert.equal((await store.readVersion(id, 1)).content.toString('utf8'), content.toString('utf8'))
   assert.deepEqual(store.listVersions(imageId), [])
   assert.equal((await readdir(join(root, 'versions'))).includes(imageId), false)
+  assert.equal(store.listShares().length, 0)
+  assert.equal(store.createShare(id).noteId, id)
 })

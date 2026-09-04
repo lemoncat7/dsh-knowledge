@@ -511,14 +511,24 @@ async function callWithLowReasoningFallback(
   parentSignal: AbortSignal,
   system: string,
 ): Promise<{ text: string; finish?: { kind: string; failure?: { message?: string } } }> {
+  const reasoningEffortRejection = /reasoning|unsupported|unknown (?:field|option|parameter)|invalid (?:field|option|parameter)/i
   try {
-    return await callExtractionModel(
+    const result = await callExtractionModel(
       ctx, route, message, sessionId, maxTokens, timeoutMs, parentSignal,
       system, 'low',
     )
+    if (result.finish?.kind === 'error'
+      && reasoningEffortRejection.test(result.finish.failure?.message ?? '')) {
+      ctx.logger.warn(`dsh-knowledge: ${route.provider}/${route.model} does not accept reasoningEffort; retrying without it`)
+      return callExtractionModel(
+        ctx, route, message, sessionId, maxTokens, timeoutMs, parentSignal,
+        system,
+      )
+    }
+    return result
   } catch (error) {
     const messageText = error instanceof Error ? error.message : String(error)
-    if (!/reasoning|unsupported|unknown (?:field|option|parameter)|invalid (?:field|option|parameter)/i.test(messageText)) throw error
+    if (!reasoningEffortRejection.test(messageText)) throw error
     ctx.logger.warn(`dsh-knowledge: ${route.provider}/${route.model} does not accept reasoningEffort; retrying without it`)
     return callExtractionModel(
       ctx, route, message, sessionId, maxTokens, timeoutMs, parentSignal,

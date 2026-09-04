@@ -1,19 +1,6 @@
-const SVG_NAMESPACE = 'http://www.w3.org/2000/svg'
 const GLASS_SURFACE_SELECTOR = [
   '.sidebar',
-  '.topbar',
-  '.note-tree-panel',
-  '.notes-browser',
-  '.notes-content-header',
-  '.notes-document-toolbar',
-  '.notes-document-statusbar',
-  '.note-editor-toolbar',
-].join(',')
-const STRUCTURAL_GLASS_SURFACE_SELECTOR = [
-  '.sidebar',
-  '.topbar',
-  '.note-tree-panel',
-  '.notes-browser',
+  '.main',
 ].join(',')
 const CARD_SURFACE_SELECTOR = [
   '.login-card',
@@ -58,27 +45,17 @@ interface WorkspaceEffectsApi {
   destroy(): void
 }
 
-interface GlassSurfaceRecord {
-  filter: SVGFilterElement | undefined
-  observer: ResizeObserver | undefined
-  frame: number
-}
-
 declare global {
   interface Window {
     DshKnowledgeEffects?: WorkspaceEffectsApi
   }
 }
 
-const glassSurfaces = new Map<HTMLElement, GlassSurfaceRecord>()
+const glassSurfaces = new Set<HTMLElement>()
 const borderSurfaces = new Map<HTMLElement, () => void>()
 const animatedLists = new Map<HTMLElement, () => void>()
 const motionPlayedAt = new Map<string, number>()
-let filterSequence = 0
-let filterBank: SVGSVGElement | undefined
-
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
-const reducedTransparency = window.matchMedia('(prefers-reduced-transparency: reduce)')
 
 function queryIncludingRoot(root: ParentNode, selector: string): HTMLElement[] {
   const matches = Array.from(root.querySelectorAll<HTMLElement>(selector))
@@ -86,119 +63,10 @@ function queryIncludingRoot(root: ParentNode, selector: string): HTMLElement[] {
   return matches
 }
 
-function ensureFilterBank(): SVGSVGElement {
-  if (filterBank?.isConnected) return filterBank
-  filterBank = document.createElementNS(SVG_NAMESPACE, 'svg')
-  filterBank.classList.add('knowledge-glass-filter-bank')
-  filterBank.setAttribute('aria-hidden', 'true')
-  filterBank.setAttribute('focusable', 'false')
-  document.body.append(filterBank)
-  return filterBank
-}
-
-function createSvgElement<K extends keyof SVGElementTagNameMap>(
-  name: K,
-  attributes: Record<string, string>,
-): SVGElementTagNameMap[K] {
-  const node = document.createElementNS(SVG_NAMESPACE, name)
-  for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, value)
-  return node
-}
-
-function createGlassFilter(id: string): { filter: SVGFilterElement; image: SVGFEImageElement } {
-  const filter = createSvgElement('filter', {
-    id,
-    x: '0%', y: '0%', width: '100%', height: '100%',
-    'color-interpolation-filters': 'sRGB',
-  })
-  const image = createSvgElement('feImage', {
-    x: '0', y: '0', width: '100%', height: '100%', preserveAspectRatio: 'none', result: 'map',
-  })
-  filter.append(
-    image,
-    createSvgElement('feGaussianBlur', { in: 'SourceGraphic', stdDeviation: '6', result: 'frosted' }),
-  )
-
-  filter.append(
-    createSvgElement('feDisplacementMap', {
-      in: 'frosted', in2: 'map', scale: '-16',
-      xChannelSelector: 'R', yChannelSelector: 'G', result: 'refracted',
-    }),
-    createSvgElement('feGaussianBlur', { in: 'refracted', stdDeviation: '.12' }),
-  )
-  return { filter, image }
-}
-
-function supportsSvgBackdropFilters(): boolean {
-  if (reducedTransparency.matches) return false
-  const userAgent = navigator.userAgent
-  if (/Firefox/i.test(userAgent) || (/Safari/i.test(userAgent) && !/(Chrome|Chromium|CriOS)/i.test(userAgent))) return false
-  return CSS.supports?.('backdrop-filter', 'url(#knowledge-glass-support)')
-    || CSS.supports?.('-webkit-backdrop-filter', 'url(#knowledge-glass-support)')
-    || false
-}
-
-function resolvedRadius(surface: HTMLElement, width: number, height: number): number {
-  const parsed = Number.parseFloat(getComputedStyle(surface).borderTopLeftRadius)
-  if (Number.isFinite(parsed)) return Math.max(0, Math.min(parsed, Math.min(width, height) / 2))
-  return Math.min(width, height) * .16
-}
-
-function displacementMap(width: number, height: number, radius: number): string {
-  const edge = Math.min(12, Math.max(4, Math.min(width, height) * .08))
-  const map = `<svg viewBox="0 0 ${width} ${height}" xmlns="${SVG_NAMESPACE}">
-    <defs>
-      <clipPath id="shape"><rect width="${width}" height="${height}" rx="${radius}"/></clipPath>
-      <linearGradient id="left" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="rgb(92 128 128)"/><stop offset="100%" stop-color="rgb(128 128 128)"/></linearGradient>
-      <linearGradient id="right" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="rgb(128 128 128)"/><stop offset="100%" stop-color="rgb(164 128 128)"/></linearGradient>
-      <linearGradient id="top" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="rgb(128 92 128)"/><stop offset="100%" stop-color="rgb(128 128 128)"/></linearGradient>
-      <linearGradient id="bottom" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="rgb(128 128 128)"/><stop offset="100%" stop-color="rgb(128 164 128)"/></linearGradient>
-    </defs>
-    <g clip-path="url(#shape)">
-      <rect width="${width}" height="${height}" fill="rgb(128 128 128)"/>
-      <rect width="${edge}" height="${height}" fill="url(#left)"/>
-      <rect x="${width - edge}" width="${edge}" height="${height}" fill="url(#right)"/>
-      <rect width="${width}" height="${edge}" fill="url(#top)"/>
-      <rect y="${height - edge}" width="${width}" height="${edge}" fill="url(#bottom)"/>
-    </g>
-  </svg>`
-  return `data:image/svg+xml,${encodeURIComponent(map)}`
-}
-
 function installGlassSurface(surface: HTMLElement): void {
   if (glassSurfaces.has(surface)) return
   surface.classList.add('knowledge-glass-surface')
-  // Fixed navigation and directory panes already own a single layout edge.
-  // SVG displacement refracts that edge into visible top/left seams, so these
-  // structural surfaces deliberately use the cheaper, stable CSS material.
-  if (surface.matches(STRUCTURAL_GLASS_SURFACE_SELECTOR) || !supportsSvgBackdropFilters()) {
-    surface.dataset.knowledgeGlass = 'fallback'
-    glassSurfaces.set(surface, { filter: undefined, observer: undefined, frame: 0 })
-    return
-  }
-
-  const id = `knowledge-glass-filter-${++filterSequence}`
-  const { filter, image } = createGlassFilter(id)
-  ensureFilterBank().append(filter)
-  surface.dataset.knowledgeGlass = 'svg'
-  surface.style.setProperty('--knowledge-glass-filter', `url(#${id})`)
-
-  const record: GlassSurfaceRecord = { filter, observer: undefined, frame: 0 }
-  const update = (): void => {
-    record.frame = 0
-    if (!surface.isConnected) return
-    const rect = surface.getBoundingClientRect()
-    const width = Math.max(1, Math.round(rect.width))
-    const height = Math.max(1, Math.round(rect.height))
-    image.setAttribute('href', displacementMap(width, height, resolvedRadius(surface, width, height)))
-  }
-  const scheduleUpdate = (): void => {
-    if (record.frame === 0) record.frame = requestAnimationFrame(update)
-  }
-  record.observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(scheduleUpdate)
-  record.observer?.observe(surface)
-  record.frame = requestAnimationFrame(update)
-  glassSurfaces.set(surface, record)
+  glassSurfaces.add(surface)
 }
 
 function installBorderSurface(surface: HTMLElement): void {
@@ -322,11 +190,8 @@ function installAnimatedList(list: HTMLElement): void {
 }
 
 function cleanupDisconnected(): void {
-  for (const [surface, record] of glassSurfaces) {
+  for (const surface of glassSurfaces) {
     if (surface.isConnected) continue
-    if (record.frame !== 0) cancelAnimationFrame(record.frame)
-    record.observer?.disconnect()
-    record.filter?.remove()
     glassSurfaces.delete(surface)
   }
   for (const [surface, cleanup] of borderSurfaces) {
@@ -351,13 +216,8 @@ function refresh(root: ParentNode = document): void {
 }
 
 function destroy(): void {
-  for (const [surface, record] of glassSurfaces) {
-    if (record.frame !== 0) cancelAnimationFrame(record.frame)
-    record.observer?.disconnect()
-    record.filter?.remove()
+  for (const surface of glassSurfaces) {
     surface.classList.remove('knowledge-glass-surface')
-    surface.removeAttribute('data-knowledge-glass')
-    surface.style.removeProperty('--knowledge-glass-filter')
   }
   for (const [surface, cleanup] of borderSurfaces) {
     cleanup()
@@ -374,8 +234,6 @@ function destroy(): void {
   borderSurfaces.clear()
   animatedLists.clear()
   motionPlayedAt.clear()
-  filterBank?.remove()
-  filterBank = undefined
 }
 
 window.DshKnowledgeEffects?.destroy()

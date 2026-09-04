@@ -24,6 +24,15 @@ export interface NoteVersion {
   createdAt: string
 }
 
+export interface NoteShare {
+  id: string
+  noteId: string
+  token: string
+  createdAt: string
+  updatedAt: string
+  node: NoteNode
+}
+
 export interface NoteReference {
   noteId: string
   knowledgeBaseId: string

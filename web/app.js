@@ -90,7 +90,7 @@ const state = {
     children: new Map(), loadedFolders: new Set(), expandedFolders: new Set(),
     selectedId: '', selectedNode: null, currentFolderId: null, breadcrumbs: [],
     content: '', draft: '', dirty: false, assetUrl: '', query: '', searchResults: [],
-    transfer: null, loadingNodeId: '',
+    transfer: null, loadingNodeId: '', shares: [], shareError: '',
   },
   service: { publicApiEnabled: false, publicApiPrefix: '/knowledge-api/v1', remote: false },
   scrollPositions: new Map(),
@@ -268,7 +268,7 @@ function signOut() {
   releaseNoteAsset()
   sessionStorage.removeItem(TOKEN_KEY)
   Object.assign(state, { token: '', stats: null, overview: null, knowledgeBases: [], mounts: [], resolvedMounts: [], entries: [], documents: [], candidates: [], candidateTargets: new Map(), settings: { writebackPolicy: 'conservative', updatedAt: '' }, tokens: [] })
-  state.notes = { children: new Map(), loadedFolders: new Set(), expandedFolders: new Set(), selectedId: '', selectedNode: null, currentFolderId: null, breadcrumbs: [], content: '', draft: '', dirty: false, assetUrl: '', query: '', searchResults: [], transfer: null, loadingNodeId: '' }
+  state.notes = { children: new Map(), loadedFolders: new Set(), expandedFolders: new Set(), selectedId: '', selectedNode: null, currentFolderId: null, breadcrumbs: [], content: '', draft: '', dirty: false, assetUrl: '', query: '', searchResults: [], transfer: null, loadingNodeId: '', shares: [], shareError: '' }
   if (AUTH_MODE === 'same-origin') void boot()
   else renderLogin()
 }
@@ -298,6 +298,7 @@ async function navigate(view) {
     if (view === 'entries') await loadDocuments(controller.signal, (label, progress) => updateLoadingPhase(request, label, progress))
     if (view === 'candidates') await loadCandidates(controller.signal)
     if (view === 'notes') await loadNotes(controller.signal, (label, progress) => updateLoadingPhase(request, label, progress))
+    if (view === 'shares') await loadNoteShares(controller.signal)
     if (view === 'tokens') await loadTokens(controller.signal)
   } catch (error) {
     if (controller.signal.aborted) return
@@ -329,7 +330,7 @@ function cancelPendingSearches() {
 function loadingPhaseForView(view) {
   return ({
     overview: '正在汇总知识活动', bases: '正在读取知识库配置', entries: '正在读取知识目录',
-    notes: '正在读取笔记目录', candidates: '正在准备审核队列', tokens: '正在读取访问权限',
+    notes: '正在读取笔记目录', shares: '正在读取分享列表', candidates: '正在准备审核队列', tokens: '正在读取访问权限',
   })[view] || '正在准备工作区'
 }
 
@@ -476,7 +477,11 @@ async function loadDocuments(signal, onPhase = () => {}) {
 
 async function loadNotes(signal, onPhase = () => {}) {
   onPhase('正在读取顶层目录', .36)
-  state.notes.children.set('root', await api('notes?limit=500', { signal }))
+  const [rootNodes] = await Promise.all([
+    api('notes?limit=500', { signal }),
+    loadNoteShares(signal),
+  ])
+  state.notes.children.set('root', rootNodes)
   state.notes.loadedFolders.add('root')
   if (state.notes.selectedId) {
     onPhase('正在恢复上次打开的笔记', .74)
@@ -944,11 +949,12 @@ function renderShell() {
     bases: ['知识库与挂载', '管理知识目录，并限定项目与会话的召回和写入范围'],
     entries: ['知识文档', '在知识目录中阅读、整理和维护 Markdown 文档'],
     notes: ['笔记文档', '像本地目录一样整理笔记和资料，并按需关联到知识文档'],
+    shares: ['已分享', '管理只读分享链接，也可以导入别人分享的笔记和目录'],
     candidates: ['待审核', '确认 AI 提取结果后再写入知识文档'],
     tokens: ['访问管理', '管理其他客户端连接中央知识库的权限'],
   }
   const [title, subtitle] = titles[state.view]
-  const viewIndexes = { overview: '00', notes: '01', entries: '02', candidates: '03', bases: '04', tokens: '05' }
+  const viewIndexes = { overview: '00', notes: '01', shares: '02', entries: '03', candidates: '04', bases: '05', tokens: '06' }
   const shell = element('div', {
     class: 'app-shell', 'data-menu-open': String(state.menuOpen),
     'data-view': state.view, 'data-loading': String(state.loading),
@@ -1095,7 +1101,7 @@ function applySidebarVisibility(shell, hidden) {
 function renderSidebar() {
   const pending = state.stats?.candidates.pending
   const navGroups = [
-    ['笔记工作区', [['notes', '笔记文档']]],
+    ['笔记工作区', [['notes', '笔记文档'], ['shares', '已分享']]],
     ['知识工作区', [['entries', '知识文档'], ['candidates', '待审核'], ['bases', '知识库与挂载']]],
     ['连接', [['tokens', '访问管理']].filter(([id]) => id !== 'tokens' || !state.service.remote)],
   ].filter(([, items]) => items.length)
@@ -1126,6 +1132,7 @@ function renderCurrentView() {
   if (state.view === 'bases') return renderKnowledgeBases()
   if (state.view === 'entries') return renderEntries()
   if (state.view === 'notes') return renderNotes()
+  if (state.view === 'shares') return renderShares()
   if (state.view === 'candidates') return renderCandidates()
   return renderTokens()
 }
@@ -1972,9 +1979,7 @@ function renderNotes() {
     onChange: event => { void uploadNoteFiles([...event.target.files], state.notes.currentFolderId); event.target.value = '' },
   })
   const rootNodes = state.notes.children.get('root') || []
-  const tree = state.notes.query.trim()
-    ? renderNoteSearchResults()
-    : renderNoteTreeBranch(null)
+  const tree = state.notes.query.trim() ? renderNoteSearchResults() : renderNoteTreeBranch(null)
   const workspace = element('section', {
     class: 'notes-workspace', 'data-drop-active': 'false',
     onDragEnter: noteWorkspaceDragEnter, onDragOver: noteWorkspaceDragEnter,
@@ -2045,12 +2050,213 @@ function openNoteAgentGuide() {
       element('h3', {}, '可以直接这样说'),
       element('ul', {}, examples)),
     element('p', { class: 'notes-agent-guide-note' }, '只说“新建 Markdown”或“创建本地目录”仍不会获得笔记权限；在当前消息中带上“笔记文档”即可。'))
-  return openSheet({
+  return openModal({
     title: '让会话整理笔记',
     description: '会话可以操作笔记工作区，但每次写入都需要当前用户消息明确授权。',
     body,
     cancelLabel: '知道了',
+    className: 'notes-agent-guide-dialog',
   })
+}
+
+async function loadNoteShares(signal) {
+  try {
+    state.notes.shares = await api('notes/shares', { signal })
+    state.notes.shareError = ''
+  } catch (error) {
+    if (error.name === 'AbortError') throw error
+    state.notes.shareError = friendlyError(error)
+  }
+  return state.notes.shares
+}
+
+async function refreshNoteShares() {
+  await loadNoteShares()
+  renderShell()
+  if (!state.notes.shareError) showToast('分享列表已刷新。')
+}
+
+function renderShares() {
+  return element('section', { class: 'shares-page', 'aria-label': '已分享笔记' },
+    element('div', { class: 'section-heading shares-heading' },
+      element('div', {}, element('h2', {}, '分享空间'), element('p', {}, '管理本机生成的只读链接，或将别人分享的内容复制到你的笔记工作区。')),
+      element('div', { class: 'shares-heading-actions' },
+        actionButton('从分享导入', openImportNoteShare, 'primary small'),
+        actionButton('刷新', () => { void refreshNoteShares() }, 'ghost small'),
+      ),
+    ),
+    element('section', { class: 'panel shares-panel' },
+      element('header', { class: 'panel-header shares-panel-header' },
+        element('div', {}, element('h3', {}, '本机已分享'), element('p', {}, `${state.notes.shares.length} 项 · 原内容更新后分享链接自动同步`)),
+      ),
+      element('div', { class: 'shares-panel-body' },
+    state.notes.shareError
+      ? element('div', { class: 'notes-share-error', role: 'alert' }, element('strong', {}, '分享列表加载失败'), element('p', {}, state.notes.shareError), actionButton('重试', () => { void refreshNoteShares() }, 'small'))
+      : state.notes.shares.length
+        ? element('div', { class: 'notes-share-list' }, state.notes.shares.map(renderNoteShareRow))
+        : element('div', { class: 'notes-folder-empty notes-share-empty' },
+          element('span', { class: 'notes-share-empty-mark', 'aria-hidden': 'true' }),
+          element('h3', {}, '还没有分享内容'),
+          element('p', {}, '打开一篇笔记或目录，选择“分享”即可生成只读链接。'),
+          element('div', {}, actionButton('打开笔记文档', () => { void navigate('notes') }, 'primary small')),
+        ),
+      ),
+    ),
+  )
+}
+
+function renderNoteShareRow(share) {
+  const url = noteShareUrl(share)
+  return element('article', { class: 'notes-share-row' },
+    element('button', { type: 'button', class: 'notes-share-main', onClick: () => { void openSharedNoteOriginal(share) } },
+      renderNoteIcon(share.node, true),
+      element('span', {}, element('strong', {}, share.node.name), element('small', {}, share.node.kind === 'folder' ? '共享目录及其子项' : noteKindLabel(share.node))),
+    ),
+    element('div', { class: 'notes-share-meta' },
+      element('span', {}, '分享于', element('time', { datetime: share.createdAt }, formatDate(share.createdAt))),
+      element('span', {}, '原内容更新后链接自动同步'),
+    ),
+    element('div', { class: 'notes-share-actions' },
+      actionButton('打开原文', () => { void openSharedNoteOriginal(share) }, 'ghost small'),
+      actionButton('复制链接', () => copyText(url, '分享链接已复制。'), 'small'),
+      actionButton('管理', () => showNoteShareDialog(share), 'ghost small'),
+    ),
+  )
+}
+
+function openImportNoteShare() {
+  const urlField = formField('分享链接', 'input', '', {
+    type: 'url', required: true, inputmode: 'url', autocomplete: 'off',
+    placeholder: 'https://example.com/knowledge-api/v1/shared/share_…',
+  })
+  const destination = selectField('导入到', [{ value: '', label: '笔记文档（根目录）' }], '')
+  destination.input.disabled = true
+  const inspectButton = actionButton('读取分享', () => { void inspect() }, 'small')
+  const fieldError = element('p', { class: 'share-import-field-error', role: 'alert', hidden: true })
+  const preview = element('div', { class: 'share-import-preview', 'data-state': 'empty', 'aria-live': 'polite' },
+    element('span', { class: 'share-import-preview-mark', 'aria-hidden': 'true' }),
+    element('div', {}, element('strong', {}, '等待读取分享'), element('p', {}, '读取后会显示类型、文件数量与大小；导入前不会写入任何内容。')),
+  )
+  const destinationHint = element('span', { class: 'field-hint' }, '正在读取你的笔记目录…')
+  destination.wrapper.append(destinationHint)
+  const inputRow = element('div', { class: 'share-import-url-row' }, urlField.input, inspectButton)
+  urlField.wrapper.replaceChildren(element('label', {}, '分享链接'), inputRow, fieldError)
+  const form = element('form', { class: 'share-import-form', onSubmit: event => { event.preventDefault(); void inspect() } },
+    urlField.wrapper,
+    preview,
+    destination.wrapper,
+    element('p', { class: 'share-import-note' }, '导入会创建一份独立副本；之后对方更新或停止分享，都不会改动你已经导入的内容。'),
+  )
+  let inspectedUrl = ''
+
+  const showFieldError = message => {
+    fieldError.textContent = message
+    fieldError.hidden = !message
+    urlField.input.setAttribute('aria-invalid', String(Boolean(message)))
+  }
+  const renderPreview = manifest => {
+    const kind = manifest.share.kind === 'folder' ? '目录' : manifest.share.kind === 'document' ? 'Markdown 文档' : '文件'
+    preview.dataset.state = 'ready'
+    preview.replaceChildren(
+      renderNoteIcon({ kind: manifest.share.kind, name: manifest.share.name, mediaType: null }, true),
+      element('div', {},
+        element('strong', {}, manifest.share.name),
+        element('p', {}, `${kind} · ${manifest.share.fileCount} 个文件 · ${formatBytes(manifest.share.totalSize)}`),
+      ),
+      manifest.truncated ? badge('超过导入上限', 'danger') : badge('可以导入', 'success'),
+    )
+  }
+  const inspect = async () => {
+    if (!urlField.input.reportValidity()) return false
+    inspectButton.disabled = true
+    inspectButton.setAttribute('aria-busy', 'true')
+    inspectButton.textContent = '正在读取…'
+    showFieldError('')
+    preview.dataset.state = 'loading'
+    try {
+      const result = await api('notes/import-share/inspect', { method: 'POST', body: { url: urlField.input.value.trim() } })
+      inspectedUrl = urlField.input.value.trim()
+      renderPreview(result.manifest)
+      return !result.manifest.truncated
+    } catch (error) {
+      inspectedUrl = ''
+      preview.dataset.state = 'error'
+      preview.replaceChildren(
+        element('span', { class: 'share-import-preview-mark', 'aria-hidden': 'true' }),
+        element('div', {}, element('strong', {}, '无法读取这个分享'), element('p', {}, '请检查链接是否完整、分享是否仍有效。')),
+      )
+      showFieldError(friendlyError(error))
+      return false
+    } finally {
+      inspectButton.disabled = false
+      inspectButton.removeAttribute('aria-busy')
+      inspectButton.textContent = '读取分享'
+    }
+  }
+  urlField.input.addEventListener('input', () => {
+    if (urlField.input.value.trim() !== inspectedUrl) {
+      inspectedUrl = ''
+      preview.dataset.state = 'empty'
+    }
+    showFieldError('')
+  })
+
+  openModal({
+    title: '从分享导入',
+    description: '把只读分享复制到你的笔记工作区',
+    body: form,
+    primaryLabel: '导入笔记',
+    className: 'share-import-dialog',
+    onPrimary: async () => {
+      const requestedUrl = urlField.input.value.trim()
+      if (!requestedUrl || inspectedUrl !== requestedUrl) {
+        showFieldError('请先读取并确认分享内容。')
+        urlField.input.focus()
+        return false
+      }
+      showFieldError('')
+      try {
+        const result = await api('notes/import-share', {
+          method: 'POST', body: { url: requestedUrl, parentId: destination.input.value || null },
+        })
+        state.notes.children.clear()
+        state.notes.loadedFolders.clear()
+        showToast(`已导入“${result.root.name}”，共 ${result.importedNodes} 项。`)
+        return true
+      } catch (error) {
+        showFieldError(friendlyError(error))
+        return false
+      }
+    },
+  })
+
+  void loadShareImportDestinations().then(options => {
+    destination.input.replaceChildren(...options.map(option => element('option', { value: option.value }, option.label)))
+    destination.input.disabled = false
+    destinationHint.textContent = options.length > 1 ? `可选择 ${options.length - 1} 个已有目录` : '当前会导入到笔记根目录'
+  }).catch(error => {
+    destination.input.disabled = false
+    destinationHint.textContent = `目录读取失败，将导入到根目录：${friendlyError(error)}`
+  })
+}
+
+async function loadShareImportDestinations() {
+  const options = [{ value: '', label: '笔记文档（根目录）' }]
+  const queue = [{ id: null, path: '' }]
+  while (queue.length && options.length <= 500) {
+    const batch = queue.splice(0, 4)
+    const groups = await Promise.all(batch.map(async parent => ({ parent, nodes: await loadNoteChildren(parent.id) })))
+    for (const { parent, nodes } of groups) {
+      for (const node of nodes) {
+        if (node.kind !== 'folder') continue
+        const path = parent.path ? `${parent.path}/${node.name}` : node.name
+        options.push({ value: node.id, label: path })
+        queue.push({ id: node.id, path })
+        if (options.length > 500) break
+      }
+    }
+  }
+  return options
 }
 
 function renderNoteTransfer() {
@@ -2181,6 +2387,7 @@ function renderNoteFolderContent(folder) {
         element('span', { class: 'notes-file-size', 'data-label': node.kind === 'folder' ? '类型' : '大小' }, node.kind === 'folder' ? '目录' : formatBytes(node.size)),
         element('div', { class: 'notes-file-actions' },
           node.kind !== 'folder' ? noteDownloadButton(node, 'ghost tiny') : null,
+          actionButton(noteShareForNode(node.id) ? '分享中' : '分享', () => { void openNoteShare(node) }, 'ghost tiny'),
           actionButton('重命名', () => openRenameNoteNode(node), 'ghost tiny'),
           actionButton('复制', () => { void copyNoteNode(node) }, 'ghost tiny'),
           actionButton('删除', () => { void confirmDeleteNoteNode(node) }, 'ghost tiny danger-text'),
@@ -2205,6 +2412,8 @@ function renderNoteContentHeader(folder) {
     element('div', { class: 'notes-content-title' },
       element('div', {}, element('h2', {}, folder?.name || '全部笔记'), element('p', {}, folder ? `${(state.notes.children.get(folder.id) || []).length} 个项目` : '你的独立笔记与资料目录')),
       element('div', { class: 'notes-content-actions' },
+        folder ? actionButton(noteShareForNode(folder.id) ? '分享中' : '分享目录', () => { void openNoteShare(folder) }, 'ghost small') : null,
+        actionButton('已分享', () => { void navigate('shares') }, 'ghost small'),
         actionButton('新建文档', () => openCreateNoteDocument(folder?.id || null), 'primary small'),
         actionButton('新建目录', () => openCreateNoteFolder(folder?.id || null), 'small'),
       ),
@@ -2454,6 +2663,7 @@ function renderNoteFileToolbar(node, options = {}) {
       ], () => markdownEditorHandle?.toggleOutline(), 'ghost small notes-outline-action', { 'data-note-outline': '', 'aria-label': '打开标题大纲', 'aria-controls': 'dsh-note-outline', 'aria-expanded': 'false', 'aria-pressed': 'false' }) : null,
       options.editable ? actionButton('历史', () => { void openNoteHistory(node) }, 'ghost small', { 'data-note-history': '', 'data-note-mobile-overflow': '' }) : null,
       noteDownloadButton(node, 'ghost small', '下载', { 'data-note-mobile-overflow': '' }),
+      actionButton(noteShareForNode(node.id) ? '分享中' : '分享', () => { void openNoteShare(node) }, 'ghost small', { 'data-note-mobile-overflow': '' }),
       actionButton('复制引用', () => { void copyNoteReference(node) }, 'ghost small', { 'data-note-mobile-overflow': '' }),
       actionButton('重命名', () => openRenameNoteNode(node), 'ghost small', { 'data-note-mobile-overflow': '' }),
       options.editable ? actionButton('保存', () => { void saveNoteDocument() }, 'primary small', { 'data-note-save': '', 'data-note-mobile-overflow': '', disabled: !state.notes.dirty }) : null,
@@ -2500,8 +2710,11 @@ function renderNoteFileOverflowMenu(node, options) {
   if (options.enhanced || options.editable) menuItems.push(noteMenuDivider())
   menuItems.push(
     noteMenuAction('下载', 'download', closeThen(event => { void downloadNoteFile(node, event.currentTarget) })),
+    noteMenuAction(noteShareForNode(node.id) ? '管理分享' : '创建分享', 'link', closeThen(() => { void openNoteShare(node) })),
     noteMenuAction('复制引用', 'link', closeThen(() => { void copyNoteReference(node) })),
     noteMenuAction('重命名', 'rename', closeThen(() => openRenameNoteNode(node))),
+    noteMenuDivider(),
+    noteMenuAction('查看已分享', 'outline', closeThen(() => { void navigate('shares') })),
   )
   const menu = element('div', { class: 'notes-document-more-menu', role: 'menu', 'aria-label': `${node.name} 的更多操作` }, menuItems)
   summary.setAttribute('aria-expanded', 'false')
@@ -3187,6 +3400,76 @@ async function copyNoteReference(node) {
   catch { showToast('复制失败，请手动复制文档编号。', 'error') }
 }
 
+function noteShareForNode(noteId) {
+  return state.notes.shares.find(share => share.noteId === noteId) || null
+}
+
+function noteShareUrl(share) {
+  const apiBase = state.service.publicApiPrefix || API_BASE
+  return new URL(`${apiBase.replace(/\/$/, '')}/shared/${encodeURIComponent(share.token)}`, location.href).href
+}
+
+async function openNoteShare(node) {
+  if (state.notes.selectedNode?.id === node.id && state.notes.dirty && !await saveNoteDocument()) return
+  try {
+    let share = noteShareForNode(node.id)
+    if (!share) {
+      share = await api(`notes/${encodeURIComponent(node.id)}/share`, { method: 'POST' })
+      state.notes.shares = [share, ...state.notes.shares.filter(item => item.noteId !== node.id)]
+    }
+    showNoteShareDialog(share)
+  } catch (error) {
+    showToast(`创建分享失败：${friendlyError(error)}`, 'error')
+  }
+}
+
+function showNoteShareDialog(share) {
+  const url = noteShareUrl(share)
+  const input = Object.assign(element('input', {
+    class: 'input notes-share-link-input', readonly: true, value: url,
+    'aria-label': `${share.node.name} 的分享链接`, onFocus: event => event.currentTarget.select(),
+  }), { value: url })
+  let modal
+  const body = element('div', { class: 'notes-share-dialog-body' },
+    element('div', { class: 'notes-share-dialog-kind' }, renderNoteIcon(share.node, true), element('span', {}, element('strong', {}, share.node.name), element('small', {}, share.node.kind === 'folder' ? '目录与当前子项均可只读访问' : '只读文档链接'))),
+    element('label', { class: 'notes-share-link-label' }, element('span', {}, '分享链接'), element('div', { class: 'notes-share-link-row' }, input, actionButton('复制', () => copyText(url, '分享链接已复制。'), 'primary small'))),
+    element('p', { class: 'notes-share-dialog-note' }, '链接中的内容会随原笔记更新。任何获得链接的人都可以访问；停止分享后链接立即失效。'),
+    element('div', { class: 'notes-share-dialog-danger' },
+      element('span', {}, element('strong', {}, '停止分享'), element('small', {}, '不会删除原文档或目录。')),
+      actionButton('停止分享', () => confirmRemoveNoteShare(share, () => modal?.close(true)), 'danger small'),
+    ),
+  )
+  modal = openModal({
+    title: '分享笔记',
+    description: '生成独立的只读访问链接',
+    body,
+    cancelLabel: '完成',
+    className: 'notes-share-dialog',
+  })
+}
+
+function confirmRemoveNoteShare(share, afterRemove) {
+  openConfirm({
+    title: `停止分享“${share.node.name}”？`,
+    message: '现有分享链接会立即失效，原笔记内容不会被删除。',
+    confirmLabel: '停止分享',
+    danger: true,
+    onConfirm: async () => {
+      await api(`notes/${encodeURIComponent(share.noteId)}/share`, { method: 'DELETE' })
+      state.notes.shares = state.notes.shares.filter(item => item.noteId !== share.noteId)
+      afterRemove?.()
+      renderShell()
+      showToast('已停止分享。')
+    },
+  })
+}
+
+async function openSharedNoteOriginal(share) {
+  if (state.notes.dirty && !await saveNoteDocument()) return
+  state.view = 'notes'
+  await selectNoteNode(share.node)
+}
+
 async function confirmDeleteNoteNode(node) {
   try {
     const references = await api(`notes/${encodeURIComponent(node.id)}/references`)
@@ -3204,6 +3487,7 @@ async function confirmDeleteNoteNode(node) {
       confirmLabel: '永久删除', danger: true,
       onConfirm: async () => {
         await api(`notes/${encodeURIComponent(node.id)}`, { method: 'DELETE' })
+        await loadNoteShares()
         await loadNoteChildren(node.parentId, true)
         if (state.notes.selectedId === node.id || state.notes.breadcrumbs.some(parent => parent.id === node.id)) clearNoteSelection()
         renderShell(); showToast('已删除。')
@@ -4148,11 +4432,11 @@ function openSheet(options) {
   return openModal({ ...options, presentation: 'sheet' })
 }
 
-function openModal({ title, description = '', body, primaryLabel, primaryVariant = 'primary', onPrimary, cancelLabel = '取消', presentation = 'modal', onClose }) {
+function openModal({ title, description = '', body, primaryLabel, primaryVariant = 'primary', onPrimary, cancelLabel = '取消', presentation = 'modal', className = '', onClose }) {
   const previouslyFocused = document.activeElement
   const isSheet = presentation === 'sheet'
   const backdrop = element('div', { class: `dialog-backdrop${isSheet ? ' sheet-backdrop' : ''}` })
-  const dialog = element('section', { class: `dialog${isSheet ? ' sheet' : ''} ${primaryLabel ? '' : 'narrow'}`.trim(), role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'dialog-title' })
+  const dialog = element('section', { class: `dialog${isSheet ? ' sheet' : ''} ${primaryLabel ? '' : 'narrow'} ${className}`.trim(), role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'dialog-title' })
   let busy = false
   let formDirty = false
   let closed = false

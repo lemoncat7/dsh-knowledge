@@ -417,6 +417,10 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
           yield { type: 'finish', reason: { kind: 'max-tokens' } }
           return
         }
+        if (extractionCalls === 2) {
+          yield { type: 'finish', reason: { kind: 'error', failure: { message: 'reasoningEffort is unsupported by this model' } } }
+          return
+        }
         yield { type: 'text-delta', text: JSON.stringify({ candidates: [
           {
             action: 'create', knowledgeBaseId: 'default', title: 'Confirmed high confidence',
@@ -513,11 +517,11 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
   await observer.updateSettings({ writebackProvider: 'global-provider', writebackModel: 'global-model' })
   const direct = sessionFor('direct', 1)
   await listeners.get('agent/turn-stopping')({ agent: { session: direct }, turn: 1, signal: new AbortController().signal })
-  assert.equal(streamCalls, 2)
-  assert.deepEqual(streamBudgets, [1200, 2400])
-  assert.deepEqual(streamRoutes, [['mock', 'extractor'], ['mock', 'extractor']])
-  assert.deepEqual(streamReasoning, [undefined, 'low'])
-  assert.deepEqual(streamPolicies, ['proactive', 'proactive'])
+  assert.equal(streamCalls, 3)
+  assert.deepEqual(streamBudgets, [1200, 2400, 2400])
+  assert.deepEqual(streamRoutes, [['mock', 'extractor'], ['mock', 'extractor'], ['mock', 'extractor']])
+  assert.deepEqual(streamReasoning, [undefined, 'low', undefined])
+  assert.deepEqual(streamPolicies, ['proactive', 'proactive', 'proactive'])
   assert.equal((await observer.listCandidates('approved', 10)).length, 2)
   const pending = await observer.listCandidates('pending', 10)
   assert.equal(pending.length, 3)
