@@ -184,10 +184,6 @@ function restoreScrollPosition(view) {
   })
 }
 
-function refreshWorkspaceEffects(root = document) {
-  window.DshKnowledgeEffects?.refresh(root)
-}
-
 const { api, binaryRequest, binaryUploadRequest } = createApiClient({
   apiBase: API_BASE,
   authMode: AUTH_MODE,
@@ -259,7 +255,6 @@ function renderLogin(message = '') {
     element('p', {}, '管理对话中沉淀的长期知识与 AI 提取候选。'),
     form,
   )))
-  refreshWorkspaceEffects(app)
 }
 
 function signOut() {
@@ -999,7 +994,6 @@ function renderShell() {
   )
   app.replaceChildren(shell)
   applySidebarVisibility(shell, state.documentView.sidebarHidden)
-  refreshWorkspaceEffects(shell)
   restoreScrollPosition(currentScrollState())
 }
 
@@ -1386,7 +1380,6 @@ function renderKnowledgeBaseCard(base) {
   const hiddenTagCount = Math.max(0, base.defaultTags.length - visibleTags.length)
   return element('article', {
     class: `base-card${archived ? ' is-archived' : ''}`,
-    'data-knowledge-motion-key': `knowledge-library:${base.id}`,
   },
     element('div', { class: 'base-card-header' },
       element('div', { class: 'base-card-identity' },
@@ -1522,7 +1515,6 @@ function renderMountListRow(base, view, targetKind, targetId) {
   return element('article', {
     class: `mount-list-row${selected ? ' is-selected' : ''}`,
     role: 'listitem',
-    'data-knowledge-motion-key': `knowledge-mount:${targetKind}:${base.id}`,
   },
     element('label', { class: 'mount-select' }, checkbox, element('span', { class: 'visually-hidden' }, `选择 ${base.name}`)),
     element('div', { class: 'mount-list-main' },
@@ -1605,7 +1597,6 @@ function renderDocumentWorkspace(workspace, options = {}) {
     },
       element('button', {
         type: 'button', class: 'note-tree-base', 'aria-expanded': String(expanded),
-        'data-knowledge-motion-key': `knowledge-base:${workspace.kind}:${base.id}`,
         onClick: () => {
           if (query) { view.knowledgeBaseId = base.id; return renderShell() }
           void toggleDocumentBase(workspace, base.id)
@@ -1626,7 +1617,6 @@ function renderDocumentWorkspace(workspace, options = {}) {
           'aria-busy': movingDocumentId === document.id ? 'true' : undefined,
           title: canOrganize ? `${document.title} · 拖到其他知识库以移动` : document.title,
           'data-document-id': document.id,
-          'data-knowledge-motion-key': `knowledge-document:${workspace.kind}:${document.id}`,
           onDragStart: event => {
             knowledgeDocumentDrag = { documentId: document.id, sourceBaseId: base.id, workspaceKind: workspace.kind }
             event.dataTransfer.effectAllowed = 'move'
@@ -2297,7 +2287,6 @@ function renderNoteTreeBranch(parentId, depth = 0) {
     const row = element('div', {
       class: 'notes-tree-item', 'data-kind': node.kind, 'data-selected': String(selected),
       'data-note-id': node.id,
-      'data-knowledge-motion-key': `note:${node.id}`,
       draggable: 'true',
       onDragStart: event => {
         event.dataTransfer.effectAllowed = 'move'
@@ -2337,7 +2326,7 @@ function renderNoteTreeBranch(parentId, depth = 0) {
 function renderNoteSearchResults() {
   if (!state.notes.searchResults.length) return element('div', { class: 'notes-tree-empty' }, '没有匹配的笔记文档。')
   return element('div', { class: 'notes-search-results' }, state.notes.searchResults.map(node => element('button', {
-    type: 'button', class: 'notes-search-row', 'data-knowledge-motion-key': `note-search:${node.id}`,
+    type: 'button', class: 'notes-search-row',
     onClick: () => { void selectNoteNode(node) },
   }, renderNoteIcon(node), element('span', {}, element('strong', {}, node.name), element('small', {}, noteKindLabel(node))))))
 }
@@ -2374,7 +2363,10 @@ function renderNoteFolderContent(folder) {
   },
     renderNoteContentHeader(folder),
     children.length
-      ? element('div', { class: 'notes-file-list', role: 'list' }, children.map(node => element('div', {
+      ? element('div', { class: 'notes-file-table' },
+        element('div', { class: 'notes-file-columns', 'aria-hidden': 'true' },
+          element('span', {}, '名称'), element('span', {}, '更新时间'), element('span', {}, '大小'), element('span', {}, '操作')),
+        element('div', { class: 'notes-file-list', role: 'list' }, children.map(node => element('div', {
         class: 'notes-file-row', role: 'listitem', draggable: 'true',
         onDragStart: event => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-dsh-note-id', node.id) },
         onDblClick: () => { void selectNoteNode(node, { toggleFolder: node.kind === 'folder' }) },
@@ -2392,7 +2384,7 @@ function renderNoteFolderContent(folder) {
           actionButton('复制', () => { void copyNoteNode(node) }, 'ghost tiny'),
           actionButton('删除', () => { void confirmDeleteNoteNode(node) }, 'ghost tiny danger-text'),
         ),
-      )))
+        ))))
       : element('div', { class: 'notes-folder-empty' },
         element('span', { class: 'notes-empty-folder-mark', 'aria-hidden': 'true' }),
         element('h3', {}, '这个目录还是空的'),
@@ -2737,7 +2729,7 @@ function renderNoteFileStatusbar(node) {
   return element('footer', { class: 'notes-document-statusbar', 'aria-label': '文档信息' },
     element('div', { class: 'notes-file-info' },
       noteInfoItem('编号', shortNoteId(node.id), node.id, 'id'),
-      noteInfoItem('类型', node.kind === 'document' ? 'Markdown' : node.mediaType || '未知'),
+      noteInfoItem('格式', node.kind === 'document' ? 'Markdown' : node.mediaType || '未知'),
       noteInfoItem('大小', formatBytes(node.size), '', 'size'),
       noteInfoItem('更新', formatDate(node.updatedAt), '', 'updated'),
     ),
@@ -4449,7 +4441,6 @@ function openModal({ title, description = '', body, primaryLabel, primaryVariant
     document.removeEventListener('keydown', onKeyDown)
     closed = true
     backdrop.remove()
-    refreshWorkspaceEffects()
     onClose?.()
     if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus()
   }
@@ -4491,7 +4482,6 @@ function openModal({ title, description = '', body, primaryLabel, primaryVariant
     body.addEventListener('change', () => { formDirty = true })
   }
   document.body.append(backdrop)
-  refreshWorkspaceEffects(backdrop)
   document.addEventListener('keydown', onKeyDown)
   window.setTimeout(() => (dialog.querySelector('input, textarea, select, button') || dialog).focus(), 0)
   return { close, dialog }

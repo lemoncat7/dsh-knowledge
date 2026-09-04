@@ -1057,15 +1057,19 @@ html,
 .notes-content-title h2 { margin: 0; font-size: 18px; letter-spacing: -.015em; }
 .notes-content-title p { margin: 3px 0 0; color: var(--text-tertiary); font-size: 10px; }
 .notes-content-actions { display: flex; gap: 7px; }
-.notes-file-list { min-width: 620px; padding: 6px 12px 28px; }
-.notes-file-row { min-height: 46px; display: grid; grid-template-columns: minmax(230px, 1fr) 130px 72px auto; align-items: center; gap: 12px; border-radius: 6px; padding: 3px 8px; transition: background .14s ease; }
+.notes-file-table { min-width: 0; overflow-x: auto; overscroll-behavior-inline: contain; }
+.notes-file-columns, .notes-file-row { min-width: 820px; display: grid; grid-template-columns: minmax(230px, 1fr) 130px 72px 260px; align-items: center; gap: 12px; }
+.notes-file-columns { min-height: 32px; margin: 0 12px; border-bottom: 1px solid var(--separator); padding: 5px 8px; color: var(--text-tertiary); font-size: 9px; font-weight: 620; letter-spacing: .025em; }
+.notes-file-columns span:nth-child(4) { text-align: right; }
+.notes-file-list { min-width: 820px; padding: 4px 12px 28px; }
+.notes-file-row { min-height: 46px; border-radius: 6px; padding: 3px 8px; transition: background-color var(--motion-fast) ease; }
 .notes-file-row:hover { background: var(--surface-hover); }
 .notes-file-main { min-width: 0; display: flex; align-items: center; gap: 10px; border: 0; padding: 3px; background: transparent; color: var(--text); text-align: left; }
 .notes-file-main > span:last-child { min-width: 0; }
 .notes-file-main strong, .notes-file-main small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .notes-file-main strong { font-size: 12px; font-weight: 560; }
 .notes-file-main small, .notes-file-row time, .notes-file-size { color: var(--text-tertiary); font-size: 10px; }
-.notes-file-actions { display: flex; opacity: 0; pointer-events: none; transition: opacity .12s ease; }
+.notes-file-actions { display: flex; align-items: center; justify-content: flex-end; gap: 2px; opacity: 0; pointer-events: none; transition: opacity .12s ease; }
 .notes-file-row:hover .notes-file-actions, .notes-file-row:focus-within .notes-file-actions { opacity: 1; pointer-events: auto; }
 .notes-folder-empty { min-height: 360px; padding: 32px; }
 .notes-folder-empty h3 { margin: 9px 0 0; color: var(--text); font-size: 16px; }
@@ -1120,10 +1124,10 @@ html,
 .notes-editor-frame[data-outline-open="true"] { grid-template-columns: minmax(0, 1fr) minmax(190px, 236px); }
 .notes-document-toolbar { position: relative; z-index: 2; min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 14px; border-bottom: 1px solid var(--separator); padding: 5px 14px 5px 20px; background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; }
 .notes-toolbar-leading { min-width: 0; display: flex; flex: 1 1 auto; align-items: center; overflow: hidden; }
-.notes-file-info { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 22px; color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
-.notes-file-info-item { min-width: 0; display: inline-flex; align-items: baseline; gap: 4px; }
-.notes-file-info-item strong { color: var(--text-secondary); font-size: inherit; font-weight: 590; }
-.notes-file-info-item > span { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+.notes-file-info { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(150px, 1.1fr) minmax(130px, 1fr) minmax(90px, .7fr) minmax(180px, 1.2fr); align-items: center; gap: 8px 18px; color: var(--text-tertiary); font-size: 10px; font-variant-numeric: tabular-nums; }
+.notes-file-info-item { min-width: 0; display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: baseline; gap: 6px; }
+.notes-file-info-item strong { color: var(--text-secondary); font-size: 9px; font-weight: 640; letter-spacing: .02em; }
+.notes-file-info-item > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .notes-file-info-item[data-note-info="id"] > span { font-family: var(--font-mono); }
 .notes-document-actions { display: flex; flex: none; align-items: center; justify-content: flex-end; gap: 5px; }
 .notes-save-state { color: var(--text-tertiary); font-size: 10px; white-space: nowrap; }
@@ -1772,224 +1776,6 @@ html,
 .toast.error { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); color: var(--danger); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(7px); } }
 
-/*
- * Workspace effects
- *
- * This is the single visual contract for CSS glass, edge response, glare and
- * directory entrance. Structural surfaces share one inexpensive backdrop
- * layer; the effects runtime only tracks interactions that need coordinates.
- */
-.knowledge-glass-surface {
-  transform: translateZ(0);
-  -webkit-backdrop-filter: var(--glass-filter);
-  backdrop-filter: var(--glass-filter);
-}
-
-.sidebar.knowledge-glass-surface,
-.main.knowledge-glass-surface {
-  background: var(--workspace-glass-surface);
-  box-shadow: var(--glass-shadow);
-}
-
-.topbar.knowledge-glass-surface,
-.note-editor-toolbar.knowledge-glass-surface,
-.notes-document-toolbar.knowledge-glass-surface,
-.notes-content-header.knowledge-glass-surface {
-  background: transparent;
-  box-shadow: none;
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-}
-
-.note-tree-panel.knowledge-glass-surface,
-.notes-browser.knowledge-glass-surface {
-  background: transparent;
-  box-shadow: none;
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-}
-
-.knowledge-card-surface {
-  --knowledge-pointer-x: 50%;
-  --knowledge-pointer-y: 50%;
-  --knowledge-card-spotlight: transparent;
-  border-color: var(--glass-border);
-  background:
-    radial-gradient(
-      circle 210px at var(--knowledge-pointer-x) var(--knowledge-pointer-y),
-      var(--knowledge-card-spotlight) 0%,
-      transparent 72%
-    ),
-    linear-gradient(145deg, color-mix(in srgb, var(--card-highlight) 22%, transparent), transparent 58%),
-    var(--card-fill);
-  -webkit-backdrop-filter: blur(18px) saturate(1.08) contrast(1.02);
-  backdrop-filter: blur(18px) saturate(1.08) contrast(1.02);
-  box-shadow:
-    inset 0 1px 0 var(--card-highlight),
-    inset 0 -1px 0 var(--glass-rim-shadow),
-    0 2px 6px rgb(0 0 0 / 4%),
-    0 10px 28px rgb(0 0 0 / 7%);
-  transition:
-    border-color var(--motion-base) ease,
-    box-shadow 220ms var(--ease-out),
-    transform 220ms var(--ease-out);
-}
-
-@media (hover: hover) {
-  .knowledge-card-surface:hover {
-    --knowledge-card-spotlight: color-mix(in srgb, var(--card-highlight) 64%, transparent);
-    border-color: color-mix(in srgb, var(--border) 68%, var(--text-tertiary));
-    box-shadow:
-      inset 0 1px 0 var(--card-highlight),
-      inset 0 -1px 0 var(--glass-rim-shadow),
-      0 3px 8px rgb(0 0 0 / 6%),
-      0 14px 34px rgb(0 0 0 / 10%);
-    transform: translateY(-1px);
-  }
-}
-
-.knowledge-border-surface {
-  --knowledge-border-angle: 0deg;
-  --knowledge-border-proximity: 0;
-  position: relative;
-  isolation: isolate;
-}
-
-.knowledge-border-surface::before,
-.knowledge-border-surface::after {
-  position: absolute;
-  border-radius: inherit;
-  pointer-events: none;
-  content: "";
-}
-
-.knowledge-border-surface::before {
-  z-index: 20;
-  inset: 0;
-  padding: 1px;
-  background: conic-gradient(
-    from var(--knowledge-border-angle),
-    var(--interaction-glow-core) 0deg,
-    var(--interaction-glow-soft) 10deg,
-    transparent 27deg 333deg,
-    var(--interaction-glow-soft) 350deg,
-    var(--interaction-glow-core) 360deg
-  );
-  opacity: calc(var(--knowledge-border-proximity) * .96);
-  transition: opacity 150ms ease-out;
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-}
-
-.knowledge-border-surface::after {
-  z-index: 19;
-  inset: -3px;
-  padding: 3px;
-  background: conic-gradient(
-    from var(--knowledge-border-angle),
-    var(--interaction-glow-haze) 0deg,
-    transparent 22deg 338deg,
-    var(--interaction-glow-haze) 360deg
-  );
-  filter: blur(3px);
-  opacity: calc(var(--knowledge-border-proximity) * .42);
-  transition: opacity 210ms ease-out;
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-}
-
-.knowledge-glare-surface {
-  position: relative;
-  isolation: isolate;
-  overflow: hidden;
-}
-
-.knowledge-glare-surface::after {
-  position: absolute;
-  z-index: 5;
-  top: -65%;
-  bottom: -65%;
-  left: -62%;
-  width: 44%;
-  border-radius: 45%;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    color-mix(in srgb, var(--interaction-glare-light) 24%, transparent) 32%,
-    var(--interaction-glare-light) 48%,
-    var(--interaction-glare-rim) 61%,
-    transparent 78%
-  );
-  opacity: 0;
-  transform: skewX(-18deg) translate3d(0, 0, 0);
-  pointer-events: none;
-  transition:
-    opacity 150ms ease-out,
-    transform 760ms cubic-bezier(.2, .72, .2, 1);
-  content: "";
-}
-
-.knowledge-glare-surface:is(:hover, :focus-visible, :focus-within):not(:disabled)::after {
-  opacity: .92;
-  transform: skewX(-18deg) translate3d(390%, 0, 0);
-}
-
-.knowledge-list-reveal {
-  opacity: 0;
-  translate: 0 16px;
-  scale: .97;
-  transform-origin: center top;
-  transition:
-    opacity 280ms ease-out var(--knowledge-list-delay, 0ms),
-    translate 360ms var(--ease-out) var(--knowledge-list-delay, 0ms),
-    scale 360ms var(--ease-out) var(--knowledge-list-delay, 0ms);
-  will-change: opacity, translate, scale;
-}
-
-.knowledge-list-reveal.is-visible {
-  opacity: 1;
-  translate: 0 0;
-  scale: 1;
-  will-change: auto;
-}
-
-.base-grid .knowledge-list-reveal {
-  translate: 0 20px;
-  scale: .96;
-  transition-duration: 320ms, 420ms, 420ms;
-}
-
-.base-grid .knowledge-list-reveal.is-visible {
-  translate: 0 0;
-  scale: 1;
-}
-
-.base-card.is-archived.knowledge-list-reveal { opacity: 0; }
-.base-card.is-archived.knowledge-list-reveal.is-visible { opacity: .78; }
-
-.knowledge-animated-list[data-scroll-top="true"][data-scroll-bottom="false"] {
-  -webkit-mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 24px), transparent 100%);
-  mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 24px), transparent 100%);
-}
-
-.knowledge-animated-list[data-scroll-top="false"][data-scroll-bottom="true"] {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 100%);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 100%);
-}
-
-.knowledge-animated-list[data-scroll-top="false"][data-scroll-bottom="false"] {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 24px), transparent 100%);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 24px), transparent 100%);
-}
-
-@media (hover: none), (pointer: coarse) {
-  .knowledge-glare-surface::after,
-  .knowledge-border-surface::before,
-  .knowledge-border-surface::after { display: none; }
-}
-
 @media (prefers-reduced-transparency: reduce) {
   .sidebar, .main, .topbar, .note-tree-panel, .notes-browser, .notes-content-header, .notes-document-toolbar, .notes-document-statusbar, .note-editor-toolbar, .dialog-backdrop {
     -webkit-backdrop-filter: none;
@@ -1997,18 +1783,6 @@ html,
   }
   .sidebar, .main { background: var(--surface); }
   .topbar, .note-tree-panel, .notes-browser, .notes-content-header, .notes-document-toolbar, .notes-document-statusbar, .note-editor-toolbar { background: transparent; }
-  .knowledge-glass-surface {
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
-  }
-  .knowledge-card-surface {
-    background: var(--surface-raised);
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
-  }
-  .knowledge-border-surface::before,
-  .knowledge-border-surface::after,
-  .knowledge-glare-surface::after { display: none; }
 }
 
 @media (max-width: 980px) {
@@ -2169,6 +1943,8 @@ html,
   .note-history-mode, .note-history-detail-actions .button { min-width: 0; min-height: 44px; padding-inline: 5px; }
   .note-history-content { padding: 18px max(14px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); }
   .dialog.note-history-dialog { width: 100%; height: 100dvh; max-height: none; }
+  .notes-file-table { overflow: visible; }
+  .notes-file-columns { display: none; }
   .notes-file-list { min-width: 0; display: grid; gap: 8px; padding: 10px 12px max(28px, calc(16px + env(safe-area-inset-bottom))); }
   .notes-file-row { min-width: 0; min-height: 0; grid-template-columns: minmax(0, 1fr) auto; gap: 7px 12px; border: 1px solid var(--separator); border-radius: 12px; padding: 10px 11px; background: var(--material-panel); box-shadow: var(--shadow-soft); }
   .notes-file-row:hover { background: var(--material-panel); }
@@ -2183,6 +1959,9 @@ html,
   .notes-file-row > .notes-file-size { grid-column: 2; justify-self: end; }
   .notes-file-actions { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; opacity: 1; pointer-events: auto; }
   .notes-file-actions .button { min-width: 0; width: 100%; padding-inline: 5px; }
+  .notes-document-statusbar { min-height: 52px; }
+  .notes-file-info { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; }
+  .notes-file-info-item { grid-template-columns: 32px minmax(0, 1fr); }
   .shares-heading { align-items: stretch; flex-direction: column; }
   .shares-heading-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
   .shares-heading-actions .button { min-height: 44px; }
@@ -2213,6 +1992,10 @@ html,
   .candidate-actions .button { min-width: min(100%, 112px); }
   .toast-region { right: 12px; bottom: 12px; left: 12px; }
   .toast { max-width: none; }
+}
+
+@media (min-width: 761px) and (max-width: 1120px) {
+  .notes-file-info { grid-template-columns: repeat(2, minmax(150px, 1fr)); }
 }
 
 @media (max-width: 520px) {
@@ -2261,7 +2044,8 @@ html,
   .notes-share-dialog-danger { align-items: stretch; flex-direction: column; }
   .notes-share-dialog-danger .button { width: 100%; min-height: 44px; }
   .notes-document-statusbar { padding-inline: 14px; }
-  .notes-file-info { gap: 3px 14px; }
+  .notes-file-info { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; }
+  .notes-file-info-item { grid-template-columns: 32px minmax(0, 1fr); }
   .notes-document-title { padding-top: 24px; }
 }
 
@@ -2284,10 +2068,6 @@ html,
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
-  .knowledge-list-reveal { opacity: 1; translate: 0 0; scale: 1; }
-  .knowledge-glare-surface::after,
-  .knowledge-border-surface::before,
-  .knowledge-border-surface::after { display: none; }
 }
 
 @media (forced-colors: active) {
