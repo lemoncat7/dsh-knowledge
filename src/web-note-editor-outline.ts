@@ -11,6 +11,7 @@ interface NoteOutlineOptions {
   editor: Editor
   frame: HTMLElement
   host: HTMLElement
+  scrollHost: HTMLElement
   toggleButton?: HTMLButtonElement | null
 }
 
@@ -21,6 +22,18 @@ export interface NoteOutlineController {
 }
 
 const REBUILD_DELAY = 140
+const HEADING_SCROLL_INSET = 16
+
+export function calculateHeadingScrollTop(
+  currentScrollTop: number,
+  targetTop: number,
+  scrollHostTop: number,
+  maximumScrollTop: number,
+  inset = HEADING_SCROLL_INSET,
+): number {
+  const desiredTop = currentScrollTop + targetTop - scrollHostTop - inset
+  return Math.max(0, Math.min(desiredTop, Math.max(0, maximumScrollTop)))
+}
 
 function collectHeadings(editor: Editor): HeadingItem[] {
   const headings: HeadingItem[] = []
@@ -40,7 +53,7 @@ function collectHeadings(editor: Editor): HeadingItem[] {
 }
 
 export function createNoteOutlineController(options: NoteOutlineOptions): NoteOutlineController {
-  const { editor, frame, host, toggleButton } = options
+  const { editor, frame, host, scrollHost, toggleButton } = options
   host.replaceChildren()
 
   const header = document.createElement('header')
@@ -87,10 +100,21 @@ export function createNoteOutlineController(options: NoteOutlineOptions): NoteOu
   function jumpToHeading(item: HeadingItem): void {
     editor.commands.setTextSelection(item.position + 1)
     editor.view.dom.focus({ preventScroll: true })
-    item.element?.scrollIntoView({
-      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
-      block: 'start',
-    })
+    const target = item.element
+    if (target) {
+      const scrollHostBounds = scrollHost.getBoundingClientRect()
+      const targetBounds = target.getBoundingClientRect()
+      const maximumScrollTop = scrollHost.scrollHeight - scrollHost.clientHeight
+      scrollHost.scrollTo({
+        top: calculateHeadingScrollTop(
+          scrollHost.scrollTop,
+          targetBounds.top,
+          scrollHostBounds.top,
+          maximumScrollTop,
+        ),
+        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+      })
+    }
     setActive(item.position)
     if (window.matchMedia('(max-width: 760px)').matches) {
       open = false
@@ -133,7 +157,7 @@ export function createNoteOutlineController(options: NoteOutlineOptions): NoteOu
       const item = headings.find(heading => heading.element === target)
       if (item) setActive(item.position)
     }, {
-      root: frame.querySelector('.notes-document-scroll'),
+      root: scrollHost,
       rootMargin: '-12px 0px -78% 0px',
       threshold: 0,
     })
