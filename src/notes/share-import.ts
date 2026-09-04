@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { request as requestHttp } from 'node:http'
 import { request as requestHttps } from 'node:https'
-import { isIP } from 'node:net'
+import { isIP, type LookupFunction } from 'node:net'
 import type { NoteNode, NoteNodeKind, NoteShare } from './domain.js'
 import type { NoteStore } from './store.js'
 
@@ -43,6 +43,10 @@ export interface NoteShareImportResult {
   totalBytes: number
 }
 
+export interface NoteShareRequestPolicy {
+  trustedPrivateOrigins?: readonly string[]
+}
+
 export function createNoteShareManifest(share: NoteShare, nodes: NoteNode[], truncated: boolean): NoteShareManifest {
   const paths = relativePaths(share.node, nodes)
   const manifestNodes = nodes.map(node => ({
@@ -69,7 +73,7 @@ export function createNoteShareManifest(share: NoteShare, nodes: NoteNode[], tru
   }
 }
 
-export async function inspectNoteShareUrl(rawUrl: string, store?: NoteStore): Promise<{ url: string; manifest: NoteShareManifest }> {
+export async function inspectNoteShareUrl(rawUrl: string, store?: NoteStore, policy: NoteShareRequestPolicy = {}): Promise<{ url: string; manifest: NoteShareManifest }> {
   const url = canonicalShareUrl(rawUrl)
   const localShare = store?.getShareByToken(shareToken(url))
   if (localShare !== undefined) {
@@ -77,7 +81,7 @@ export async function inspectNoteShareUrl(rawUrl: string, store?: NoteStore): Pr
     const truncated = localNodes.length > 500
     return { url: url.href, manifest: createNoteShareManifest(localShare, localNodes.slice(0, 500), truncated) }
   }
-  const payload = await requestPublicUrl(new URL(`${url.href}/manifest`), MAX_MANIFEST_BYTES)
+  const payload = await requestPublicUrl(new URL(`${url.href}/manifest`), MAX_MANIFEST_BYTES, policy)
   return { url: url.href, manifest: validateManifest(JSON.parse(payload.toString('utf8')) as unknown) }
 }
 
@@ -85,6 +89,7 @@ export async function importNoteShare(
   store: NoteStore,
   rawUrl: string,
   parentId: string | null,
+  policy: NoteShareRequestPolicy = {},
 ): Promise<NoteShareImportResult> {
   const canonical = canonicalShareUrl(rawUrl)
   const localShare = store.getShareByToken(shareToken(canonical))
@@ -100,7 +105,7 @@ export async function importNoteShare(
       totalBytes: files.reduce((total, node) => total + node.size, 0),
     }
   }
-  const { url, manifest } = await inspectNoteShareUrl(canonical.href)
+  const { url, manifest } = await inspectNoteShareUrl(canonical.href, undefined, policy)
   if (manifest.truncated) throw inputError('分享目录超过 500 项，暂时不能导入')
   if (manifest.nodes.length === 0) throw inputError('分享中没有可导入的内容')
   const rootManifest = manifest.nodes.find(node => node.path === manifest.share.name)
@@ -127,7 +132,7 @@ export async function importNoteShare(
       if (item.kind === 'folder') {
         created = await store.createFolder(name, destinationParentId ?? null)
       } else {
-        const content = await requestPublicUrl(contentUrl(url, item.id), MAX_IMPORT_FILE_BYTES)
+        const content = await requestPublicUrl(contentUrl(url, item.id), MAX_IMPORT_FILE_BYTES, policy)
         if (content.byteLength !== item.size) throw inputError(`分享文件大小校验失败：${item.path}`)
         if (item.sha256 !== null && createHash('sha256').update(content).digest('hex') !== item.sha256) {
           throw inputError(`分享文件完整性校验失败：${item.path}`)
@@ -171,14 +176,14 @@ function contentUrl(base: string, noteId: string): URL {
 
 function shareToken(url: URL): string { return url.pathname.slice(url.pathname.lastIndexOf('/') + 1) }
 
-async function requestPublicUrl(url: URL, maximumBytes: number, redirects = 0): Promise<Buffer> {
+async function requestPublicUrl(url: URL, maximumBytes: number, policy: NoteShareRequestPolicy, redirects = 0): Promise<Buffer> {
   if (redirects > 3) throw upstreamError('分享服务重定向次数过多')
-  const target = await resolvePublicTarget(url)
+  const target = await resolveShareTarget(url, policy)
   const request = url.protocol === 'https:' ? requestHttps : requestHttp
   return await new Promise<Buffer>((resolve, reject) => {
     const req = request(url, {
       headers: { accept: 'application/json, application/octet-stream;q=0.9', 'user-agent': 'dsh-knowledge-share-import/1' },
-      lookup: (_hostname, _options, callback) => callback(null, target.address, target.family),
+      lookup: createPinnedLookup(target),
     }, response => {
       const status = response.statusCode ?? 502
       if ([301, 302, 303, 307, 308].includes(status)) {
@@ -187,7 +192,7 @@ async function requestPublicUrl(url: URL, maximumBytes: number, redirects = 0): 
         if (!location) return reject(upstreamError('分享服务返回了无效重定向'))
         let redirected: URL
         try { redirected = new URL(location, url) } catch { return reject(upstreamError('分享服务返回了无效重定向')) }
-        requestPublicUrl(redirected, maximumBytes, redirects + 1).then(resolve, reject)
+        requestPublicUrl(redirected, maximumBytes, policy, redirects + 1).then(resolve, reject)
         return
       }
       if (status < 200 || status >= 300) {
@@ -221,7 +226,19 @@ async function requestPublicUrl(url: URL, maximumBytes: number, redirects = 0): 
   })
 }
 
-async function resolvePublicTarget(url: URL): Promise<{ address: string; family: 4 | 6 }> {
+/** Keep the request on the address that passed SSRF validation, including Node 24's multi-address lookup mode. */
+export function createPinnedLookup(target: { address: string; family: 4 | 6 }): LookupFunction {
+  return (_hostname, options, callback) => {
+    if (options.all) callback(null, [target])
+    else callback(null, target.address, target.family)
+  }
+}
+
+export async function resolveShareTarget(
+  url: URL,
+  policy: NoteShareRequestPolicy = {},
+  lookupHost: typeof lookup = lookup,
+): Promise<{ address: string; family: 4 | 6 }> {
   if (url.protocol !== 'https:' && url.protocol !== 'http:') throw inputError('分享链接只支持 HTTP 或 HTTPS')
   const hostname = url.hostname.toLocaleLowerCase()
   if (hostname === 'localhost' || hostname.endsWith('.localhost')) throw inputError('分享链接不能指向本机或私有网络')
@@ -231,12 +248,22 @@ async function resolvePublicTarget(url: URL): Promise<{ address: string; family:
     return { address: hostname, family: literalFamily as 4 | 6 }
   }
   let addresses: { address: string; family: number }[]
-  try { addresses = await lookup(hostname, { all: true, verbatim: true }) } catch { throw upstreamError('无法解析分享链接的主机名') }
+  try { addresses = await lookupHost(hostname, { all: true, verbatim: true }) } catch { throw upstreamError('无法解析分享链接的主机名') }
   const publicAddress = addresses.find(item => isPublicAddress(item.address))
-  if (publicAddress === undefined || addresses.some(item => !isPublicAddress(item.address))) {
+  if (publicAddress !== undefined && addresses.every(item => isPublicAddress(item.address))) {
+    return { address: publicAddress.address, family: publicAddress.family === 6 ? 6 : 4 }
+  }
+  const trustedPrivateOrigin = policy.trustedPrivateOrigins?.includes(url.origin) === true && isShareResourcePath(url.pathname)
+  if (!trustedPrivateOrigin) {
     throw inputError('分享链接不能解析到本机或私有网络')
   }
-  return { address: publicAddress.address, family: publicAddress.family === 6 ? 6 : 4 }
+  const pinned = addresses.find(item => isIP(item.address) !== 0)
+  if (pinned === undefined) throw upstreamError('无法解析分享链接的主机名')
+  return { address: pinned.address, family: pinned.family === 6 ? 6 : 4 }
+}
+
+function isShareResourcePath(pathname: string): boolean {
+  return /\/shared\/share_[A-Za-z0-9_-]{32}(?:\/(?:manifest|content))?\/?$/u.test(pathname)
 }
 
 function isPublicAddress(address: string): boolean {

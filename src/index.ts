@@ -56,6 +56,16 @@ export const inject = ['llm', 'tools']
 export function apply(ctx: Context, config: KnowledgeConfig): void {
   const runtime = ctx as unknown as RuntimeContextLike
   const resolved = resolveConfig(config)
+  const trustedShareOrigins = [...resolved.trustedShareOrigins]
+  const trust = runtime.get('remoteSettingsTrust') as { origins?: readonly string[]; subscribe?(listener: () => void): () => void } | undefined
+  if (trust !== undefined) {
+    const sync = (): void => {
+      const merged = new Set([...resolved.trustedShareOrigins, ...(trust.origins ?? [])])
+      trustedShareOrigins.splice(0, trustedShareOrigins.length, ...merged)
+    }
+    sync()
+    if (typeof trust.subscribe === 'function') runtime.effect(() => trust.subscribe!(sync), 'dsh-knowledge: trusted share origin synchronization')
+  }
   runtime.inject?.(['settings'], settingsRuntime => {
     settingsRuntime.settings?.register(
       KNOWLEDGE_SETTINGS_NAMESPACE,
@@ -189,7 +199,9 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
       disposePublicApi = undefined
       if (enabled) {
         if (managementProvider === undefined) throw connectionError(409, '当前 DSH 没有可供远程访问的本地知识库。')
-        disposePublicApi = registerKnowledgeApi(httpRuntime, managementProvider, resolved.apiPrefix)
+        disposePublicApi = registerKnowledgeApi(httpRuntime, managementProvider, resolved.apiPrefix, {
+          shareRequestPolicy: () => ({ trustedPrivateOrigins: trustedShareOrigins }),
+        })
       }
     }
     const updateClientSettings = async (patch: { publicApiEnabled?: boolean; writebackProvider?: string | null; writebackModel?: string | null }): Promise<ReturnType<typeof publicApiView>> => {
@@ -241,6 +253,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
         disposeManagementApi = registerKnowledgeApi(httpRuntime, managementProvider, LOCAL_MANAGEMENT_API_PREFIX, {
           authMode: 'same-origin',
           service: { current: publicApiView, update: updateClientSettings },
+          shareRequestPolicy: () => ({ trustedPrivateOrigins: trustedShareOrigins }),
         })
       }
     }

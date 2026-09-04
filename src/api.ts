@@ -8,7 +8,7 @@ import { LocalKnowledgeProvider } from './local-provider.js'
 import type { RuntimeContextLike } from './runtime.js'
 import { isNoteId, type NoteReference } from './notes/domain.js'
 import { renderNoteSharePage } from './notes/share-page.js'
-import { createNoteShareManifest, importNoteShare, inspectNoteShareUrl } from './notes/share-import.js'
+import { createNoteShareManifest, importNoteShare, inspectNoteShareUrl, type NoteShareRequestPolicy } from './notes/share-import.js'
 
 const MAX_BODY_BYTES = 1_048_576
 const MAX_NOTE_BODY_BYTES = 64 * 1024 * 1024
@@ -16,6 +16,7 @@ const MAX_SHARED_NOTE_PREVIEW_BYTES = 512 * 1024
 export const LOCAL_MANAGEMENT_API_PREFIX = '/knowledge-local/v1'
 
 export interface KnowledgeApiOptions {
+  shareRequestPolicy?: () => NoteShareRequestPolicy
   authMode?: 'bearer' | 'same-origin'
   service?: {
     current(): { publicApiEnabled: boolean; publicApiPrefix: string; writebackProvider?: string; writebackModel?: string }
@@ -154,7 +155,7 @@ async function dispatch(
     if (method === 'POST' && segments[1] === 'import-share' && segments[2] === 'inspect' && segments.length === 3) {
       requirePermission(actor.permissions, 'read')
       const body = await readObject(req)
-      return sendJson(res, 200, await inspectNoteShareUrl(requiredString(body.url, 'url'), provider.notes))
+      return sendJson(res, 200, await inspectNoteShareUrl(requiredString(body.url, 'url'), provider.notes, options.shareRequestPolicy?.()))
     }
     if (method === 'POST' && segments[1] === 'import-share' && segments.length === 2) {
       requirePermission(actor.permissions, 'write')
@@ -163,6 +164,7 @@ async function dispatch(
         provider.notes,
         requiredString(body.url, 'url'),
         nullableString(body.parentId, 'parentId'),
+        options.shareRequestPolicy?.(),
       ))
     }
     const id = segments[1]

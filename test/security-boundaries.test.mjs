@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { inspectSensitiveContent } from '../lib/content-safety.js'
+import { normalizeTrustedShareOrigins } from '../lib/config.js'
+import { createPinnedLookup, resolveShareTarget } from '../lib/notes/share-import.js'
 import { explicitlyRequestsKnowledgeBaseManagement, explicitlyRequestsKnowledgeNote } from '../lib/tool-authorization.js'
 
 test('knowledge-base management authorization requires an explicit matching user operation', () => {
@@ -41,4 +43,51 @@ test('direct-write safety detects credentials without flagging documented placeh
   assert.ok(inspectSensitiveContent('password: actual-secret-value').some(item => item.kind === 'credential-assignment'))
   assert.ok(inspectSensitiveContent('-----BEGIN OPENSSH PRIVATE KEY-----\nsecret').some(item => item.kind === 'private-key'))
   assert.ok(inspectSensitiveContent('remote=https://user:secret-value@example.com/repo').some(item => item.kind === 'embedded-url-credential'))
+})
+
+test('trusted share origins permit only exact DSH share resources through private DNS', async () => {
+  const token = `share_${'a'.repeat(32)}`
+  const privateLookup = async () => [{ address: '192.168.2.9', family: 4 }]
+  const policy = { trustedPrivateOrigins: ['https://dsh.example.com:1443'] }
+  assert.deepEqual(
+    await resolveShareTarget(new URL(`https://dsh.example.com:1443/knowledge-api/v1/shared/${token}/manifest`), policy, privateLookup),
+    { address: '192.168.2.9', family: 4 },
+  )
+  await assert.rejects(
+    resolveShareTarget(new URL(`https://dsh.example.com/knowledge-api/v1/shared/${token}/manifest`), policy, privateLookup),
+    /\u79c1\u6709\u7f51\u7edc/u,
+  )
+  await assert.rejects(
+    resolveShareTarget(new URL('https://dsh.example.com:1443/knowledge-api/v1/search'), policy, privateLookup),
+    /\u79c1\u6709\u7f51\u7edc/u,
+  )
+})
+
+test('ordinary public share targets remain available without a trusted origin', async () => {
+  const lookup = async () => [{ address: '8.8.8.8', family: 4 }]
+  assert.deepEqual(
+    await resolveShareTarget(new URL(`https://public.example.com/knowledge-api/v1/shared/share_${'b'.repeat(32)}`), {}, lookup),
+    { address: '8.8.8.8', family: 4 },
+  )
+})
+
+test('validated DNS targets remain pinned in single and Node 24 multi-address lookup modes', async () => {
+  const lookup = createPinnedLookup({ address: '192.168.2.9', family: 4 })
+  const single = await new Promise((resolve, reject) => lookup('dsh.example.com', { all: false }, (error, address, family) => {
+    if (error) reject(error)
+    else resolve({ address, family })
+  }))
+  const multiple = await new Promise((resolve, reject) => lookup('dsh.example.com', { all: true }, (error, addresses) => {
+    if (error) reject(error)
+    else resolve(addresses)
+  }))
+  assert.deepEqual(single, { address: '192.168.2.9', family: 4 })
+  assert.deepEqual(multiple, [{ address: '192.168.2.9', family: 4 }])
+})
+
+test('trusted share origin configuration is exact and rejects local or literal hosts', () => {
+  assert.deepEqual(normalizeTrustedShareOrigins([' https://dsh.example.com:1443 ', 'https://dsh.example.com:1443']), ['https://dsh.example.com:1443'])
+  assert.throws(() => normalizeTrustedShareOrigins(['https://dsh.example.com/path']), /exact HTTP\(S\) origin/u)
+  assert.throws(() => normalizeTrustedShareOrigins(['http://127.0.0.1:3080']), /DNS hostname/u)
+  assert.throws(() => normalizeTrustedShareOrigins(['http://localhost:3080']), /DNS hostname/u)
 })
