@@ -42,7 +42,7 @@ test('browser bundle switches the official conversation slot to the knowledge wo
   assert.match(source, /theme\/change/)
   assert.match(source, /host-theme-ready/)
   assert.match(source, /createKnowledgeHostTheme/)
-  assert.match(source, /getComputedStyle\(document\.body\)/)
+  assert.doesNotMatch(source, /getComputedStyle\(document\.body\)/)
   assert.match(source, /--knowledge-accent/)
   assert.match(source, /appearance:\s*none/)
   assert.doesNotMatch(source, /accent-color:/)

@@ -3,14 +3,18 @@ const AUTH_MODE = document.querySelector('meta[name="dsh-knowledge-auth-mode"]')
 const WEB_PATH = document.querySelector('meta[name="dsh-knowledge-web"]')?.content || '/knowledge'
 const ASSET_VERSION = document.querySelector('meta[name="dsh-knowledge-asset-version"]')?.content || ''
 const moduleUrl = name => `./${name}.js${ASSET_VERSION ? `?v=${encodeURIComponent(ASSET_VERSION)}` : ''}`
-const [apiModule, themeModule, uiModule] = await Promise.all([
+const [apiModule, themeModule, uiModule, modelCatalogModule, dialogModule, selectModule] = await Promise.all([
   import(moduleUrl('api-client')),
   import(moduleUrl('host-theme')),
   import(moduleUrl('ui-primitives')),
+  import(moduleUrl('model-catalog')),
+  import(moduleUrl('dialogs')),
+  import(moduleUrl('select-control')),
 ])
 const { createApiClient } = apiModule
 const { installHostThemeBridge } = themeModule
 const { actionButton, badge, createToastPresenter, element, interfaceIcon, paneToggleButton } = uiModule
+const readModelCatalog = modelCatalogModule.createModelCatalogLoader()
 const TOKEN_KEY = 'dsh-knowledge.session-token'
 const TYPES = ['preference', 'fact', 'decision', 'procedure', 'lesson']
 const TYPE_LABELS = { preference: '偏好', fact: '事实', decision: '决策', procedure: '流程', lesson: '经验' }
@@ -35,6 +39,8 @@ const mountContext = {
 const app = document.querySelector('#app')
 const toastRegion = document.querySelector('#toast-region')
 const showToast = createToastPresenter(toastRegion)
+const { openConfirm, openSheet, openModal } = dialogModule.createDialogPresenter({ element, actionButton, interfaceIcon, showToast, friendlyError })
+selectModule.installSelectControls()
 const savedDocumentLayout = readDocumentLayout()
 
 function createDocumentViewState(overrides = {}) {
@@ -335,7 +341,10 @@ function updateLoadingPhase(request, label, progress) {
   if (request !== navigationRequest || !state.loading) return
   state.loadingPhase = label
   state.loadingProgress = Math.max(0, Math.min(1, progress))
-  renderShell()
+  const progressNode = document.querySelector('.route-progress')
+  progressNode?.setAttribute('aria-label', label)
+  progressNode?.setAttribute('aria-valuenow', String(Math.round(state.loadingProgress * 100)))
+  progressNode?.firstElementChild?.style.setProperty('--route-progress', String(state.loadingProgress))
 }
 
 async function saveBeforeNavigation() {
@@ -962,15 +971,15 @@ function renderShell() {
   },
     renderSidebar(),
     renderAppSidebarResizer(),
-    state.menuOpen ? element('button', {
-      type: 'button', class: 'app-sidebar-scrim',
+    element('button', {
+      type: 'button', class: 'app-sidebar-scrim', hidden: !state.menuOpen,
       'aria-label': '关闭导航菜单',
-      onClick: () => { state.menuOpen = false; renderShell() },
-    }) : null,
+      onClick: () => setMenuOpen(false),
+    }),
     element('main', { class: 'main' },
       element('header', { class: 'topbar' },
         element('div', { class: 'topbar-title' },
-          actionButton('☰', () => { state.menuOpen = !state.menuOpen; renderShell() }, 'ghost mobile-menu', {
+          actionButton(interfaceIcon('menu'), () => setMenuOpen(!state.menuOpen), 'ghost mobile-menu', {
             'aria-label': state.menuOpen ? '关闭导航菜单' : '打开导航菜单',
             'aria-expanded': String(state.menuOpen),
           }),
@@ -1066,6 +1075,18 @@ function setSidebarWidth(width, shell, handle) {
   state.documentView.sidebarWidth = width
   shell?.style.setProperty('--sidebar-width', `${width}px`)
   handle?.setAttribute('aria-valuenow', String(width))
+}
+
+function setMenuOpen(open) {
+  state.menuOpen = open
+  const shell = app.querySelector('.app-shell')
+  if (!shell) return
+  shell.dataset.menuOpen = String(open)
+  shell.querySelector('.app-sidebar-scrim')?.toggleAttribute('hidden', !open)
+  const toggle = shell.querySelector('.mobile-menu')
+  toggle?.setAttribute('aria-expanded', String(open))
+  toggle?.setAttribute('aria-label', open ? '关闭导航菜单' : '打开导航菜单')
+  applySidebarVisibility(shell, state.documentView.sidebarHidden)
 }
 
 function setSidebarHidden(hidden) {
@@ -4202,19 +4223,12 @@ function selectField(label, options, value) {
 }
 
 async function loadModelCatalog() {
-  if (state.modelCatalog !== null) return state.modelCatalog
   try {
-    const response = await fetch('/knowledge-control/v1/models', {
-      headers: { accept: 'application/json', 'x-dsh-knowledge-client': 'management-web' },
-    })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const payload = await response.json()
-    state.modelCatalog = Array.isArray(payload.providers) ? payload.providers : []
+    state.modelCatalog = await readModelCatalog()
   } catch (error) {
-    state.modelCatalog = []
-    showToast(`无法读取当前 DSH 的模型目录：${error instanceof Error ? error.message : String(error)}`, 'error')
+    showToast(`无法读取当前 DSH 的模型目录：${error.message}，重新打开可重试。`, 'error')
   }
-  return state.modelCatalog
+  return state.modelCatalog || []
 }
 
 function modelRouteFields(currentProvider, currentModel) {
@@ -4432,86 +4446,6 @@ function confirmDeleteToken(token) {
     await loadTokens()
     renderShell()
   } })
-}
-
-function openConfirm({ title, message, confirmLabel, danger, onConfirm }) {
-  return openModal({ title, body: element('p', {}, message), primaryLabel: confirmLabel, primaryVariant: danger ? 'danger' : 'primary', onPrimary: async () => { await onConfirm(); return true } })
-}
-
-function openSheet(options) {
-  return openModal({ ...options, presentation: 'sheet' })
-}
-
-function openModal({ title, description = '', body, primaryLabel, primaryVariant = 'primary', onPrimary, cancelLabel = '取消', presentation = 'modal', className = '', onClose }) {
-  const previouslyFocused = document.activeElement
-  const isSheet = presentation === 'sheet'
-  const backdrop = element('div', { class: `dialog-backdrop${isSheet ? ' sheet-backdrop' : ''}` })
-  const dialog = element('section', { class: `dialog${isSheet ? ' sheet' : ''} ${primaryLabel ? '' : 'narrow'} ${className}`.trim(), role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'dialog-title' })
-  let busy = false
-  let formDirty = false
-  let closed = false
-  const close = (explicit = false) => {
-    if (busy || closed) return
-    if (!explicit && formDirty) {
-      showToast('表单有未保存的修改，请先保存，或使用“取消”放弃修改。', 'error')
-      return
-    }
-    document.removeEventListener('keydown', onKeyDown)
-    closed = true
-    backdrop.remove()
-    onClose?.()
-    if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus()
-  }
-  const closeButton = actionButton('×', () => close(), 'ghost', { 'aria-label': '关闭对话框' })
-  const cancel = actionButton(cancelLabel, () => close(true))
-  const primary = primaryLabel ? actionButton(primaryLabel, async () => {
-    if (busy) return
-    busy = true
-    primary.disabled = true
-    cancel.disabled = true
-    const original = primary.textContent
-    primary.textContent = '正在处理…'
-    try {
-      const shouldClose = await onPrimary()
-      busy = false
-      if (shouldClose !== false) close(true)
-      else { primary.disabled = false; cancel.disabled = false; primary.textContent = original }
-    } catch (error) {
-      busy = false
-      primary.disabled = false
-      cancel.disabled = false
-      primary.textContent = original
-      showToast(friendlyError(error), 'error')
-    }
-  }, primaryVariant) : null
-  const onKeyDown = (event) => {
-    if (event.key === 'Escape') { event.preventDefault(); close() }
-    if (event.key === 'Tab') trapFocus(event, dialog)
-  }
-  dialog.append(
-    element('header', { class: 'dialog-header' }, element('div', {}, element('h2', { id: 'dialog-title' }, title), description ? element('p', {}, description) : null), closeButton),
-    element('div', { class: 'dialog-body' }, body),
-    element('footer', { class: 'dialog-footer' }, cancel, primary),
-  )
-  backdrop.append(dialog)
-  backdrop.addEventListener('mousedown', (event) => { if (event.target === backdrop) close() })
-  if (body.matches?.('form') || body.querySelector?.('form')) {
-    body.addEventListener('input', () => { formDirty = true })
-    body.addEventListener('change', () => { formDirty = true })
-  }
-  document.body.append(backdrop)
-  document.addEventListener('keydown', onKeyDown)
-  window.setTimeout(() => (dialog.querySelector('input, textarea, select, button') || dialog).focus(), 0)
-  return { close, dialog }
-}
-
-function trapFocus(event, container) {
-  const focusable = [...container.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])')]
-  if (!focusable.length) return
-  const first = focusable[0]
-  const last = focusable.at(-1)
-  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
-  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
 }
 
 function formatDate(value) {

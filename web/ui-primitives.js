@@ -46,6 +46,8 @@ export function paneToggleButton(pane, visible, onClick, label) {
 
 export function interfaceIcon(name, className = 'interface-icon') {
   const paths = {
+    close: 'M6 6l12 12M18 6L6 18',
+    menu: 'M4 6h16M4 12h16M4 18h16',
     search: 'M10.8 4.5a6.3 6.3 0 1 0 0 12.6 6.3 6.3 0 0 0 0-12.6Zm4.6 11 4.1 4',
     more: 'M5 12h.01M12 12h.01M19 12h.01',
     save: 'M5 3.5h11l3 3v14H5zM8 3.5v6h8v-6M8 20.5v-7h8v7',

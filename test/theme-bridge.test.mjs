@@ -6,18 +6,8 @@ import {
   KNOWLEDGE_THEME_PROTOCOL_VERSION,
 } from '../lib/theme-bridge.js'
 
-function computed(values) {
-  return { getPropertyValue: name => values[name] || '' }
-}
-
 test('uses an opaque stable dark workspace palette without depending on a theme id', () => {
-  const message = createKnowledgeHostTheme(computed({
-    '--dsw-alias-bg-layer-1': 'rgb(11 24 27 / 70%)',
-    '--dsw-alias-bg-layer-2': '#102022',
-    '--dsw-alias-label-primary': '#e7f3f0',
-    '--dsw-alias-button-primary-fill': '#65d1be',
-    '--dsw-alias-state-success-primary': '#82d29a',
-  }), {
+  const message = createKnowledgeHostTheme({
     active: { colorScheme: 'dark', tokens: {} },
   })
 
@@ -37,12 +27,7 @@ test('uses an opaque stable dark workspace palette without depending on a theme 
 })
 
 test('does not let host material levels fragment the workspace hierarchy', () => {
-  const message = createKnowledgeHostTheme(computed({
-    '--xiaohei-plugin-workspace-fill': 'rgb(20 27 29 / 62%)',
-    '--xiaohei-plugin-pane-fill': 'rgb(27 35 37 / 46%)',
-    '--xiaohei-plugin-raised-fill': 'rgb(29 37 39 / 72%)',
-    '--xiaohei-plugin-control-fill': 'rgb(33 42 44 / 86%)',
-  }), {
+  const message = createKnowledgeHostTheme({
     active: { colorScheme: 'dark', tokens: {} },
   })
 
@@ -53,7 +38,7 @@ test('does not let host material levels fragment the workspace hierarchy', () =>
 })
 
 test('uses the light workspace palette when the host is light', () => {
-  const message = createKnowledgeHostTheme(computed({}), {
+  const message = createKnowledgeHostTheme({
     active: {
       colorScheme: 'light',
       tokens: {

@@ -3,13 +3,8 @@ import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import { KnowledgeActivityPanel } from './knowledge-activity-panel.js'
 import type { KnowledgeDocumentTarget } from './client.js'
 
-export interface KnowledgeActivitySelection {
-  mode?: 'knowledge' | 'notes'
-  knowledgeBaseId?: string | undefined
-  documentId?: string | undefined
-  noteFolderId?: string | null | undefined
-  noteDocumentId?: string | undefined
-}
+export type { KnowledgeActivitySelection } from './knowledge-activity-state.js'
+import { mergeActivitySelection, type KnowledgeActivitySelection } from './knowledge-activity-state.js'
 
 export interface KnowledgeActivityController {
   open(sessionId: string, selection?: KnowledgeActivitySelection): void
@@ -57,7 +52,7 @@ export function createKnowledgeActivityController(
     unmount()
     mountedSessionId = sessionId
     disposePanel = ctx.slots.register({ name: 'details', priority: -3 }, props => (
-      <KnowledgeActivityPanel {...props} controller={controller} />
+      <KnowledgeActivityPanel key={sessionId} {...props} controller={controller} />
     ))
     if (openDetails) ctx.layout.openDetails()
   }
@@ -84,7 +79,7 @@ export function createKnowledgeActivityController(
   const controller: KnowledgeActivityController = {
     open(sessionId, selection) {
       const previous = states.get(sessionId)
-      states.set(sessionId, { ...previous, ...selection, open: true })
+      states.set(sessionId, { ...mergeActivitySelection(previous ?? {}, selection ?? {}), open: true })
       options.beforeOpen()
       if (sessionId === currentSessionId) {
         cancelRestore()
@@ -116,11 +111,12 @@ export function createKnowledgeActivityController(
         ...state?.documentId === undefined ? {} : { documentId: state.documentId },
         ...state?.noteFolderId === undefined ? {} : { noteFolderId: state.noteFolderId },
         ...state?.noteDocumentId === undefined ? {} : { noteDocumentId: state.noteDocumentId },
+        ...state?.noteCrumbs === undefined ? {} : { noteCrumbs: state.noteCrumbs },
       }
     },
     select(sessionId, selection) {
       const previous = states.get(sessionId) ?? { open: true }
-      states.set(sessionId, { ...previous, ...selection, open: previous.open })
+      states.set(sessionId, { ...mergeActivitySelection(previous, selection), open: previous.open })
       notify()
     },
     openWorkspace(target) {

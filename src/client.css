@@ -2,28 +2,28 @@
 .dsh-knowledge-activity-panel,
 .dsh-knowledge-workspace,
 .dsh-knowledge-settings-card,
-.dsh-knowledge-writeback-status {
+.dsh-knowledge-writeback-notice {
   color-scheme: light;
   --knowledge-canvas: transparent;
-  --knowledge-accent: #3a3a3c;
-  --knowledge-on-accent: #fff;
-  --knowledge-danger: #d70015;
-  --knowledge-success: #248a3d;
+  --knowledge-accent: var(--accent);
+  --knowledge-on-accent: var(--on-accent);
+  --knowledge-danger: var(--danger);
+  --knowledge-success: var(--success);
   --knowledge-pane: rgba(255, 255, 255, 0.16);
   --knowledge-raised: rgba(255, 255, 255, 0.38);
   --knowledge-control: rgba(255, 255, 255, 0.27);
-  --knowledge-border: rgb(60 60 67 / 14%);
-  --knowledge-text: #1d1d1f;
-  --knowledge-text-secondary: #515154;
-  --knowledge-text-tertiary: #747478;
-  --knowledge-hover: rgba(118, 118, 128, .1);
+  --knowledge-border: var(--border);
+  --knowledge-text: var(--text);
+  --knowledge-text-secondary: var(--text-secondary);
+  --knowledge-text-tertiary: var(--text-tertiary);
+  --knowledge-hover: var(--surface-hover);
   --knowledge-glare-light: rgb(255 255 255 / 70%);
   --knowledge-glare-rim: rgb(60 60 67 / 11%);
   --knowledge-glass-filter: saturate(1.22) contrast(1.03) blur(32px);
   --knowledge-host-glass-filter: saturate(.18) contrast(1.015) blur(24px);
   --knowledge-glass-shadow: inset 0 1px 0 rgb(255 255 255 / 70%), inset 0 -1px 0 rgb(60 60 67 / 11%), 0 10px 28px rgb(31 31 35 / 8.5%);
   --knowledge-activity-surface: rgb(250 249 246 / 58%);
-  --knowledge-font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --knowledge-font-family: var(--font-ui);
   color: var(--knowledge-text);
   font-family: var(--knowledge-font-family);
   font-size: 13px;
@@ -35,22 +35,22 @@ body[data-ds-dark-theme] :is(
   .dsh-knowledge-activity-panel,
   .dsh-knowledge-workspace,
   .dsh-knowledge-settings-card,
-  .dsh-knowledge-writeback-status
+  .dsh-knowledge-writeback-notice
 ) {
   color-scheme: dark;
   --knowledge-canvas: transparent;
-  --knowledge-accent: #69b6ba;
-  --knowledge-on-accent: #101819;
-  --knowledge-danger: #ff453a;
-  --knowledge-success: #30d158;
+  --knowledge-accent: var(--accent);
+  --knowledge-on-accent: var(--on-accent);
+  --knowledge-danger: var(--danger);
+  --knowledge-success: var(--success);
   --knowledge-pane: rgb(25 33 35 / 90%);
   --knowledge-raised: rgb(32 41 43 / 94%);
   --knowledge-control: rgb(39 50 53 / 92%);
-  --knowledge-border: rgb(184 204 205 / 11%);
-  --knowledge-text: #e3eaeb;
-  --knowledge-text-secondary: #bbc9cc;
-  --knowledge-text-tertiary: #95a7ab;
-  --knowledge-hover: rgb(105 182 186 / 9%);
+  --knowledge-border: var(--border);
+  --knowledge-text: var(--text);
+  --knowledge-text-secondary: var(--text-secondary);
+  --knowledge-text-tertiary: var(--text-tertiary);
+  --knowledge-hover: var(--surface-hover);
   --knowledge-glare-light: rgb(255 255 255 / 16%);
   --knowledge-glare-rim: rgb(0 0 0 / 30%);
   --knowledge-host-glass-filter: saturate(.45) contrast(1.02) blur(24px);
@@ -63,14 +63,14 @@ body[data-ds-dark-theme] :is(
   .dsh-knowledge-activity-panel,
   .dsh-knowledge-workspace,
   .dsh-knowledge-settings-card,
-  .dsh-knowledge-writeback-status
+  .dsh-knowledge-writeback-notice
 ),
 :is(
   .dsh-knowledge-trigger,
   .dsh-knowledge-activity-panel,
   .dsh-knowledge-workspace,
   .dsh-knowledge-settings-card,
-  .dsh-knowledge-writeback-status
+  .dsh-knowledge-writeback-notice
 ) * {
   box-sizing: border-box;
 }
@@ -80,7 +80,7 @@ body[data-ds-dark-theme] :is(
   .dsh-knowledge-activity-panel,
   .dsh-knowledge-workspace,
   .dsh-knowledge-settings-card,
-  .dsh-knowledge-writeback-status
+  .dsh-knowledge-writeback-notice
 ) :where(button, input, textarea, select) {
   margin: 0;
   color: inherit;
@@ -96,7 +96,7 @@ body[data-ds-dark-theme] :is(
 .dsh-knowledge-activity-panel input,
 .dsh-knowledge-panel-state button,
 .dsh-knowledge-settings-card button,
-.dsh-knowledge-writeback-status button {
+.dsh-knowledge-writeback-notice button {
   -webkit-appearance: none;
   appearance: none;
   margin: 0;
@@ -136,7 +136,7 @@ body[data-ds-dark-theme] :is(
 }
 
 .dsh-knowledge-trigger:focus-visible,
-.dsh-knowledge-writeback-status button:focus-visible {
+.dsh-knowledge-writeback-notice button:focus-visible {
   outline: 2px solid var(--knowledge-accent);
   outline-offset: 2px;
 }
@@ -157,16 +157,7 @@ body[data-ds-dark-theme] :is(
   border-radius: 50%;
 }
 
-/* Rail (collapsed) mode: the host footer seat is a horizontal row sized for a
-   single 36px circle per entry; with several entries it overflows the 56px
-   rail and the circles drift off the settings axis. Stack the entries
-   vertically, centered on the same axis as the settings circle. The --rail
-   class on the knowledge trigger is the collapsed-mode signal, so wide mode
-   is untouched. */
-div:has(> div[data-slot="sidebar.footer.action"] .dsh-knowledge-trigger--rail) {
-  flex-direction: column;
-  align-items: center;
-}
+.dsh-knowledge-trigger--rail { margin-inline: auto; }
 
 @media (prefers-reduced-motion: reduce) {
   .dsh-knowledge-trigger { transition: none; }
@@ -210,7 +201,7 @@ div:has(> div[data-slot="sidebar.footer.action"] .dsh-knowledge-trigger--rail) {
   min-width: 0;
 }
 
-.dsh-knowledge-workspace-header [data-xiaohei-workspace-close] {
+.dsh-knowledge-workspace-header [data-knowledge-workspace-close] {
   -webkit-appearance: none;
   appearance: none;
   display: grid;
@@ -232,18 +223,18 @@ div:has(> div[data-slot="sidebar.footer.action"] .dsh-knowledge-trigger--rail) {
   transition: color 140ms ease, background 140ms ease, border-color 140ms ease, transform 140ms ease;
 }
 
-.dsh-knowledge-workspace-header [data-xiaohei-workspace-close]:hover {
+.dsh-knowledge-workspace-header [data-knowledge-workspace-close]:hover {
   border-color: var(--knowledge-border);
   color: var(--knowledge-text);
   background: var(--knowledge-control);
 }
 
-.dsh-knowledge-workspace-header [data-xiaohei-workspace-close]:active { transform: scale(.96); }
-.dsh-knowledge-workspace-header [data-xiaohei-workspace-close]:focus-visible {
+.dsh-knowledge-workspace-header [data-knowledge-workspace-close]:active { transform: scale(.96); }
+.dsh-knowledge-workspace-header [data-knowledge-workspace-close]:focus-visible {
   outline: 2px solid var(--knowledge-accent);
   outline-offset: 2px;
 }
-.dsh-knowledge-workspace-header [data-xiaohei-workspace-close] > svg {
+.dsh-knowledge-workspace-header [data-knowledge-workspace-close] > svg {
   display: block;
   pointer-events: none;
 }
@@ -537,7 +528,7 @@ div:has(> div[data-slot="sidebar.footer.action"] .dsh-knowledge-trigger--rail) {
   .dsh-knowledge-settings-summary i { transition: none; }
 }
 
-.dsh-knowledge-writeback-status {
+.dsh-knowledge-writeback-notice {
   display: grid;
   gap: 5px;
   min-width: 0;
@@ -552,11 +543,11 @@ div:has(> div[data-slot="sidebar.footer.action"] .dsh-knowledge-trigger--rail) {
   gap: 8px;
   min-width: 0;
 }
-.dsh-knowledge-writeback-status strong {
+.dsh-knowledge-writeback-notice strong {
   color: var(--knowledge-text-secondary);
   font-weight: 600;
 }
-.dsh-knowledge-writeback-status button {
+.dsh-knowledge-writeback-notice button {
   min-height: 24px;
   padding: 0 9px;
   border: 1px solid var(--knowledge-border);
@@ -566,7 +557,7 @@ div:has(> div[data-slot="sidebar.footer.action"] .dsh-knowledge-trigger--rail) {
   cursor: pointer;
   font: inherit;
 }
-.dsh-knowledge-writeback-status button:disabled { cursor: default; opacity: .5; }
+.dsh-knowledge-writeback-notice button:disabled { cursor: default; opacity: .5; }
 .dsh-knowledge-writeback-destinations {
   display: flex;
   flex-wrap: wrap;
@@ -599,7 +590,7 @@ div:has(> div[data-slot="sidebar.footer.action"] .dsh-knowledge-trigger--rail) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.dsh-knowledge-writeback-status .dsh-knowledge-writeback-document {
+.dsh-knowledge-writeback-notice .dsh-knowledge-writeback-document {
   display: inline-flex;
   align-items: center;
   min-width: 0;
@@ -614,7 +605,7 @@ div:has(> div[data-slot="sidebar.footer.action"] .dsh-knowledge-trigger--rail) {
   text-underline-offset: 3px;
   transition: color 120ms ease, background-color 120ms ease, text-decoration-color 120ms ease;
 }
-.dsh-knowledge-writeback-status .dsh-knowledge-writeback-document:hover {
+.dsh-knowledge-writeback-notice .dsh-knowledge-writeback-document:hover {
   background: var(--knowledge-hover);
   color: var(--knowledge-text);
   text-decoration-color: currentColor;

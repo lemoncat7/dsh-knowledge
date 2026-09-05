@@ -1,3 +1,5 @@
+import { writeFile } from 'node:fs/promises'
+import { knowledgeDesignCss } from '../lib/design-tokens.js'
 import { build } from 'esbuild'
 
 const pluginId = '@lemoncat7/dsh-knowledge'
@@ -36,6 +38,8 @@ await build({
   target: 'es2022',
   minify: true,
 })
+
+await writeFile('web/design-tokens.css', knowledgeDesignCss() + '\n')
 
 await build({
   entryPoints: ['src/web-note-editor.ts'],

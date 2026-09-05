@@ -9,6 +9,9 @@ interface Asset {
 }
 
 const STATIC_ASSETS = new Map<string, Asset>([
+  ...['model-catalog', 'dialogs', 'select-control'].map(name => [
+    `${name}.js`, loadAsset(`../web/${name}.js`, 'text/javascript; charset=utf-8'),
+  ] as [string, Asset]),
   ['app.js', loadAsset('../web/app.js', 'text/javascript; charset=utf-8')],
   ['api-client.js', loadAsset('../web/api-client.js', 'text/javascript; charset=utf-8')],
   ['change-review.js', loadAsset('../web/change-review.js', 'text/javascript; charset=utf-8')],
@@ -17,6 +20,7 @@ const STATIC_ASSETS = new Map<string, Asset>([
   ['note-editor.js', loadAsset('../web/note-editor.js', 'text/javascript; charset=utf-8')],
   ['note-history.js', loadAsset('../web/note-history.js', 'text/javascript; charset=utf-8')],
   ['ui-primitives.js', loadAsset('../web/ui-primitives.js', 'text/javascript; charset=utf-8')],
+  ['design-tokens.css', loadAsset('../web/design-tokens.css', 'text/css; charset=utf-8')],
   ['styles.css', loadAsset('../web/styles.css', 'text/css; charset=utf-8')],
 ])
 const ASSET_VERSION = assetVersion(STATIC_ASSETS.values())

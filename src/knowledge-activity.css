@@ -296,10 +296,13 @@
   scrollbar-color: color-mix(in srgb, var(--knowledge-text-tertiary) 35%, transparent) transparent;
   scrollbar-width: thin;
 }
-.dsh-knowledge-activity-markdown :where(h1, h2, h3, h4) { margin: 1.35em 0 .55em; color: var(--knowledge-text); line-height: 1.35; font-weight: 680; }
+.dsh-knowledge-activity-markdown :where(h1, h2, h3, h4, h5, h6) { margin: 1.35em 0 .55em; color: var(--knowledge-text); line-height: 1.35; font-weight: 650; }
 .dsh-knowledge-activity-markdown h1 { font-size: 18px; }
 .dsh-knowledge-activity-markdown h2 { padding-bottom: .35em; border-bottom: 1px solid var(--knowledge-border); font-size: 16px; }
 .dsh-knowledge-activity-markdown h3 { font-size: 14px; }
+.dsh-knowledge-activity-markdown :where(h4, h5, h6) { font-size: 13px; }
+.dsh-knowledge-activity-markdown hr { height: 1px; margin: 18px 0; border: 0; background: var(--knowledge-border); }
+.dsh-knowledge-activity-markdown summary { cursor: pointer; color: var(--knowledge-text); }
 .dsh-knowledge-activity-markdown :where(p, ul, ol, blockquote, pre, table) { margin: .7em 0; }
 .dsh-knowledge-activity-markdown :where(ul, ol) { padding-left: 1.5em; }
 .dsh-knowledge-activity-markdown a { color: var(--knowledge-accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }

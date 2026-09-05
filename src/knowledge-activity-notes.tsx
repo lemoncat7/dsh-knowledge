@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, useRef, type FormEvent } from 'react'
 import {
   IconChevronLeftOutline14,
   IconChevronRightOutline14,
@@ -11,6 +11,7 @@ import {
 import type { NoteNode } from './notes/domain.js'
 import { loadNoteContent, loadNoteIndex, type KnowledgeActivityNoteContent } from './knowledge-activity-api.js'
 import type { KnowledgeActivityController } from './knowledge-activity-controller.js'
+import { LatestRequest } from './latest-request.js'
 import { renderMarkdown } from './web-markdown-preview.js'
 
 interface NotesPaneProps {
@@ -24,7 +25,7 @@ interface FolderCrumb { id: string | null; name: string }
 export function KnowledgeActivityNotes({ sessionId, projectId, controller }: NotesPaneProps): JSX.Element {
   const initial = controller.selection(sessionId)
   const [folderId, setFolderId] = useState<string | null>(initial.noteFolderId ?? null)
-  const [crumbs, setCrumbs] = useState<FolderCrumb[]>([{ id: null, name: '全部笔记' }])
+  const [crumbs, setCrumbs] = useState<FolderCrumb[]>(initial.noteCrumbs ?? [{ id: null, name: '全部笔记' }])
   const [selectedId, setSelectedId] = useState(initial.noteDocumentId)
   const [nodes, setNodes] = useState<NoteNode[]>([])
   const [content, setContent] = useState<KnowledgeActivityNoteContent>()
@@ -33,9 +34,11 @@ export function KnowledgeActivityNotes({ sessionId, projectId, controller }: Not
   const [listState, setListState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [contentState, setContentState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const [error, setError] = useState('')
+  const listRequest = useRef(new LatestRequest())
   const [refresh, setRefresh] = useState(0)
 
-  const loadNodes = useCallback(async (signal?: AbortSignal): Promise<void> => {
+  const loadNodes = useCallback(async (): Promise<void> => {
+    const signal = listRequest.current.start()
     setListState('loading')
     setError('')
     try {
@@ -46,6 +49,7 @@ export function KnowledgeActivityNotes({ sessionId, projectId, controller }: Not
         query,
         ...signal === undefined ? {} : { signal },
       })
+      if (signal.aborted) return
       setNodes(value)
       setListState('ready')
     } catch (reason) {
@@ -56,9 +60,8 @@ export function KnowledgeActivityNotes({ sessionId, projectId, controller }: Not
   }, [folderId, projectId, query, sessionId])
 
   useEffect(() => {
-    const abort = new AbortController()
-    void loadNodes(abort.signal)
-    return () => { abort.abort() }
+    void loadNodes()
+    return () => { listRequest.current.cancel() }
   }, [loadNodes, refresh])
 
   useEffect(() => {
@@ -76,6 +79,7 @@ export function KnowledgeActivityNotes({ sessionId, projectId, controller }: Not
       ...projectId === undefined ? {} : { projectId },
       signal: abort.signal,
     }).then(value => {
+      if (abort.signal.aborted) return
       setContent(value)
       setContentState('ready')
     }).catch(reason => {
@@ -88,16 +92,18 @@ export function KnowledgeActivityNotes({ sessionId, projectId, controller }: Not
 
   const openFolder = (node: NoteNode): void => {
     setFolderId(node.id)
-    setCrumbs(current => [...current, { id: node.id, name: node.name }])
+    const nextCrumbs = [...crumbs, { id: node.id, name: node.name }]
+    setCrumbs(nextCrumbs)
     setQuery('')
     setQueryInput('')
-    controller.select(sessionId, { ...controller.selection(sessionId), mode: 'notes', noteFolderId: node.id, noteDocumentId: undefined })
+    controller.select(sessionId, { mode: 'notes', noteFolderId: node.id, noteDocumentId: undefined, noteCrumbs: nextCrumbs })
   }
   const openCrumb = (crumb: FolderCrumb, index: number): void => {
     setFolderId(crumb.id)
-    setCrumbs(current => current.slice(0, index + 1))
+    const nextCrumbs = crumbs.slice(0, index + 1)
+    setCrumbs(nextCrumbs)
     setSelectedId(undefined)
-    controller.select(sessionId, { ...controller.selection(sessionId), mode: 'notes', noteFolderId: crumb.id, noteDocumentId: undefined })
+    controller.select(sessionId, { mode: 'notes', noteFolderId: crumb.id, noteDocumentId: undefined, noteCrumbs: nextCrumbs })
   }
   const openNode = (node: NoteNode): void => {
     if (node.kind === 'folder') return openFolder(node)
@@ -114,6 +120,7 @@ export function KnowledgeActivityNotes({ sessionId, projectId, controller }: Not
     event.preventDefault()
     setSelectedId(undefined)
     setContent(undefined)
+    controller.select(sessionId, { noteDocumentId: undefined })
     setQuery(queryInput.trim())
   }
 

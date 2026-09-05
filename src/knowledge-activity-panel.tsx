@@ -19,6 +19,7 @@ import {
 } from './knowledge-activity-api.js'
 import type { KnowledgeActivityController } from './knowledge-activity-controller.js'
 import { KnowledgeActivityNotes } from './knowledge-activity-notes.js'
+import { LatestRequest } from './latest-request.js'
 import { renderMarkdown } from './web-markdown-preview.js'
 
 type DetailsProps = PropsRuntime<'details'>
@@ -44,6 +45,8 @@ export function KnowledgeActivityPanel(
   const [error, setError] = useState('')
   const [nextCursor, setNextCursor] = useState<string>()
   const [baseMenuOpen, setBaseMenuOpen] = useState(false)
+  const indexRequest = useRef(new LatestRequest())
+  const mountRequest = useRef(new LatestRequest())
   const scopeRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -62,21 +65,21 @@ export function KnowledgeActivityPanel(
     }
   }, [baseMenuOpen])
 
-  const refreshMounts = useCallback(async (signal?: AbortSignal): Promise<void> => {
+  const refreshMounts = useCallback(async (): Promise<void> => {
+    const signal = mountRequest.current.start()
     setMountState('loading')
     setError('')
     try {
       const next = await loadMountedKnowledge(sessionId, projectId, signal)
+      if (signal.aborted) return
       setMounts(next)
       const current = props.controller.selection(sessionId)
       const selected = next.some(item => item.knowledgeBaseId === current.knowledgeBaseId)
         ? current.knowledgeBaseId
         : next[0]?.knowledgeBaseId
       props.controller.select(sessionId, {
-        ...selected === undefined ? {} : { knowledgeBaseId: selected },
-        ...selected === current.knowledgeBaseId && current.documentId !== undefined
-          ? { documentId: current.documentId }
-          : {},
+        knowledgeBaseId: selected,
+        documentId: selected === current.knowledgeBaseId ? current.documentId : undefined,
       })
       setSelectedBaseId(selected)
       if (selected !== current.knowledgeBaseId) {
@@ -92,12 +95,12 @@ export function KnowledgeActivityPanel(
   }, [projectId, props.controller, sessionId])
 
   useEffect(() => {
-    const controller = new AbortController()
-    void refreshMounts(controller.signal)
-    return () => { controller.abort() }
+    void refreshMounts()
+    return () => { mountRequest.current.cancel() }
   }, [refreshMounts])
 
-  const loadIndex = useCallback(async (cursor?: string, append = false, signal?: AbortSignal): Promise<void> => {
+  const loadIndex = useCallback(async (cursor?: string, append = false): Promise<void> => {
+    const signal = indexRequest.current.start()
     if (mounts.length === 0 || (query.length === 0 && selectedBaseId === undefined)) {
       setDocuments([])
       setNextCursor(undefined)
@@ -115,6 +118,7 @@ export function KnowledgeActivityPanel(
         ...cursor === undefined ? {} : { cursor },
         ...signal === undefined ? {} : { signal },
       })
+      if (signal.aborted) return
       setDocuments(current => append ? [...current, ...result.items] : result.items)
       setNextCursor(result.nextCursor)
       setListState('ready')
@@ -126,9 +130,8 @@ export function KnowledgeActivityPanel(
   }, [mounts, projectId, query, selectedBaseId, sessionId])
 
   useEffect(() => {
-    const controller = new AbortController()
-    void loadIndex(undefined, false, controller.signal)
-    return () => { controller.abort() }
+    void loadIndex()
+    return () => { indexRequest.current.cancel() }
   }, [loadIndex])
 
   useEffect(() => {
@@ -146,6 +149,7 @@ export function KnowledgeActivityPanel(
       ...projectId === undefined ? {} : { projectId },
       signal: controller.signal,
     }).then(value => {
+      if (controller.signal.aborted) return
       setDocumentValue(value)
       setDocumentState('ready')
     }).catch(reason => {
@@ -163,7 +167,7 @@ export function KnowledgeActivityPanel(
     setDocumentValue(undefined)
     setQueryInput('')
     setQuery('')
-    props.controller.select(sessionId, { mode: 'knowledge', knowledgeBaseId })
+    props.controller.select(sessionId, { mode: 'knowledge', knowledgeBaseId, documentId: undefined })
   }
   const selectDocument = (document: KnowledgeDocumentSummary): void => {
     setSelectedBaseId(document.knowledgeBaseId)
@@ -179,6 +183,7 @@ export function KnowledgeActivityPanel(
     setDocumentValue(undefined)
     props.controller.select(sessionId, {
       mode: 'knowledge',
+      documentId: undefined,
       ...selectedBaseId === undefined ? {} : { knowledgeBaseId: selectedBaseId },
     })
   }
@@ -186,6 +191,7 @@ export function KnowledgeActivityPanel(
     event.preventDefault()
     setSelectedDocumentId(undefined)
     setDocumentValue(undefined)
+    props.controller.select(sessionId, { documentId: undefined })
     setQuery(queryInput.trim())
   }
   const clearSearch = (): void => {
@@ -193,12 +199,15 @@ export function KnowledgeActivityPanel(
     setQuery('')
   }
 
-  const workspaceTarget = mode === 'notes'
-    ? { view: 'notes' as const }
-    : documentValue === undefined ? undefined : {
-      knowledgeBaseId: documentValue.knowledgeBaseId,
-      documentId: documentValue.id,
-    }
+  const openWorkspace = (): void => {
+    const noteId = props.controller.selection(sessionId).noteDocumentId
+    props.controller.openWorkspace(mode === 'notes'
+      ? { view: 'notes', ...(noteId === undefined ? {} : { noteId }) }
+      : documentValue === undefined ? undefined : {
+        knowledgeBaseId: documentValue.knowledgeBaseId,
+        documentId: documentValue.id,
+      })
+  }
 
   const selectMode = (nextMode: 'knowledge' | 'notes'): void => {
     setMode(nextMode)
@@ -206,14 +215,14 @@ export function KnowledgeActivityPanel(
     props.controller.select(sessionId, { ...props.controller.selection(sessionId), mode: nextMode })
   }
 
-  return <section className="dsh-knowledge-activity-panel" data-xiaohei-surface="plugin-workspace" aria-label="会话知识库">
+  return <section className="dsh-knowledge-activity-panel" data-knowledge-surface="activity" aria-label="会话知识库">
     <header className="dsh-knowledge-activity-header">
       <div className="dsh-knowledge-activity-title">
         <span className="dsh-knowledge-activity-mark"><IconDatabaseOutline16 size={17} /></span>
         <span><strong>知识库</strong><small>当前会话 · {shortId(sessionId)}</small></span>
       </div>
       <div className="dsh-knowledge-activity-header-actions">
-        <button type="button" className="dsh-knowledge-activity-icon-button" aria-label="在完整工作区中打开" title="完整工作区" onClick={() => props.controller.openWorkspace(workspaceTarget)}><IconFullscreenOutline16 size={16} /></button>
+        <button type="button" className="dsh-knowledge-activity-icon-button" aria-label="在完整工作区中打开" title="完整工作区" onClick={openWorkspace}><IconFullscreenOutline16 size={16} /></button>
         <button type="button" className="dsh-knowledge-activity-icon-button" aria-label="关闭会话知识库" title="关闭" onClick={() => props.controller.close(sessionId)}><IconCloseOutline16 size={16} /></button>
       </div>
     </header>

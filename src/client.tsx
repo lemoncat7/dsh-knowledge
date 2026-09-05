@@ -14,6 +14,7 @@ import { activatePluginWorkspace, observePluginWorkspace } from './workspace-own
 import {
   IconChevronLeftOutline14, IconDataOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { knowledgeDesignCss } from './design-tokens.js'
 import cssText from './client.css'
 import activityCss from './knowledge-activity.css'
 import { createKnowledgeActivityController, type KnowledgeActivityController } from './knowledge-activity-controller.js'
@@ -165,7 +166,7 @@ function KnowledgeWritebackStatus({
   }
   const destinations = state.destinations ?? []
   const summary = state.summary.replace(/^知识库回写\s*·\s*/u, '')
-  return <div className="dsh-knowledge-writeback-status" data-status={state.status}>
+  return <div className="dsh-knowledge-writeback-notice" data-status={state.status}>
     <div className="dsh-knowledge-writeback-summary" role={state.status === 'running' ? 'status' : undefined} aria-atomic="true">
       <span>知识库回写</span><strong>@lemoncat7/dsh-knowledge</strong><span title={state.error}>{summary}</span>
       {state.status === 'failed' && state.retryable && <button type="button" disabled={retrying} onClick={() => { void retry() }}>{retrying ? '重试中…' : '重试'}</button>}
@@ -518,9 +519,8 @@ function KnowledgeWorkspace({
     if (currentFrame === null) return
     const target = currentFrame.contentWindow
     if (target === null) return
-    const computed = getComputedStyle(document.body)
     target.postMessage(
-      createKnowledgeHostTheme(computed, client.theme.getTheme()),
+      createKnowledgeHostTheme(client.theme.getTheme()),
       frameOrigin(currentFrame) ?? '*',
     )
   }, [client])
@@ -553,10 +553,10 @@ function KnowledgeWorkspace({
   }, [client, scheduleTheme, sendTheme])
 
   return (
-    <section className="dsh-knowledge-workspace" data-xiaohei-surface="plugin-workspace" aria-labelledby="dsh-knowledge-workspace-title">
+    <section className="dsh-knowledge-workspace" data-knowledge-surface="workspace" aria-labelledby="dsh-knowledge-workspace-title">
       <header className="dsh-knowledge-workspace-header">
         <div>
-          <button type="button" data-xiaohei-workspace-close onClick={workspace.close} aria-label="返回会话" title="返回会话"><IconChevronLeftOutline14 size={15} /></button>
+          <button type="button" data-knowledge-workspace-close onClick={workspace.close} aria-label="返回会话" title="返回会话"><IconChevronLeftOutline14 size={15} /></button>
           <IconDataOutline16 size={18} />
           <span><h2 id="dsh-knowledge-workspace-title">知识库</h2><p>文档、审核、挂载与访问管理</p></span>
         </div>
@@ -611,7 +611,8 @@ function installStyles(): () => void {
   const style = document.createElement('style')
   style.dataset.plugin = PLUGIN_ID
   style.dataset.pluginCss = STYLE_ID
-  style.textContent = `${cssText}\n${activityCss}`
+  const scope = ':is(.dsh-knowledge-trigger, .dsh-knowledge-activity-panel, .dsh-knowledge-workspace, .dsh-knowledge-settings-card, .dsh-knowledge-writeback-notice)'
+  style.textContent = knowledgeDesignCss(scope, 'body[data-ds-dark-theme] ' + scope, false) + cssText + activityCss
   document.head.appendChild(style)
   return () => { style.remove() }
 }
