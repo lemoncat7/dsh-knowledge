@@ -44,6 +44,17 @@ Cancel superseded reads on navigation and unmount. Disconnect observers and
 remove event listeners when their control lifetime ends. Prefer small targeted
 updates over document-wide layout work or decorative animation.
 
+Cards, buttons and selected tree rows stay in place: use color/border/focus
+feedback, not floating transforms or animated shadows. Static metrics should
+not pretend to be clickable. Skeletons are static except for one loading-status
+indicator. Keep progress on transform rather than width, and do not animate the
+desktop grid when resizing/collapsing navigation. Pointer resize writes are
+coalesced per frame and flushed on release; keyboard resizing stays immediate.
+Dialogs use a short fade without scaling text or fading the full backdrop;
+mobile drawers retain directional motion. Reduced-motion disables animations
+and transitions entirely, including infinite loaders. Pane material tokens are
+independent of motion and must remain unchanged by performance adjustments.
+
 The existing application orchestrator and provider remain public entry points;
 this refactor does not replace persistence, authorization or write-back logic.
 Further domain extraction should be driven by behavioral tests, not file-size

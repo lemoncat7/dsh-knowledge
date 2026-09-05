@@ -218,7 +218,7 @@ body[data-ds-dark-theme] :is(
   line-height: 1;
   -webkit-tap-highlight-color: transparent;
   cursor: pointer;
-  transition: color 140ms ease, background 140ms ease, border-color 140ms ease, transform 140ms ease;
+  transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease;
 }
 
 .dsh-knowledge-workspace-header [data-knowledge-workspace-close]:hover {
@@ -227,7 +227,7 @@ body[data-ds-dark-theme] :is(
   background: var(--knowledge-control);
 }
 
-.dsh-knowledge-workspace-header [data-knowledge-workspace-close]:active { transform: scale(.96); }
+.dsh-knowledge-workspace-header [data-knowledge-workspace-close]:active { border-color: var(--knowledge-text-secondary); }
 .dsh-knowledge-workspace-header [data-knowledge-workspace-close]:focus-visible {
   outline: 2px solid var(--knowledge-accent);
   outline-offset: 2px;
@@ -340,12 +340,10 @@ body[data-ds-dark-theme] :is(
   box-shadow: var(--knowledge-glass-shadow), 0 8px 24px rgb(0 0 0 / 5%);
   -webkit-backdrop-filter: var(--knowledge-glass-filter);
   backdrop-filter: var(--knowledge-glass-filter);
-  transition: border-color .16s, background .16s, box-shadow .2s, transform .2s cubic-bezier(.22, 1, .36, 1);
+  transition: border-color 120ms ease, background-color 120ms ease;
 }
 .dsh-knowledge-settings-card:hover {
   border-color: color-mix(in srgb, var(--knowledge-border) 68%, var(--knowledge-text-secondary));
-  box-shadow: var(--knowledge-glass-shadow), 0 12px 30px rgb(0 0 0 / 8%);
-  transform: translateY(-1px);
 }
 .dsh-knowledge-settings-card--open {
   border-color: color-mix(in srgb, var(--knowledge-border) 68%, var(--knowledge-text-secondary));

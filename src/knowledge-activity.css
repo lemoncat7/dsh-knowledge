@@ -14,7 +14,6 @@
   font-family: var(--knowledge-font-family);
   font-size: 13px;
   line-height: 1.5;
-  animation: dsh-knowledge-activity-enter 180ms cubic-bezier(.2, .8, .2, 1) both;
 }
 
 .dsh-knowledge-activity-panel *,
@@ -330,7 +329,6 @@
 .dsh-knowledge-activity-error > button { min-height: 34px; margin-top: 6px; padding: 0 13px; border: 1px solid var(--knowledge-border); border-radius: 9px; background: var(--knowledge-embedded-control); cursor: pointer; }
 .dsh-knowledge-activity-error > button:hover { background: var(--knowledge-hover); }
 
-@keyframes dsh-knowledge-activity-enter { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: translateX(0); } }
 @keyframes dsh-knowledge-activity-spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 460px) {
@@ -342,5 +340,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .dsh-knowledge-activity-panel,
-  .dsh-knowledge-activity-state > span { animation: none; transition: none; }
+  .dsh-knowledge-activity-state > span,
+  .dsh-knowledge-activity-scope-trigger > svg { animation: none; transition: none; }
 }

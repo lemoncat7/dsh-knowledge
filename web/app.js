@@ -1040,24 +1040,38 @@ function startSidebarResize(event, minimum, maximum) {
   if (!shell) return
   const startX = event.clientX
   const startWidth = state.documentView.sidebarWidth
+  let pendingWidth = startWidth
+  let frame = 0
   handle.setPointerCapture?.(event.pointerId)
   handle.classList.add('is-dragging')
   document.body.classList.add('is-resizing-columns')
   const move = moveEvent => {
-    const width = clampNumber(startWidth + moveEvent.clientX - startX, minimum, maximum, startWidth)
-    setSidebarWidth(width, shell, handle)
+    if (moveEvent.pointerId !== event.pointerId) return
+    pendingWidth = clampNumber(startWidth + moveEvent.clientX - startX, minimum, maximum, startWidth)
+    if (!frame) frame = window.requestAnimationFrame(() => {
+      frame = 0
+      if (shell.isConnected) setSidebarWidth(pendingWidth, shell, handle)
+    })
   }
-  const finish = () => {
+  const finish = endEvent => {
+    if (endEvent.pointerId !== event.pointerId) return
+    if (frame) window.cancelAnimationFrame(frame)
+    frame = 0
+    if (endEvent.type === 'pointerup') pendingWidth = clampNumber(startWidth + endEvent.clientX - startX, minimum, maximum, startWidth)
+    if (shell.isConnected) setSidebarWidth(pendingWidth, shell, handle)
     handle.classList.remove('is-dragging')
     document.body.classList.remove('is-resizing-columns')
     handle.removeEventListener('pointermove', move)
     handle.removeEventListener('pointerup', finish)
     handle.removeEventListener('pointercancel', finish)
+    handle.removeEventListener('lostpointercapture', finish)
+    if (handle.hasPointerCapture?.(event.pointerId)) handle.releasePointerCapture(event.pointerId)
     saveDocumentLayout()
   }
   handle.addEventListener('pointermove', move)
   handle.addEventListener('pointerup', finish)
   handle.addEventListener('pointercancel', finish)
+  handle.addEventListener('lostpointercapture', finish)
 }
 
 function resizeSidebarWithKeyboard(event, minimum, maximum) {

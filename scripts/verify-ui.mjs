@@ -50,6 +50,23 @@ try {
     throw error
   })
   await page.locator('.ProseMirror').waitFor()
+  // Exercise ordinary motion, not only the accessibility override.
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  await page.evaluate(() => { window.resizeEditor = document.querySelector('.ProseMirror') })
+  const resize = page.getByRole('separator', { name: '调整主导航栏宽度' })
+  await resize.focus()
+  await page.keyboard.press('Home')
+  assert.equal(await resize.getAttribute('aria-valuenow'), '190')
+  const handleBox = await resize.boundingBox()
+  await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + 40)
+  await page.mouse.down()
+  await page.mouse.move(handleBox.x + handleBox.width / 2 + 72, handleBox.y + 40, { steps: 12 })
+  await page.mouse.up()
+  assert.equal(await resize.getAttribute('aria-valuenow'), '262')
+  assert.equal(await page.locator('body').evaluate(node => node.classList.contains('is-resizing-columns')), false)
+  assert.equal(await page.locator('.app-shell').evaluate(node => getComputedStyle(node).transitionProperty), 'all')
+  assert.equal(await page.locator('.app-shell').evaluate(node => getComputedStyle(node).transitionDuration), '0s')
+  assert.equal(await page.evaluate(() => window.resizeEditor === document.querySelector('.ProseMirror')), true, 'resize destroyed editor')
   for (const [width, height, scheme] of [[1280, 850, 'light'], [375, 812, 'light'], [1024, 768, 'dark']]) {
     await page.setViewportSize({ width, height })
     await page.emulateMedia({ colorScheme: scheme, reducedMotion: 'reduce' })
@@ -63,6 +80,7 @@ try {
   await menu.click()
   await page.locator('.app-sidebar-scrim').click({ position: { x: 350, y: 300 } })
   assert.equal(await page.evaluate(() => window.originalEditor === document.querySelector('.ProseMirror')), true, 'navigation destroyed the editor')
+  await verifyRestrainedMotion(page)
 
   // Exercise the shared select with real form semantics and keyboard focus.
   await page.evaluate(async () => {
@@ -121,11 +139,46 @@ try {
   await page.keyboard.press('Escape')
   assert.equal(await page.getByRole('dialog').count(), 0)
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ result: 'passed', screenshots: root, checks: ['desktop/mobile/tablet', 'light/dark', 'no horizontal overflow', 'menu preserves editor', 'select keyboard/reset/validation/dynamic options/form data'] }))
+  console.log(JSON.stringify({ result: 'passed', screenshots: root, checks: ['desktop/mobile/tablet', 'light/dark material parity', 'no horizontal overflow', 'menu and resize preserve editor', 'pointer and keyboard resize', 'stable hover bounds and shadows', 'static skeleton/reduced motion', 'select keyboard/reset/validation/dynamic options/form data'] }))
 } finally {
   await browser.close()
   await new Promise(resolve => server.close(resolve))
   await provider.close()
+}
+
+async function verifyRestrainedMotion(page) {
+  await page.setViewportSize({ width: 1280, height: 850 })
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  await page.evaluate(() => {
+    document.body.innerHTML = `<main style="padding:30px;display:grid;gap:12px">
+      <button class="button">操作</button><article class="base-card">知识库</article>
+      <article class="knowledge-card">知识卡片</article><article class="metric">统计</article>
+      <button class="note-tree-document" aria-current="page">知识文档</button>
+      <div class="notes-tree-item" data-selected="true"><button class="notes-tree-row">笔记</button><div class="notes-row-actions"><button class="button tiny">下载</button></div></div>
+      <div class="loading-skeleton"><span class="skeleton-phase">正在加载</span><div class="skeleton-line skeleton-title"></div><div class="skeleton-block"></div></div>
+      <div class="route-progress"><span style="--route-progress:.4"></span></div>
+      </main>`
+  })
+  for (const scheme of ['light', 'dark']) {
+    await page.emulateMedia({ colorScheme: scheme })
+    for (const selector of ['.button', '.base-card', '.knowledge-card', '.metric', '.note-tree-document', '.notes-tree-item']) {
+      const node = page.locator(selector).first()
+      await page.mouse.move(0, 0)
+      const before = await node.boundingBox()
+      const shadow = await node.evaluate(node => getComputedStyle(node).boxShadow)
+      await node.hover()
+      await page.waitForTimeout(200)
+      assert.deepEqual(await node.boundingBox(), before, `${scheme}: ${selector} moves on hover`)
+      assert.equal(await node.evaluate(node => getComputedStyle(node).boxShadow), shadow, `${selector} grows a shadow`)
+    }
+  }
+  await page.locator('.notes-tree-row').focus()
+  assert.equal(await page.locator('.notes-row-actions').evaluate(node => getComputedStyle(node).pointerEvents), 'auto', 'row actions must work with keyboard focus')
+  assert.equal(await page.locator('.skeleton-line').evaluate(node => getComputedStyle(node, '::after').content), 'none')
+  assert.equal(await page.locator('.skeleton-block').evaluate(node => getComputedStyle(node, '::after').animationName), 'none')
+  assert.equal(await page.locator('.route-progress span').evaluate(node => getComputedStyle(node).transitionProperty), 'transform')
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  assert.equal(await page.locator('.skeleton-phase').evaluate(node => getComputedStyle(node, '::before').animationName), 'none')
 }
 
 async function verifyMaterialParity(browser, outputDirectory) {
