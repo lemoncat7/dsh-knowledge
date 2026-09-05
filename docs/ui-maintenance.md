@@ -20,6 +20,13 @@ package or DSH source patch is required.
   stays transparent; overlaid menus, mobile navigation and outline are solid
   enough to prevent text from showing through.
 - `web/ui-primitives.js`: DOM primitives, icons, actions and notifications.
+- `web/document-actions.js`: one grouped overflow menu for knowledge and note
+  documents, with keyboard navigation, outside dismissal and listener cleanup.
+  Save state, outline and primary save remain outside at every viewport width;
+  find/history/export/share/rename and lifecycle actions stay in the same menu.
+  Do not recreate separate desktop/mobile copies of document actions. Keep the
+  editor's overlay stacking below its toolbar, and allow toolbar grid items to
+  shrink (`min-width: 0`) without clipping primary buttons.
 - `web/dialogs.js`: dialog lifetime, dirty-form protection and keyboard focus.
 - `web/select-control.js`: plugin-owned select appearance and listbox behavior;
   native value, validation, reset and change semantics remain available to forms.

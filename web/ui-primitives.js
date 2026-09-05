@@ -56,6 +56,9 @@ export function interfaceIcon(name, className = 'interface-icon') {
     download: 'M12 3v11M8 10l4 4 4-4M5 20h14',
     link: 'M9.5 14.5l5-5M8.5 17H6a5 5 0 0 1 0-10h3M15.5 7H18a5 5 0 0 1 0 10h-3',
     rename: 'M4 20l4.2-1 10.4-10.4a2.1 2.1 0 0 0-3-3L5.2 16zM14.5 6.5l3 3',
+    move: 'M3 7h6l2 2h10v11H3zM12 4h8m-3-3 3 3-3 3',
+    check: 'M5 12l4 4L19 6',
+    trash: 'M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7',
   }
   return vectorElement('svg', {
     class: className, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',

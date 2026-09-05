@@ -9,7 +9,7 @@ interface Asset {
 }
 
 const STATIC_ASSETS = new Map<string, Asset>([
-  ...['model-catalog', 'dialogs', 'select-control'].map(name => [
+  ...['model-catalog', 'dialogs', 'select-control', 'document-actions'].map(name => [
     `${name}.js`, loadAsset(`../web/${name}.js`, 'text/javascript; charset=utf-8'),
   ] as [string, Asset]),
   ['app.js', loadAsset('../web/app.js', 'text/javascript; charset=utf-8')],

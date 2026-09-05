@@ -3,17 +3,19 @@ const AUTH_MODE = document.querySelector('meta[name="dsh-knowledge-auth-mode"]')
 const WEB_PATH = document.querySelector('meta[name="dsh-knowledge-web"]')?.content || '/knowledge'
 const ASSET_VERSION = document.querySelector('meta[name="dsh-knowledge-asset-version"]')?.content || ''
 const moduleUrl = name => `./${name}.js${ASSET_VERSION ? `?v=${encodeURIComponent(ASSET_VERSION)}` : ''}`
-const [apiModule, themeModule, uiModule, modelCatalogModule, dialogModule, selectModule] = await Promise.all([
+const [apiModule, themeModule, uiModule, modelCatalogModule, dialogModule, selectModule, documentActionsModule] = await Promise.all([
   import(moduleUrl('api-client')),
   import(moduleUrl('host-theme')),
   import(moduleUrl('ui-primitives')),
   import(moduleUrl('model-catalog')),
   import(moduleUrl('dialogs')),
   import(moduleUrl('select-control')),
+  import(moduleUrl('document-actions')),
 ])
 const { createApiClient } = apiModule
 const { installHostThemeBridge } = themeModule
 const { actionButton, badge, createToastPresenter, element, interfaceIcon, paneToggleButton } = uiModule
+const { renderMenu: renderDocumentMenu, closeMenus: closeDocumentMenus } = documentActionsModule.createDocumentMenuPresenter(uiModule)
 const readModelCatalog = modelCatalogModule.createModelCatalogLoader()
 const TOKEN_KEY = 'dsh-knowledge.session-token'
 const TYPES = ['preference', 'fact', 'decision', 'procedure', 'lesson']
@@ -948,6 +950,7 @@ async function loadTokens(signal) {
 }
 
 function renderShell() {
+  closeDocumentMenus()
   releaseNoteEditors()
   captureScrollPosition()
   const titles = {
@@ -1769,13 +1772,16 @@ function renderNoteEditor(workspace, editor, base) {
       element('div', { class: 'note-editor-actions' },
         finalized ? badge(DOCUMENT_STATE_LABELS[editor.documentState] || '已结束', 'success') : readOnly ? badge('只读') : null,
         element('span', { class: 'editor-save-status', role: 'status' }, editor.saveState),
-        !readOnly && !editor.isNew && documentWorkspaceBases(workspace).some(item => item.id !== editor.knowledgeBaseId)
-          ? actionButton('移动到…', () => openMoveKnowledgeDocument(workspace, editor), 'ghost small')
-          : null,
         finalized && !readOnly ? actionButton('重新打开', () => reopenDocument(workspace, editor), 'small') : null,
-        !readOnly && !editor.isNew && !finalized ? actionButton('标记结束', () => openFinalizeDocument(workspace, editor), 'small') : null,
-        !readOnly && !editor.isNew && !finalized ? actionButton('删除', () => confirmDeleteDocument(workspace, editor), 'ghost small') : null,
         !readOnly && !finalized ? actionButton(editor.isNew ? '创建文档' : '保存', () => { void saveDocumentEditor(workspace).then(saved => { if (saved) renderShell() }) }, 'primary small') : null,
+        !readOnly && !editor.isNew ? renderDocumentMenu(editor.title || '知识文档', [
+          [
+            ...(documentWorkspaceBases(workspace).some(item => item.id !== editor.knowledgeBaseId)
+              ? [{ label: '移动到…', icon: 'move', run: () => openMoveKnowledgeDocument(workspace, editor) }] : []),
+            ...(!finalized ? [{ label: '标记结束', icon: 'check', run: () => openFinalizeDocument(workspace, editor) }] : []),
+          ],
+          !finalized ? [{ label: '删除文档', icon: 'trash', danger: true, run: () => confirmDeleteDocument(workspace, editor) }] : [],
+        ]) : null,
       ),
     ),
     element('div', { class: 'note-editor-scroll', 'data-scroll-key': 'note-editor' },
@@ -2695,86 +2701,34 @@ function renderNoteFile(node) {
 
 function renderNoteFileToolbar(node, options = {}) {
   return element('header', { class: 'notes-document-toolbar' },
-    element('div', { class: 'notes-toolbar-leading' },
-      renderNoteDocumentBreadcrumb(node),
-    ),
+    element('div', { class: 'notes-toolbar-leading' }, renderNoteDocumentBreadcrumb(node)),
     element('div', { class: 'notes-document-actions' },
       options.editable ? element('span', { class: 'notes-save-state', role: 'status', 'data-note-save-state': '', 'data-dirty': String(state.notes.dirty) }, state.notes.dirty ? '未保存' : '已保存') : null,
-      options.enhanced ? actionButton('查找', () => markdownEditorHandle?.openFind(), 'ghost small', { 'data-note-find': '', 'data-note-mobile-overflow': '', 'aria-keyshortcuts': 'Control+F Meta+F', 'aria-pressed': 'false' }) : null,
       options.enhanced ? actionButton([
-        interfaceIcon('outline', 'notes-toolbar-action-icon'),
-        element('span', {}, '大纲'),
-      ], () => markdownEditorHandle?.toggleOutline(), 'ghost small notes-outline-action', { 'data-note-outline': '', 'aria-label': '打开标题大纲', 'aria-controls': 'dsh-note-outline', 'aria-expanded': 'false', 'aria-pressed': 'false' }) : null,
-      options.editable ? actionButton('历史', () => { void openNoteHistory(node) }, 'ghost small', { 'data-note-history': '', 'data-note-mobile-overflow': '' }) : null,
-      noteDownloadButton(node, 'ghost small', '下载', { 'data-note-mobile-overflow': '' }),
-      actionButton(noteShareForNode(node.id) ? '分享中' : '分享', () => { void openNoteShare(node) }, 'ghost small', { 'data-note-mobile-overflow': '' }),
-      actionButton('复制引用', () => { void copyNoteReference(node) }, 'ghost small', { 'data-note-mobile-overflow': '' }),
-      actionButton('重命名', () => openRenameNoteNode(node), 'ghost small', { 'data-note-mobile-overflow': '' }),
-      options.editable ? actionButton('保存', () => { void saveNoteDocument() }, 'primary small', { 'data-note-save': '', 'data-note-mobile-overflow': '', disabled: !state.notes.dirty }) : null,
+        interfaceIcon('outline', 'notes-toolbar-action-icon'), element('span', {}, '大纲'),
+      ], () => markdownEditorHandle?.toggleOutline(), 'ghost small notes-outline-action', { 'data-note-outline': '', 'aria-label': '打开标题大纲', title: '标题大纲', 'aria-controls': 'dsh-note-outline', 'aria-expanded': 'false', 'aria-pressed': 'false' }) : null,
+      options.editable ? actionButton('保存', () => { void saveNoteDocument() }, 'primary small', { 'data-note-save': '', disabled: !state.notes.dirty, 'aria-keyshortcuts': 'Control+S Meta+S' }) : null,
       renderNoteFileOverflowMenu(node, options),
     ),
   )
 }
 
 function renderNoteFileOverflowMenu(node, options) {
-  const details = element('details', {
-    class: 'notes-document-more',
-    onKeyDown: event => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      details.open = false
-      summary.focus()
-    },
-    onFocusOut: () => {
-      window.setTimeout(() => {
-        if (!details.contains(document.activeElement)) details.open = false
-      }, 0)
-    },
-  })
-  const summary = element('summary', { class: 'button ghost small', title: '更多操作', 'aria-label': `打开 ${node.name} 的更多操作` },
-    interfaceIcon('more', 'notes-document-more-icon'),
-  )
-  details.addEventListener('toggle', () => {
-    summary.setAttribute('aria-expanded', String(details.open))
-    summary.setAttribute('aria-label', `${details.open ? '关闭' : '打开'} ${node.name} 的更多操作`)
-  })
-  const closeThen = action => event => {
-    details.open = false
-    action(event)
-  }
-  const menuItems = []
-  if (options.editable && state.notes.dirty) {
-    menuItems.push(noteMenuAction('保存修改', 'save', closeThen(() => { void saveNoteDocument() })))
-    menuItems.push(noteMenuDivider())
-  }
-  if (options.enhanced) {
-    menuItems.push(noteMenuAction('查找', 'search', closeThen(() => markdownEditorHandle?.openFind())))
-  }
-  if (options.editable) menuItems.push(noteMenuAction('页面历史', 'history', closeThen(() => { void openNoteHistory(node) })))
-  if (options.enhanced || options.editable) menuItems.push(noteMenuDivider())
-  menuItems.push(
-    noteMenuAction('下载', 'download', closeThen(event => { void downloadNoteFile(node, event.currentTarget) })),
-    noteMenuAction(noteShareForNode(node.id) ? '管理分享' : '创建分享', 'link', closeThen(() => { void openNoteShare(node) })),
-    noteMenuAction('复制引用', 'link', closeThen(() => { void copyNoteReference(node) })),
-    noteMenuAction('重命名', 'rename', closeThen(() => openRenameNoteNode(node))),
-    noteMenuDivider(),
-    noteMenuAction('查看已分享', 'outline', closeThen(() => { void navigate('shares') })),
-  )
-  const menu = element('div', { class: 'notes-document-more-menu', role: 'menu', 'aria-label': `${node.name} 的更多操作` }, menuItems)
-  summary.setAttribute('aria-expanded', 'false')
-  details.append(summary, menu)
-  return details
-}
-
-function noteMenuAction(label, icon, onClick, attributes = {}) {
-  return actionButton([
-    interfaceIcon(icon, 'notes-document-menu-icon'),
-    element('span', { class: 'notes-document-menu-label' }, label),
-  ], onClick, 'ghost small notes-document-menu-item', { role: 'menuitem', ...attributes })
-}
-
-function noteMenuDivider() {
-  return element('div', { class: 'notes-document-menu-divider', role: 'separator' })
+  return renderDocumentMenu(node.name, [
+    [
+      ...(options.enhanced ? [{ label: '查找', icon: 'search', run: () => markdownEditorHandle?.openFind(), attributes: { 'data-note-find': '', 'aria-keyshortcuts': 'Control+F Meta+F' } }] : []),
+      ...(options.editable ? [{ label: '页面历史', icon: 'history', run: () => { void openNoteHistory(node) }, attributes: { 'data-note-history': '' } }] : []),
+    ],
+    [
+      { label: '下载', icon: 'download', run: event => { void downloadNoteFile(node, event.currentTarget) } },
+      { label: noteShareForNode(node.id) ? '管理分享' : '创建分享', icon: 'link', run: () => { void openNoteShare(node) } },
+      { label: '复制引用', icon: 'link', run: () => { void copyNoteReference(node) } },
+    ],
+    [
+      { label: '重命名', icon: 'rename', run: () => openRenameNoteNode(node) },
+      { label: '查看已分享', icon: 'outline', run: () => { void navigate('shares') } },
+    ],
+  ])
 }
 
 function renderNoteFileStatusbar(node) {

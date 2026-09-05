@@ -67,19 +67,56 @@ try {
   assert.equal(await page.locator('.app-shell').evaluate(node => getComputedStyle(node).transitionProperty), 'all')
   assert.equal(await page.locator('.app-shell').evaluate(node => getComputedStyle(node).transitionDuration), '0s')
   assert.equal(await page.evaluate(() => window.resizeEditor === document.querySelector('.ProseMirror')), true, 'resize destroyed editor')
-  for (const [width, height, scheme] of [[1280, 850, 'light'], [375, 812, 'light'], [1024, 768, 'dark']]) {
+  for (const [width, height, scheme] of [[1280, 850, 'light'], [320, 740, 'light'], [375, 812, 'light'], [768, 1024, 'light'], [1024, 768, 'dark'], [812, 375, 'dark']]) {
     await page.setViewportSize({ width, height })
     await page.emulateMedia({ colorScheme: scheme, reducedMotion: 'reduce' })
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'horizontal page overflow')
     if (width === 375) assert.equal(await page.locator('.notes-editor-outline').evaluate(node => getComputedStyle(node).backgroundColor), 'rgb(244, 244, 244)', 'mobile outline must occlude the document')
+    const toolbar = page.locator('.notes-document-toolbar')
+    for (const selector of ['[data-note-save-state]', '[data-note-save]', '[data-note-outline]', '.notes-document-more > summary']) {
+      const bounds = await toolbar.locator(selector).boundingBox()
+      if (bounds && bounds.x + bounds.width > width) {
+        await page.screenshot({ path: join(root, 'toolbar-overflow.png') })
+      }
+      assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width, `${width}: ${selector} clipped ${JSON.stringify(bounds)}`)
+    }
+    assert.equal(await toolbar.locator(':scope > .notes-document-actions > .button').count(), 2, 'secondary actions escaped overflow')
+    const more = toolbar.locator('.notes-document-more > summary')
+    await page.evaluate(() => { window.menuEditor = document.querySelector('.ProseMirror') })
+    await more.click()
+    const popup = toolbar.getByRole('menu')
+    assert.deepEqual(await popup.getByRole('menuitem').allTextContents(), ['查找', '页面历史', '下载', '创建分享', '复制引用', '重命名', '查看已分享'])
+    const popupBounds = await popup.boundingBox()
+    assert.ok(popupBounds.x >= 0 && popupBounds.x + popupBounds.width <= width + 1 && popupBounds.y + popupBounds.height <= height + 1, `${width}: menu outside viewport`)
+    assert.equal(await popup.getByRole('menuitem').first().evaluate(node => {
+      const bounds = node.getBoundingClientRect()
+      return node.contains(document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2))
+    }), true, `${width}: outline or editor covers the document menu`)
+    await page.screenshot({ path: join(root, `document-menu-${width}-${scheme}.png`) })
+    await page.keyboard.press('End')
+    assert.equal(await page.evaluate(() => document.activeElement.textContent), '查看已分享')
+    await page.keyboard.press('Escape')
+    assert.equal(await more.getAttribute('aria-expanded'), 'false')
+    assert.equal(await page.evaluate(() => window.menuEditor === document.querySelector('.ProseMirror')), true, 'menu rebuilt editor')
     await page.screenshot({ path: join(root, `notes-${width}-${scheme}.png`) })
   }
   await page.setViewportSize({ width: 375, height: 812 })
+  const noteMore = page.locator('.notes-document-more > summary')
+  await noteMore.click()
+  await page.getByRole('menuitem', { name: '重命名', exact: true }).click()
+  await page.getByRole('dialog').waitFor()
+  await page.keyboard.press('Escape')
+  assert.equal(await noteMore.getAttribute('aria-expanded'), 'false')
+  await noteMore.click()
+  await page.locator('.topbar h1').click()
+  assert.equal(await noteMore.getAttribute('aria-expanded'), 'false', 'outside click did not dismiss menu')
   await page.evaluate(() => { window.originalEditor = document.querySelector('.ProseMirror') })
   const menu = page.locator('.topbar button[aria-expanded]')
   await menu.click()
   await page.locator('.app-sidebar-scrim').click({ position: { x: 350, y: 300 } })
   assert.equal(await page.evaluate(() => window.originalEditor === document.querySelector('.ProseMirror')), true, 'navigation destroyed the editor')
+  await verifyKnowledgeActions(browser)
   await verifyRestrainedMotion(page)
 
   // Exercise the shared select with real form semantics and keyboard focus.
@@ -139,11 +176,32 @@ try {
   await page.keyboard.press('Escape')
   assert.equal(await page.getByRole('dialog').count(), 0)
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ result: 'passed', screenshots: root, checks: ['desktop/mobile/tablet', 'light/dark material parity', 'no horizontal overflow', 'menu and resize preserve editor', 'pointer and keyboard resize', 'stable hover bounds and shadows', 'static skeleton/reduced motion', 'select keyboard/reset/validation/dynamic options/form data'] }))
+  console.log(JSON.stringify({ result: 'passed', screenshots: root, checks: ['desktop/mobile/tablet portrait and landscape', 'light/dark material parity', 'no horizontal overflow', 'consistent document action groups', 'menu hit targets above outline', 'menu keyboard/outside dismissal/dialog action', 'menu and resize preserve editor', 'pointer and keyboard resize', 'stable hover bounds and shadows', 'static skeleton/reduced motion', 'select keyboard/reset/validation/dynamic options/form data'] }))
 } finally {
   await browser.close()
   await new Promise(resolve => server.close(resolve))
   await provider.close()
+}
+
+async function verifyKnowledgeActions(browser) {
+  await provider.createKnowledgeBase({ name: '移动目标', description: '', defaultTags: [], extractionInstructions: '' })
+  await provider.create({ knowledgeBaseId: 'default', title: '工具栏检查', body: '只使用隔离测试数据。', type: 'procedure', tags: [], scope: { kind: 'global' }, confidence: 1 })
+  const [document] = await provider.listDocuments('default')
+  const page = await browser.newPage({ viewport: { width: 1280, height: 850 }, reducedMotion: 'reduce' })
+  try {
+    await page.goto(`${base}/knowledge/?view=entries&knowledgeBaseId=default&documentId=${document.id}`)
+    const toolbar = page.locator('.note-editor-toolbar')
+    await toolbar.locator('.notes-document-more').waitFor()
+    for (const width of [1280, 1024, 768, 375, 320]) {
+      await page.setViewportSize({ width, height: 850 })
+      const trigger = toolbar.locator('.notes-document-more > summary')
+      const bounds = await trigger.boundingBox()
+      assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width, `${width}: knowledge actions clipped`)
+      await trigger.click()
+      assert.deepEqual(await toolbar.getByRole('menuitem').allTextContents(), ['移动到…', '标记结束', '删除文档'])
+      await page.keyboard.press('Escape')
+    }
+  } finally { await page.close() }
 }
 
 async function verifyRestrainedMotion(page) {
