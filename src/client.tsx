@@ -15,6 +15,7 @@ import {
   IconChevronLeftOutline14, IconDataOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { knowledgeDesignCss } from './design-tokens.js'
+import { availableActivitySession } from './knowledge-activity-state.js'
 import cssText from './client.css'
 import activityCss from './knowledge-activity.css'
 import { createKnowledgeActivityController, type KnowledgeActivityController } from './knowledge-activity-controller.js'
@@ -430,8 +431,7 @@ function isManagementPath(value: unknown): value is string {
 
 function KnowledgeLauncher({ wide, useSessions, workspace, activity }: SidebarActionProps & { workspace: KnowledgeWorkspaceController; activity: KnowledgeActivityController }) {
   const [open, setOpen] = useState(workspace.isOpen())
-  const sessionId = useSessions((state: SessionListState) => state.current)
-  const currentSessionId = sessionId === undefined ? undefined : String(sessionId)
+  const currentSessionId = useSessions(availableActivitySession)
   const [activityOpen, setActivityOpen] = useState(currentSessionId === undefined ? false : activity.isOpen(currentSessionId))
   const [compactViewport, setCompactViewport] = useState(() => window.matchMedia(COMPACT_KNOWLEDGE_VIEWPORT).matches)
 

@@ -1,3 +1,11 @@
+import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
+
+/** DSH reserves the details column only for a loaded, non-blank session. */
+export function availableActivitySession(state: Pick<SessionListState, 'current' | 'byId'>): string | undefined {
+  const current = state.current
+  return current !== undefined && state.byId[current]?.blank === false ? String(current) : undefined
+}
+
 export interface KnowledgeActivitySelection {
   mode?: 'knowledge' | 'notes'
   knowledgeBaseId?: string | undefined

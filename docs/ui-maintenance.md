@@ -24,6 +24,8 @@ package or DSH source patch is required.
   Network or malformed-response failures must not be cached as empty catalogs.
 - `src/knowledge-activity-state.ts`: per-session selection transitions. Changing
   knowledge base clears an unrelated document; notes retain their own path.
+  Empty or not-yet-loaded sessions open the workspace because DSH does not
+  allocate a details column for those sessions.
 - `src/latest-request.ts`: request cancellation owner, shared by initial load,
   refresh and pagination. Ignore aborted responses before committing view state.
 - `src/storage/migrations.ts`: versioned SQLite upgrades, preserving existing

@@ -1,10 +1,17 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mergeActivitySelection } from '../lib/knowledge-activity-state.js'
+import { mergeActivitySelection, availableActivitySession } from '../lib/knowledge-activity-state.js'
 import { LatestRequest } from '../lib/latest-request.js'
 import { createModelCatalogLoader } from '../web/model-catalog.js'
 import { knowledgeDesignCss, KNOWLEDGE_PALETTE } from '../lib/design-tokens.js'
 import { readFile } from 'node:fs/promises'
+
+test('blank or not-yet-loaded sessions use the workspace instead of a zero-width details column', () => {
+  assert.equal(availableActivitySession({ current: undefined, byId: {} }), undefined)
+  assert.equal(availableActivitySession({ current: 's', byId: {} }), undefined)
+  assert.equal(availableActivitySession({ current: 's', byId: { s: { blank: true } } }), undefined)
+  assert.equal(availableActivitySession({ current: 's', byId: { s: { blank: false } } }), 's')
+})
 
 test('activity base changes clear stale documents without losing independent notes state', () => {
   const previous = { knowledgeBaseId: 'A', documentId: 'doc-A', noteDocumentId: 'note-A', mode: 'knowledge' }
