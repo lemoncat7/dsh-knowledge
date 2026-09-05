@@ -88,6 +88,14 @@ try {
     const popup = toolbar.getByRole('menu')
     assert.deepEqual(await popup.getByRole('menuitem').allTextContents(), ['查找', '页面历史', '下载', '创建分享', '复制引用', '重命名', '查看已分享'])
     const popupBounds = await popup.boundingBox()
+    const popupMaterial = await popup.evaluate(node => {
+      const style = getComputedStyle(node)
+      return { background: style.backgroundColor, filter: style.backdropFilter }
+    })
+    assert.equal(popupMaterial.background, width <= 760
+      ? scheme === 'dark' ? 'rgb(29, 38, 40)' : 'rgb(232, 234, 236)'
+      : scheme === 'dark' ? 'rgba(29, 38, 40, 0.98)' : 'rgba(232, 234, 236, 0.98)')
+    assert.equal(popupMaterial.filter === 'none', width <= 760)
     assert.ok(popupBounds.x >= 0 && popupBounds.x + popupBounds.width <= width + 1 && popupBounds.y + popupBounds.height <= height + 1, `${width}: menu outside viewport`)
     assert.equal(await popup.getByRole('menuitem').first().evaluate(node => {
       const bounds = node.getBoundingClientRect()

@@ -5,6 +5,7 @@ export const KNOWLEDGE_PALETTE: Record<KnowledgeColorScheme, Readonly<Record<str
   light: {
     '--bg': '#ebebeb', '--surface': '#f4f4f4', '--surface-raised': '#fafafa',
     '--surface-soft': '#eeeeef', '--surface-hover': 'rgb(118 118 128 / 9%)', '--dialog-surface': '#f4f4f4',
+    '--menu-surface': 'rgb(232 234 236 / 98%)', '--menu-surface-solid': '#e8eaec',
     '--text': '#1d1d1f', '--text-secondary': '#515154', '--text-tertiary': '#6e6e73',
     '--border': 'rgb(60 60 67 / 14%)', '--border-strong': 'rgb(60 60 67 / 24%)',
     '--accent': '#3a3a3c', '--accent-hover': '#1d1d1f', '--accent-soft': '#e2e2e5', '--on-accent': '#ffffff',
@@ -14,6 +15,7 @@ export const KNOWLEDGE_PALETTE: Record<KnowledgeColorScheme, Readonly<Record<str
   dark: {
     '--bg': '#101719', '--surface': '#182022', '--surface-raised': '#20292b',
     '--surface-soft': 'rgb(184 204 205 / 6%)', '--surface-hover': 'rgb(105 182 186 / 9%)', '--dialog-surface': '#20292b',
+    '--menu-surface': 'rgb(29 38 40 / 98%)', '--menu-surface-solid': '#1d2628',
     '--text': '#e3eaeb', '--text-secondary': '#bbc9cc', '--text-tertiary': '#95a7ab',
     '--border': 'rgb(184 204 205 / 10%)', '--border-strong': 'rgb(184 204 205 / 18%)',
     '--accent': '#69b6ba', '--accent-hover': '#8aced0', '--accent-soft': 'rgb(105 182 186 / 13%)', '--on-accent': '#101819',

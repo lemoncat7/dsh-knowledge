@@ -1071,8 +1071,22 @@ html,
   border: 1px solid var(--panel-border);
   border-radius: 12px;
   padding: 6px;
-  background: var(--dialog-surface);
-  box-shadow: var(--shadow-floating);
+  background: var(--menu-surface-solid);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 14%), 0 1px 4px rgb(0 0 0 / 8%);
+}
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .notes-document-more-menu {
+    background: var(--menu-surface);
+    -webkit-backdrop-filter: var(--knowledge-embedded-filter);
+    backdrop-filter: var(--knowledge-embedded-filter);
+  }
+}
+@media (prefers-reduced-transparency: reduce), (pointer: coarse), (max-width: 760px) {
+  .notes-document-more-menu {
+    background: var(--menu-surface-solid);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
 }
 .notes-document-more:not([open]) > .notes-document-more-menu { display: none; }
 .notes-document-more-menu .button { min-width: 0; width: 100%; display: grid; grid-template-columns: 20px minmax(0, 1fr); align-items: center; justify-content: stretch; gap: 10px; border-color: transparent; padding: 8px 10px; box-shadow: none; text-align: left; }

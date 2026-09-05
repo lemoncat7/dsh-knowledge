@@ -27,6 +27,9 @@ package or DSH source patch is required.
   Do not recreate separate desktop/mobile copies of document actions. Keep the
   editor's overlay stacking below its toolbar, and allow toolbar grid items to
   shrink (`min-width: 0`) without clipping primary buttons.
+  Document menus use the neutral menu surface, not the brighter dialog surface:
+  high-opacity frost on desktop, solid fill on small/touch screens, reduced
+  transparency and browsers without backdrop-filter. Do not animate the filter.
 - `web/dialogs.js`: dialog lifetime, dirty-form protection and keyboard focus.
 - `web/select-control.js`: plugin-owned select appearance and listbox behavior;
   native value, validation, reset and change semantics remain available to forms.
