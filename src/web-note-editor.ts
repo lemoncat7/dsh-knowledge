@@ -1,4 +1,4 @@
-import { Editor, type JSONContent } from '@tiptap/core'
+import { Editor, isNodeSelection, type EditorOptions, type JSONContent } from '@tiptap/core'
 import Document from '@tiptap/extension-document'
 import Image from '@tiptap/extension-image'
 import Paragraph from '@tiptap/extension-paragraph'
@@ -11,6 +11,18 @@ import { Markdown } from '@tiptap/markdown'
 import StarterKit from '@tiptap/starter-kit'
 import { createNoteEditorChrome, type NoteEditorChrome } from './web-note-editor-chrome.js'
 import { NoteSearch } from './web-note-editor-search.js'
+
+/** Selecting text must never turn into an accidental move/copy gesture.
+ * Clipboard input and incoming drops retain the editor's normal handling.
+ * Shared by Markdown and plain-text documents, including knowledge documents.
+ */
+const bodyEditorEvents: NonNullable<EditorOptions['editorProps']['handleDOMEvents']> = {
+  dragstart: (view, event) => {
+    if (view.state.selection.empty || isNodeSelection(view.state.selection)) return false
+    event.preventDefault()
+    return true
+  },
+}
 
 export interface MarkdownEditorOptions {
   host: HTMLElement
@@ -77,6 +89,7 @@ export function createMarkdownEditor(options: MarkdownEditorOptions): MarkdownEd
       TaskItem.configure({ nested: true }),
     ],
     editorProps: {
+      handleDOMEvents: bodyEditorEvents,
       attributes: {
         class: 'notes-live-editor-surface',
         role: 'textbox',
@@ -149,6 +162,7 @@ export function createPlainTextEditor(options: PlainTextEditorOptions): PlainTex
       UndoRedo,
     ],
     editorProps: {
+      handleDOMEvents: bodyEditorEvents,
       attributes: {
         class: 'notes-plain-editor-surface',
         role: 'textbox',

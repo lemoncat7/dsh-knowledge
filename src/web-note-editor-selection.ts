@@ -150,7 +150,10 @@ export function createNoteSelectionMenu(options: NoteSelectionMenuOptions): Note
 
   let positionFrame: number | undefined
   let scrollTimer: number | undefined
+  let selectionFrame: number | undefined
   let activeSelectionPointerId: number | undefined
+  let gestureCancelled = false
+  let destroyed = false
 
   function currentBlockLabel(): string {
     if (editor.isActive('heading', { level: 1 })) return '标题 1'
@@ -185,7 +188,7 @@ export function createNoteSelectionMenu(options: NoteSelectionMenuOptions): Note
   }
 
   function shouldShow(): boolean {
-    if (editor.isDestroyed || options.findIsOpen()) return false
+    if (destroyed || editor.isDestroyed || options.findIsOpen()) return false
     const { from, to, empty } = editor.state.selection
     if (empty || !editor.isFocused) return false
     return Boolean(editor.state.doc.textBetween(from, to, ' ').trim())
@@ -193,7 +196,7 @@ export function createNoteSelectionMenu(options: NoteSelectionMenuOptions): Note
 
   function positionMenu(): void {
     positionFrame = undefined
-    if (menu.hidden || editor.isDestroyed) return
+    if (destroyed || menu.hidden || editor.isDestroyed) return
     if (window.matchMedia('(max-width: 1120px), (hover: none) and (pointer: coarse) and (max-width: 1400px)').matches) {
       menu.dataset.placement = 'bottom'
       menu.style.left = 'max(8px, env(safe-area-inset-left))'
@@ -222,12 +225,13 @@ export function createNoteSelectionMenu(options: NoteSelectionMenuOptions): Note
   }
 
   function schedulePosition(): void {
+    if (destroyed || menu.hidden) return
     if (positionFrame !== undefined) window.cancelAnimationFrame(positionFrame)
     positionFrame = window.requestAnimationFrame(positionMenu)
   }
 
   function refresh(): void {
-    if (activeSelectionPointerId !== undefined) {
+    if (destroyed || gestureCancelled || activeSelectionPointerId !== undefined) {
       hide()
       return
     }
@@ -241,6 +245,10 @@ export function createNoteSelectionMenu(options: NoteSelectionMenuOptions): Note
   }
 
   function hide(): void {
+    if (positionFrame !== undefined) window.cancelAnimationFrame(positionFrame)
+    if (selectionFrame !== undefined) window.cancelAnimationFrame(selectionFrame)
+    if (scrollTimer !== undefined) window.clearTimeout(scrollTimer)
+    positionFrame = selectionFrame = scrollTimer = undefined
     menu.hidden = true
     blockMenu.hidden = true
     linkForm.hidden = true
@@ -250,16 +258,16 @@ export function createNoteSelectionMenu(options: NoteSelectionMenuOptions): Note
 
   function onScroll(): void {
     hide()
-    if (scrollTimer !== undefined) window.clearTimeout(scrollTimer)
     scrollTimer = window.setTimeout(refresh, 90)
   }
 
   function onOutsidePointer(event: PointerEvent): void {
-    if (!menu.hidden && !menu.contains(event.target as Node) && !editor.view.dom.contains(event.target as Node)) hide()
+    if (!menu.contains(event.target as Node) && !editor.view.dom.contains(event.target as Node)) cancelGesture()
   }
 
   function onEditorPointerDown(event: PointerEvent): void {
-    if (event.pointerType === 'mouse' && event.button !== 0) return
+    if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return
+    gestureCancelled = false
     activeSelectionPointerId = event.pointerId
     hide()
   }
@@ -267,32 +275,58 @@ export function createNoteSelectionMenu(options: NoteSelectionMenuOptions): Note
   function onSelectionPointerEnd(event: PointerEvent): void {
     if (activeSelectionPointerId === undefined || event.pointerId !== activeSelectionPointerId) return
     activeSelectionPointerId = undefined
-    window.requestAnimationFrame(() => window.requestAnimationFrame(refresh))
+    selectionFrame = window.requestAnimationFrame(() => {
+      selectionFrame = window.requestAnimationFrame(() => {
+        selectionFrame = undefined
+        refresh()
+      })
+    })
+  }
+
+  function cancelGesture(): void {
+    activeSelectionPointerId = undefined
+    gestureCancelled = true
+    hide()
+  }
+
+  function onSelectionPointerCancel(event: PointerEvent): void {
+    if (event.pointerId === activeSelectionPointerId) cancelGesture()
+  }
+
+  function onEditorKeyDown(event: KeyboardEvent): void {
+    if (event.key === 'Escape') cancelGesture()
+    else gestureCancelled = false
   }
 
   editor.on('selectionUpdate', refresh)
   editor.on('transaction', refresh)
   scrollHost.addEventListener('scroll', onScroll, { passive: true })
   editor.view.dom.addEventListener('pointerdown', onEditorPointerDown, { passive: true })
+  editor.view.dom.addEventListener('dragstart', cancelGesture)
+  editor.view.dom.addEventListener('keydown', onEditorKeyDown, true)
+  window.addEventListener('blur', cancelGesture)
   window.addEventListener('resize', schedulePosition, { passive: true })
   window.addEventListener('pointerup', onSelectionPointerEnd, { passive: true })
-  window.addEventListener('pointercancel', onSelectionPointerEnd, { passive: true })
+  window.addEventListener('pointercancel', onSelectionPointerCancel, { passive: true })
   document.addEventListener('pointerdown', onOutsidePointer)
 
   return {
     refresh,
     hide,
     destroy: () => {
+      destroyed = true
+      hide()
       editor.off('selectionUpdate', refresh)
       editor.off('transaction', refresh)
       scrollHost.removeEventListener('scroll', onScroll)
       editor.view.dom.removeEventListener('pointerdown', onEditorPointerDown)
+      editor.view.dom.removeEventListener('dragstart', cancelGesture)
+      editor.view.dom.removeEventListener('keydown', onEditorKeyDown, true)
+      window.removeEventListener('blur', cancelGesture)
       window.removeEventListener('resize', schedulePosition)
       window.removeEventListener('pointerup', onSelectionPointerEnd)
-      window.removeEventListener('pointercancel', onSelectionPointerEnd)
+      window.removeEventListener('pointercancel', onSelectionPointerCancel)
       document.removeEventListener('pointerdown', onOutsidePointer)
-      if (positionFrame !== undefined) window.cancelAnimationFrame(positionFrame)
-      if (scrollTimer !== undefined) window.clearTimeout(scrollTimer)
       menu.remove()
     },
   }
