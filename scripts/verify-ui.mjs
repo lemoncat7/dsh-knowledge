@@ -93,6 +93,15 @@ try {
   assert.equal(await page.evaluate(() => new FormData(document.querySelector('form')).get('base')), 'g')
   await page.evaluate(() => { document.querySelector('select').disabled = true })
   assert.equal(await combo.isDisabled(), true)
+  await page.evaluate(() => {
+    const inspector = document.createElement('footer')
+    inspector.className = 'note-inspector'
+    inspector.style.width = '570px'
+    inspector.innerHTML = '<label><span>类型</span><select class="note-meta-select"><option>偏好</option></select></label><label class="note-tags-field"><span>标签</span><input value="项目, 工作流, 资料"></label><span class="note-format-hint">Markdown · Ctrl/⌘ S 保存</span>'
+    document.body.append(inspector)
+  })
+  await page.locator('.note-inspector .knowledge-select-trigger').waitFor()
+  assert.equal(await page.locator('.note-inspector label > span').first().evaluate(node => getComputedStyle(node).whiteSpace), 'nowrap')
   await page.evaluate(async () => {
     const ui = await import('/knowledge/ui-primitives.js')
     const { createDialogPresenter } = await import('/knowledge/dialogs.js')
