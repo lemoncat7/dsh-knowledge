@@ -29,6 +29,10 @@ package or DSH source patch is required.
   knowledge base clears an unrelated document; notes retain their own path.
   Empty or not-yet-loaded sessions open the workspace because DSH does not
   allocate a details column for those sessions.
+- `src/knowledge-activity-presentation.tsx`: observes the host column transition,
+  holds the plugin reader at a stable width, and releases it after collapse.
+  Rapid reversal cancels release; reduced-motion needs no timed wait. Workspace
+  handoff releases immediately. Never change the host's CSS or DOM attributes.
 - `src/latest-request.ts`: request cancellation owner, shared by initial load,
   refresh and pagination. Ignore aborted responses before committing view state.
 - `src/storage/migrations.ts`: versioned SQLite upgrades, preserving existing
@@ -74,3 +78,10 @@ checks desktop/mobile/tablet widths, both modes, overflow, editor preservation,
 custom-select keyboard/reset/validation, dynamic options and modal dismissal.
 Screenshots are retained in the printed temporary directory for visual review.
 It never writes to a live DSH profile.
+
+`scripts/verify-activity-interaction.mjs` additionally checks the real host column
+with an existing test session (read-only). Set `KNOWLEDGE_PLAYWRIGHT_MODULE`,
+`DSH_BROWSER_STATE`, and `DSH_TEST_SESSION_TITLE`; optionally `DSH_TEST_URL`.
+`KNOWLEDGE_LOCAL_BUNDLE=1` replaces only the knowledge bundle in the test browser
+to verify a build before deployment. It checks stable reader width, rapid
+close/open reversal, focus exclusion, release and reduced-motion behavior.

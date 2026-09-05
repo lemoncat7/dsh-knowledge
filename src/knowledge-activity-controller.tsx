@@ -1,6 +1,7 @@
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import { KnowledgeActivityPanel } from './knowledge-activity-panel.js'
+import { KnowledgeActivityPresentation } from './knowledge-activity-presentation.js'
 import type { KnowledgeDocumentTarget } from './client.js'
 
 export type { KnowledgeActivitySelection } from './knowledge-activity-state.js'
@@ -9,7 +10,7 @@ import { mergeActivitySelection, type KnowledgeActivitySelection } from './knowl
 export interface KnowledgeActivityController {
   open(sessionId: string, selection?: KnowledgeActivitySelection): void
   toggle(sessionId: string): void
-  close(sessionId?: string): void
+  close(sessionId?: string, immediate?: boolean): void
   isOpen(sessionId: string): boolean
   selection(sessionId: string): KnowledgeActivitySelection
   select(sessionId: string, selection: KnowledgeActivitySelection): void
@@ -48,11 +49,19 @@ export function createKnowledgeActivityController(
     return true
   }
   const mount = (sessionId: string, openDetails = true): void => {
-    if (mountedSessionId === sessionId && disposePanel !== undefined) return
+    if (mountedSessionId === sessionId && disposePanel !== undefined) {
+      if (openDetails) ctx.layout.openDetails()
+      return
+    }
     unmount()
     mountedSessionId = sessionId
+    const onClosed = (): void => {
+      if (mountedSessionId === sessionId && states.get(sessionId)?.open !== true) unmount()
+    }
     disposePanel = ctx.slots.register({ name: 'details', priority: -3 }, props => (
-      <KnowledgeActivityPanel key={sessionId} {...props} controller={controller} />
+      <KnowledgeActivityPresentation key={sessionId} sessionId={sessionId} controller={controller} onClosed={onClosed}>
+        <KnowledgeActivityPanel {...props} controller={controller} />
+      </KnowledgeActivityPresentation>
     ))
     if (openDetails) ctx.layout.openDetails()
   }
@@ -91,14 +100,15 @@ export function createKnowledgeActivityController(
       if (states.get(sessionId)?.open === true) controller.close(sessionId)
       else controller.open(sessionId)
     },
-    close(sessionId) {
+    close(sessionId, immediate = false) {
       const target = sessionId ?? currentSessionId
       if (target === undefined) return
       const previous = states.get(target) ?? { open: false }
       states.set(target, { ...previous, open: false })
       if (target === currentSessionId) {
         cancelRestore()
-        if (unmount()) ctx.layout.closeDetails()
+        if (mountedSessionId === target) ctx.layout.closeDetails()
+        if (immediate) unmount()
       }
       notify()
     },
@@ -120,7 +130,7 @@ export function createKnowledgeActivityController(
       notify()
     },
     openWorkspace(target) {
-      controller.close()
+      controller.close(undefined, true)
       options.openWorkspace(target)
     },
     subscribe(listener) {

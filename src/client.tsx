@@ -86,12 +86,12 @@ export const inject = ['slots', 'theme', 'layout', 'sessions']
 export function apply(ctx: ClientContext): void {
   ctx.effect(installStyles, 'dsh-knowledge: client styles')
   let activity: KnowledgeActivityController | undefined
-  const workspace = createKnowledgeWorkspaceController(ctx, () => activity?.close())
+  const workspace = createKnowledgeWorkspaceController(ctx, () => activity?.close(undefined, true))
   activity = createKnowledgeActivityController(ctx, {
     beforeOpen: () => { workspace.close(); activatePluginWorkspace(PLUGIN_ID) },
     openWorkspace: target => { if (target === undefined) workspace.open(); else workspace.openDocument(target) },
   })
-  ctx.effect(() => observePluginWorkspace(PLUGIN_ID, () => { workspace.close(); activity?.close() }), 'dsh-knowledge: exclusive workspace')
+  ctx.effect(() => observePluginWorkspace(PLUGIN_ID, () => { workspace.close(); activity?.close(undefined, true) }), 'dsh-knowledge: exclusive workspace')
   ctx.effect(() => () => { workspace.close(); activity?.dispose() }, 'dsh-knowledge: workspace lifecycle')
   ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
     name: 'sidebar.footer.action',
