@@ -8,7 +8,7 @@
 
 ## 兼容性
 
-正式版 `2.3.2` 针对 DeepSeek Harness `0.1.2-rc.1` 构建并完成部署验证，需要 Node.js `22.19+` 或 `24+`。浏览器端使用该版本的 Session Controller、Renderer、Chat、Settings 与 Theme 插槽接口。
+正式版 `2.3.4` 针对 DeepSeek Harness `0.1.2-rc.1` 构建并完成部署验证，需要 Node.js `22.19+` 或 `24+`。浏览器端使用该版本的 Session Controller、Renderer、Chat、Settings 与 Theme 插槽接口。
 
 当前版本提供可部署的多知识库、按需检索工具、本地与远程中央服务、文档型 Web 管理台，以及全局回写策略与安全直写协调：
 
