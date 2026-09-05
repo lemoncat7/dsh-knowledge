@@ -50,6 +50,7 @@ try {
     throw error
   })
   await page.locator('.ProseMirror').waitFor()
+  await verifySelectionMaterial(page)
   // Exercise ordinary motion, not only the accessibility override.
   await page.emulateMedia({ reducedMotion: 'no-preference' })
   await page.evaluate(() => { window.resizeEditor = document.querySelector('.ProseMirror') })
@@ -196,11 +197,24 @@ try {
 }
 
 async function verifyKnowledgeActions(browser) {
-  await provider.createKnowledgeBase({ name: '移动目标', description: '', defaultTags: [], extractionInstructions: '' })
+  const targetBase = await provider.createKnowledgeBase({ name: '移动目标', description: '', defaultTags: [], extractionInstructions: '' })
   await provider.create({ knowledgeBaseId: 'default', title: '工具栏检查', body: '只使用隔离测试数据。', type: 'procedure', tags: [], scope: { kind: 'global' }, confidence: 1 })
   const [document] = await provider.listDocuments('default')
   const page = await browser.newPage({ viewport: { width: 1280, height: 850 }, reducedMotion: 'reduce' })
   try {
+    const folderResponse = await fetch(`${base}${LOCAL_MANAGEMENT_API_PREFIX}/notes/folders`, {
+      method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ name: '拖拽目标' }),
+    })
+    assert.equal(folderResponse.status, 201)
+    const folder = await folderResponse.json()
+    await page.goto(`${base}/knowledge/?view=notes&noteId=${note.id}`)
+    const noteSource = page.locator(`.notes-tree-item[data-note-id="${note.id}"]`)
+    const noteTarget = page.locator(`.notes-tree-item[data-note-id="${folder.id}"]`)
+    await noteSource.waitFor()
+    const notesFeedback = await dragFeedback(page, noteSource, noteTarget, noteSource.locator('.notes-tree-row'), noteTarget)
+    const movedNote = page.waitForResponse(response => response.url().endsWith(`/notes/${note.id}`) && response.request().method() === 'PATCH')
+    await noteSource.dragTo(noteTarget.locator('.notes-tree-row'))
+    assert.equal((await movedNote).status(), 200, 'native notes drag must still move documents')
     await page.goto(`${base}/knowledge/?view=entries&knowledgeBaseId=default&documentId=${document.id}`)
     const toolbar = page.locator('.note-editor-toolbar')
     await toolbar.locator('.notes-document-more').waitFor()
@@ -219,7 +233,55 @@ async function verifyKnowledgeActions(browser) {
       assert.deepEqual(await toolbar.getByRole('menuitem').allTextContents(), ['移动到…', '标记结束', '删除文档'])
       await page.keyboard.press('Escape')
     }
+    await page.setViewportSize({ width: 1280, height: 850 })
+    const knowledgeSource = page.locator(`.note-tree-document[data-document-id="${document.id}"]`)
+    const knowledgeTarget = page.locator(`.note-tree-group[data-base-id="${targetBase.id}"]`)
+    assert.deepEqual(await dragFeedback(page, knowledgeSource, knowledgeTarget, knowledgeSource, knowledgeTarget.locator('.note-tree-base')), notesFeedback, 'knowledge and notes must share cursor and drag feedback')
+    const moved = page.waitForResponse(response => response.url().endsWith(`/documents/${document.id}/move`) && response.request().method() === 'POST')
+    await knowledgeSource.dragTo(knowledgeTarget.locator('.note-tree-base'))
+    assert.equal((await moved).status(), 200, 'native drag must still move documents')
   } finally { await page.close() }
+}
+
+async function dragFeedback(page, source, target, cursorNode, highlightNode) {
+  const transfer = await page.evaluateHandle(() => new DataTransfer())
+  const cursor = await cursorNode.evaluate(node => getComputedStyle(node).cursor)
+  await source.dispatchEvent('dragstart', { dataTransfer: transfer })
+  await target.dispatchEvent('dragover', { dataTransfer: transfer })
+  assert.equal(await target.getAttribute('data-drop-target'), 'true')
+  const feedback = await highlightNode.evaluate(node => {
+    const style = getComputedStyle(node)
+    const label = getComputedStyle(node, '::after')
+    return { background: style.backgroundColor, outline: style.outline, labelBackground: label.backgroundColor, labelFont: label.fontSize }
+  })
+  const opacity = await source.evaluate(node => getComputedStyle(node).opacity)
+  const effect = await transfer.evaluate(value => value.effectAllowed)
+  await source.dispatchEvent('dragend', { dataTransfer: transfer })
+  assert.equal(await target.getAttribute('data-drop-target'), 'false', 'cancel must clear the drop target')
+  assert.equal(await source.getAttribute('data-dragging'), 'false', 'cancel must restore the source')
+  await transfer.dispose()
+  return { ...feedback, opacity, cursor, effect }
+}
+
+async function verifySelectionMaterial(page) {
+  for (const scheme of ['light', 'dark']) {
+    await page.emulateMedia({ colorScheme: scheme })
+    const selection = await page.locator('.ProseMirror p').first().evaluate(node => {
+      node.closest('[contenteditable]').focus()
+      const range = document.createRange(); range.selectNodeContents(node)
+      const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range)
+      const style = getComputedStyle(node, '::selection')
+      return { background: style.backgroundColor, color: style.color }
+    })
+    assert.deepEqual(selection, scheme === 'light'
+      ? { background: 'rgb(184, 200, 214)', color: 'rgb(23, 33, 43)' }
+      : { background: 'rgb(69, 91, 104)', color: 'rgb(255, 255, 255)' })
+    const luminance = rgb => rgb.match(/\d+/g).map(Number).map(value => value / 255).map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4).reduce((sum, value, i) => sum + value * [.2126, .7152, .0722][i], 0)
+    const lights = [luminance(selection.background), luminance(selection.color)].sort((a, b) => b - a)
+    assert.ok((lights[0] + .05) / (lights[1] + .05) >= 4.5, 'selected text must remain legible')
+    await page.screenshot({ path: join(root, `selection-${scheme}.png`) })
+    await page.evaluate(() => window.getSelection().removeAllRanges())
+  }
 }
 
 async function verifyRestrainedMotion(page) {
@@ -287,7 +349,10 @@ async function verifyMaterialParity(browser, outputDirectory) {
       await frame.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
       const activity = await page.locator('.dsh-knowledge-activity-panel').evaluate(material)
       const workspace = await frame.locator('.main').evaluate(material)
-      assert.deepEqual(activity, workspace, `${scheme}: activity and workspace material differ`)
+      assert.equal(activity.filter, workspace.filter, `${scheme}: pane frost must stay consistent`)
+      assert.equal(activity.color, workspace.color, `${scheme}: pane text must stay consistent`)
+      assert.equal(activity.background, scheme === 'light' ? 'rgba(255, 255, 255, 0.14)' : 'rgba(29, 36, 38, 0.24)')
+      assert.equal(workspace.background, scheme === 'light' ? 'rgba(255, 255, 255, 0.08)' : 'rgba(16, 23, 25, 0.18)', 'sidebar tint must not change workspace material')
       assert.equal(await page.locator('.dsh-knowledge-activity-header').evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(0, 0, 0, 0)')
       assert.equal(await page.locator('.dsh-knowledge-activity-tabs').evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(0, 0, 0, 0)')
       const control = await page.locator('.dsh-knowledge-activity-search').evaluate(node => getComputedStyle(node).backgroundColor)

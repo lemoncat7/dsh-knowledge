@@ -30,7 +30,7 @@ test('browser integration is type-checked against the official DSH client contra
   assert.match(css, /--knowledge-pane: rgba\(255, 255, 255, 0\.16\)/)
   assert.match(css, /--knowledge-host-glass-filter: saturate\(\.18\) contrast\(1\.015\) blur\(24px\)/)
   assert.doesNotMatch(css + activityCss, /--knowledge-activity-surface/)
-  assert.match(activityCss, /background: var\(--knowledge-embedded-surface\)/)
+  assert.match(activityCss, /background: var\(--activity-surface\)/)
   assert.match(activityCss, /backdrop-filter: var\(--knowledge-embedded-filter\)/)
   assert.match(activityCss, /\.dsh-knowledge-activity-scope-menu \{[^}]*background: var\(--dialog-surface\)/)
   assert.match(css, /body\[data-ds-dark-theme\][\s\S]*--knowledge-canvas: transparent/)

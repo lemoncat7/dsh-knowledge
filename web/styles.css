@@ -197,7 +197,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 button:disabled { cursor: not-allowed; opacity: .56; }
 
-::selection { background: var(--accent-soft); color: var(--text); }
+::selection { background: var(--selection-background); color: var(--selection-text); }
 
 input:-webkit-autofill,
 input:-webkit-autofill:hover,
@@ -836,9 +836,7 @@ html,
 .note-tree-base, .note-tree-document, .note-tree-new { width: 100%; display: flex; align-items: center; border: 0; background: transparent; color: var(--text-secondary); text-align: left; }
 .note-tree-base { position: relative; min-height: 36px; gap: 7px; border-radius: 9px; padding: 5px 7px; font-weight: 620; transition: background var(--motion-fast) ease, color var(--motion-fast) ease; }
 .note-tree-base:hover, .note-tree-document:hover, .note-tree-new:hover { background: var(--surface-hover); color: var(--text); }
-.note-tree-group[data-drop-target="true"] > .note-tree-base { background: color-mix(in srgb, var(--accent) 13%, var(--surface)); color: var(--text); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 44%, transparent), var(--shadow-control); }
 .note-tree-group[data-drop-target="true"] > .note-tree-base .tree-count { visibility: hidden; }
-.note-tree-group[data-drop-target="true"] > .note-tree-base::after { content: "移动到这里"; position: absolute; right: 7px; border-radius: 5px; padding: 2px 6px; background: var(--surface-raised); color: var(--accent); font-size: 9px; font-weight: 650; pointer-events: none; }
 .tree-disclosure { width: 7px; height: 7px; flex: none; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform .16s ease; }
 .note-tree-group[data-expanded="true"] .tree-disclosure { transform: rotate(45deg) translate(-1px, -1px); }
 .tree-folder-icon {
@@ -857,9 +855,6 @@ html,
 .tree-count { min-width: 20px; color: var(--text-tertiary); font-size: 10px; font-variant-numeric: tabular-nums; text-align: right; }
 .note-tree-documents { display: grid; gap: 1px; margin: 1px 0 5px 18px; padding-left: 10px; border-left: 1px solid color-mix(in srgb, var(--border-strong) 55%, transparent); }
 .note-tree-document { position: relative; min-height: 40px; gap: 8px; border-radius: 9px; padding: 5px 8px; transition: background var(--motion-fast) ease, color var(--motion-fast) ease; }
-.note-tree-document[draggable="true"] { cursor: grab; }
-.note-tree-document[draggable="true"]:active { cursor: grabbing; }
-.note-tree-document[data-dragging="true"] { opacity: .42; }
 .note-tree-document[aria-busy="true"] { opacity: .58; pointer-events: none; }
 .note-tree-document[aria-current="page"] { background: var(--material-control); color: var(--text); box-shadow: inset 2px 0 0 color-mix(in srgb, var(--text-secondary) 74%, transparent), var(--shadow-control); }
 .tree-document-icon {
@@ -931,10 +926,13 @@ html,
 .notes-tree-item { --notes-row-actions-width: 118px; position: relative; width: 100%; max-width: 100%; min-width: 0; display: flex; align-items: center; border-radius: 8px; transition: background var(--motion-fast) ease; }
 .notes-tree-item:hover { background: var(--surface-hover); }
 .notes-tree-item[data-selected="true"] { background: var(--material-control); box-shadow: inset 2px 0 0 color-mix(in srgb, var(--text-secondary) 70%, transparent), var(--shadow-control); }
-.notes-tree-item[data-drop-target="true"] { background: color-mix(in srgb, var(--accent) 13%, var(--surface)); outline: 1px solid color-mix(in srgb, var(--accent) 38%, transparent); outline-offset: -1px; }
-.notes-tree-item[data-drop-target="true"]::after { content: "放入此目录"; position: absolute; right: 6px; z-index: 2; border-radius: 4px; padding: 2px 5px; background: color-mix(in srgb, var(--surface-raised) 92%, transparent); color: var(--accent); font-size: 8px; font-weight: 620; pointer-events: none; }
+.notes-tree-item[data-drop-target="true"],
+.note-tree-group[data-drop-target="true"] > .note-tree-base { background: color-mix(in srgb, var(--accent) 13%, var(--surface)); outline: 1px solid color-mix(in srgb, var(--accent) 38%, transparent); outline-offset: -1px; }
+.notes-tree-item[data-drop-target="true"]::after,
+.note-tree-group[data-drop-target="true"] > .note-tree-base::after { content: "放入此目录"; position: absolute; right: 6px; z-index: 2; border-radius: 4px; padding: 2px 5px; background: color-mix(in srgb, var(--surface-raised) 92%, transparent); color: var(--accent); font-size: 8px; font-weight: 620; pointer-events: none; }
+.note-tree-group[data-drop-target="true"] > .note-tree-base::after { content: "移入此知识库"; }
 .notes-tree-item[data-drop-target="true"] .notes-row-actions { opacity: 0; pointer-events: none; }
-.notes-tree-item[data-dragging="true"] { opacity: .45; }
+.notes-tree-item[data-dragging="true"], .note-tree-document[data-dragging="true"] { opacity: .45; }
 .notes-tree-row { width: 100%; min-width: 0; min-height: 34px; display: flex; align-items: center; flex: 1 1 0; gap: 7px; overflow: hidden; border: 0; padding: 3px 4px; background: transparent; color: var(--text-secondary); font: inherit; text-align: left; }
 .notes-tree-row:hover, .notes-tree-row[aria-selected="true"] { color: var(--text); }
 .notes-tree-chevron, .notes-tree-spacer { position: relative; width: 14px; height: 20px; flex: none; color: var(--text-tertiary); }
@@ -1111,7 +1109,6 @@ html,
 .notes-plain-editor-surface:focus, .notes-plain-editor-surface:focus-visible { border: 0; outline: 0; box-shadow: none; }
 .notes-plain-editor-surface > p { position: relative; min-height: 1.78em; margin: 0; counter-increment: note-line; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
 .notes-plain-editor-surface > p::before { content: counter(note-line); position: absolute; right: calc(100% + 8px); top: 0; width: 22px; color: color-mix(in srgb, var(--text-tertiary) 54%, transparent); font: 11px/2.25 var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; pointer-events: none; user-select: none; }
-.notes-plain-editor-surface ::selection { background: color-mix(in srgb, var(--accent) 22%, transparent); }
 .notes-live-editor-surface { width: 100%; min-width: 0; max-width: 100%; min-height: 520px; border: 0; outline: 0; background: transparent; color: color-mix(in srgb, var(--text) 82%, var(--text-secondary)); font: 16px/1.55 var(--font-reading); letter-spacing: normal; overflow-wrap: anywhere; word-break: break-word; caret-color: var(--accent); }
 .notes-live-editor-surface p.is-editor-empty:first-child::before { height: 0; float: left; color: var(--text-tertiary); content: attr(data-placeholder); pointer-events: none; }
 .notes-live-editor-surface:focus, .notes-live-editor-surface:focus-visible { border: 0; outline: 0; box-shadow: none; }

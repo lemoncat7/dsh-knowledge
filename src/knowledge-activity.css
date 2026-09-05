@@ -15,7 +15,7 @@
   flex-direction: column;
   overflow: hidden;
   color: var(--knowledge-text);
-  background: var(--knowledge-embedded-surface);
+  background: var(--activity-surface);
   -webkit-backdrop-filter: var(--knowledge-embedded-filter);
   backdrop-filter: var(--knowledge-embedded-filter);
   box-shadow: inset 1px 0 0 var(--knowledge-border);
@@ -27,6 +27,8 @@
 .dsh-knowledge-activity-panel *,
 .dsh-knowledge-activity-panel *::before,
 .dsh-knowledge-activity-panel *::after { box-sizing: border-box; }
+
+.dsh-knowledge-activity-panel ::selection { background: var(--selection-background); color: var(--selection-text); }
 
 .dsh-knowledge-activity-panel :where(button, input) {
   -webkit-appearance: none;

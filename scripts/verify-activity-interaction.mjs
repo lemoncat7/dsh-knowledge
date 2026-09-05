@@ -30,7 +30,19 @@ try {
   const launch = () => page.locator('.dsh-knowledge-trigger').evaluate(node => node.click())
   await launch()
   await page.locator('.dsh-knowledge-activity-viewport').waitFor()
+  const opening = await page.evaluate(async () => {
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    const panel = document.querySelector('.dsh-knowledge-activity-panel')
+    let columnTransitions = 0
+    for (let parent = panel.parentElement; parent; parent = parent.parentElement) {
+      columnTransitions += parent.getAnimations().filter(animation => animation.transitionProperty === 'grid-template-columns' && animation.playState === 'running').length
+    }
+    return { width: panel.getBoundingClientRect().width, columnTransitions }
+  })
+  assert.ok(opening.width > 300, 'opening must reserve the final reader width')
+  assert.equal(opening.columnTransitions, 0, 'opening must not reflow the conversation on every frame')
   await page.waitForTimeout(450)
+  assert.equal(await page.locator('.dsh-knowledge-activity-panel').evaluate(node => node.getAnimations().length), 0, 'reveal animation must release after settling')
   const samples = []
   for (let i = 0; i < 3; i++) {
     await page.evaluate(() => {
@@ -63,5 +75,5 @@ try {
   await launch()
   await page.locator('.dsh-knowledge-activity-viewport').waitFor({ state: 'detached', timeout: 1000 })
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ result: 'passed', checks: ['stable collapsing reader', 'rapid reversal retains reader', 'fluid width restored', 'closed panel released', 'reduced motion'], samples }))
+  console.log(JSON.stringify({ result: 'passed', checks: ['transform opening without animated column reflow', 'reveal cleanup', 'stable collapsing reader', 'rapid reversal retains reader', 'fluid width restored', 'closed panel released', 'reduced motion'], samples }))
 } finally { await browser.close() }
