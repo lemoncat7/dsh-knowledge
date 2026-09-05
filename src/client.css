@@ -22,7 +22,6 @@
   --knowledge-glass-filter: saturate(1.22) contrast(1.03) blur(32px);
   --knowledge-host-glass-filter: saturate(.18) contrast(1.015) blur(24px);
   --knowledge-glass-shadow: inset 0 1px 0 rgb(255 255 255 / 70%), inset 0 -1px 0 rgb(60 60 67 / 11%), 0 10px 28px rgb(31 31 35 / 8.5%);
-  --knowledge-activity-surface: rgb(250 249 246 / 58%);
   --knowledge-font-family: var(--font-ui);
   color: var(--knowledge-text);
   font-family: var(--knowledge-font-family);
@@ -55,7 +54,6 @@ body[data-ds-dark-theme] :is(
   --knowledge-glare-rim: rgb(0 0 0 / 30%);
   --knowledge-host-glass-filter: saturate(.45) contrast(1.02) blur(24px);
   --knowledge-glass-shadow: inset 0 1px 0 rgb(255 255 255 / 16%), inset 0 -1px 0 rgb(0 0 0 / 30%), 0 12px 32px rgb(0 0 0 / 30%);
-  --knowledge-activity-surface: rgb(18 20 20 / 72%);
 }
 
 :is(

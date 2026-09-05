@@ -7,9 +7,9 @@
   flex-direction: column;
   overflow: hidden;
   color: var(--knowledge-text);
-  background: var(--knowledge-activity-surface);
-  -webkit-backdrop-filter: var(--knowledge-host-glass-filter);
-  backdrop-filter: var(--knowledge-host-glass-filter);
+  background: var(--knowledge-embedded-surface);
+  -webkit-backdrop-filter: var(--knowledge-embedded-filter);
+  backdrop-filter: var(--knowledge-embedded-filter);
   box-shadow: inset 1px 0 0 var(--knowledge-border);
   font-family: var(--knowledge-font-family);
   font-size: 13px;
@@ -38,7 +38,7 @@
   justify-content: space-between;
   gap: 10px;
   border-bottom: 1px solid var(--knowledge-border);
-  background: color-mix(in srgb, var(--knowledge-raised) 54%, transparent);
+  background: transparent;
 }
 
 .dsh-knowledge-activity-tabs {
@@ -49,7 +49,7 @@
   gap: 4px;
   padding: 5px 10px;
   border-bottom: 1px solid var(--knowledge-border);
-  background: color-mix(in srgb, var(--knowledge-raised) 30%, transparent);
+  background: transparent;
 }
 .dsh-knowledge-activity-tabs button {
   display: inline-flex;
@@ -71,7 +71,7 @@
 .dsh-knowledge-activity-tabs button.is-active {
   border-color: var(--knowledge-border);
   color: var(--knowledge-text);
-  background: var(--knowledge-control);
+  background: var(--knowledge-embedded-control);
   box-shadow: inset 0 1px 0 var(--knowledge-glare-light);
 }
 
@@ -131,7 +131,7 @@
   border: 1px solid var(--knowledge-border);
   border-radius: 10px;
   color: var(--knowledge-text-tertiary);
-  background: var(--knowledge-control);
+  background: var(--knowledge-embedded-control);
 }
 .dsh-knowledge-activity-search:focus-within { border-color: color-mix(in srgb, var(--knowledge-accent) 50%, var(--knowledge-border)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--knowledge-accent) 10%, transparent); }
 .dsh-knowledge-activity-search input { min-width: 0; height: 38px; flex: 1; padding: 0; border: 0; outline: 0 !important; color: var(--knowledge-text); background: transparent; box-shadow: none; }
@@ -180,10 +180,10 @@
   border: 1px solid var(--knowledge-border);
   border-radius: 10px;
   text-align: left;
-  background: color-mix(in srgb, var(--knowledge-control) 72%, transparent);
+  background: color-mix(in srgb, var(--knowledge-embedded-control) 72%, transparent);
   cursor: pointer;
 }
-.dsh-knowledge-activity-scope-trigger:hover { background: var(--knowledge-control); }
+.dsh-knowledge-activity-scope-trigger:hover { background: var(--knowledge-embedded-control); }
 .dsh-knowledge-activity-scope-trigger > span:nth-child(2) { display: grid; min-width: 0; gap: 1px; }
 .dsh-knowledge-activity-scope-trigger small { color: var(--knowledge-text-tertiary); font-size: 10px; }
 .dsh-knowledge-activity-scope-trigger strong { overflow: hidden; font-size: 12px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
@@ -201,14 +201,14 @@
   padding: 5px;
   border: 1px solid var(--knowledge-border);
   border-radius: 12px;
-  background: var(--knowledge-activity-surface);
+  background: var(--dialog-surface);
   box-shadow: 0 16px 38px rgb(24 30 32 / 18%), inset 0 1px 0 var(--knowledge-glare-light);
-  -webkit-backdrop-filter: var(--knowledge-glass-filter);
-  backdrop-filter: var(--knowledge-glass-filter);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 .dsh-knowledge-activity-scope-menu button { display: flex; width: 100%; min-height: 46px; align-items: center; gap: 9px; padding: 6px 9px; border: 0; border-radius: 8px; text-align: left; background: transparent; cursor: pointer; }
 .dsh-knowledge-activity-scope-menu button:hover { background: var(--knowledge-hover); }
-.dsh-knowledge-activity-scope-menu button.is-active { background: var(--knowledge-control); }
+.dsh-knowledge-activity-scope-menu button.is-active { background: var(--knowledge-embedded-control); }
 .dsh-knowledge-activity-scope-menu button > svg { flex: none; color: var(--knowledge-text-secondary); }
 .dsh-knowledge-activity-scope-menu button > span { display: grid; min-width: 0; gap: 1px; }
 .dsh-knowledge-activity-scope-menu button strong { overflow: hidden; font-size: 12px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
@@ -261,8 +261,8 @@
 .dsh-knowledge-activity-row-copy strong { color: var(--knowledge-text); font-size: 13px; font-weight: 600; }
 .dsh-knowledge-activity-row-copy small { color: var(--knowledge-text-tertiary); font-size: 10px; }
 .dsh-knowledge-activity-row-meta { display: grid; flex: none; justify-items: end; align-items: center; gap: 3px; color: var(--knowledge-text-tertiary); font-size: 10px; }
-.dsh-knowledge-activity-row-meta em { padding: 1px 5px; border-radius: 999px; color: var(--knowledge-text-secondary); background: var(--knowledge-control); font-style: normal; }
-.dsh-knowledge-activity-load-more { display: block; min-height: 36px; margin: 8px auto 0; padding: 0 14px; border: 1px solid var(--knowledge-border); border-radius: 10px; color: var(--knowledge-text-secondary); background: var(--knowledge-control); cursor: pointer; }
+.dsh-knowledge-activity-row-meta em { padding: 1px 5px; border-radius: 999px; color: var(--knowledge-text-secondary); background: var(--knowledge-embedded-control); font-style: normal; }
+.dsh-knowledge-activity-load-more { display: block; min-height: 36px; margin: 8px auto 0; padding: 0 14px; border: 1px solid var(--knowledge-border); border-radius: 10px; color: var(--knowledge-text-secondary); background: var(--knowledge-embedded-control); cursor: pointer; }
 .dsh-knowledge-activity-load-more:hover:not(:disabled) { color: var(--knowledge-text); background: var(--knowledge-hover); }
 
 .dsh-knowledge-activity-reader-bar {
@@ -308,8 +308,8 @@
 .dsh-knowledge-activity-markdown a { color: var(--knowledge-accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
 .dsh-knowledge-activity-markdown blockquote { margin-left: 0; padding: .15em 0 .15em 12px; border-left: 3px solid color-mix(in srgb, var(--knowledge-accent) 40%, transparent); color: var(--knowledge-text-secondary); }
 .dsh-knowledge-activity-markdown :where(code, pre) { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; }
-.dsh-knowledge-activity-markdown code { padding: .14em .32em; border-radius: 5px; background: var(--knowledge-control); font-size: .92em; }
-.dsh-knowledge-activity-markdown pre { overflow-x: auto; padding: 11px 12px; border: 1px solid var(--knowledge-border); border-radius: 10px; background: var(--knowledge-control); }
+.dsh-knowledge-activity-markdown code { padding: .14em .32em; border-radius: 5px; background: var(--knowledge-embedded-control); font-size: .92em; }
+.dsh-knowledge-activity-markdown pre { overflow-x: auto; padding: 11px 12px; border: 1px solid var(--knowledge-border); border-radius: 10px; background: var(--knowledge-embedded-control); }
 .dsh-knowledge-activity-markdown pre code { padding: 0; background: transparent; }
 .dsh-knowledge-activity-markdown table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .dsh-knowledge-activity-markdown :where(th, td) { padding: 6px 7px; border: 1px solid var(--knowledge-border); text-align: left; }
@@ -326,8 +326,8 @@
 .dsh-knowledge-activity-empty strong { font-size: 13px; font-weight: 650; }
 .dsh-knowledge-activity-error p,
 .dsh-knowledge-activity-empty p { margin: 0; color: var(--knowledge-text-tertiary); font-size: 11px; line-height: 1.65; }
-.dsh-knowledge-activity-empty > span { display: grid; width: 40px; height: 40px; margin-bottom: 3px; place-items: center; border-radius: 13px; color: var(--knowledge-text-secondary); background: var(--knowledge-control); }
-.dsh-knowledge-activity-error > button { min-height: 34px; margin-top: 6px; padding: 0 13px; border: 1px solid var(--knowledge-border); border-radius: 9px; background: var(--knowledge-control); cursor: pointer; }
+.dsh-knowledge-activity-empty > span { display: grid; width: 40px; height: 40px; margin-bottom: 3px; place-items: center; border-radius: 13px; color: var(--knowledge-text-secondary); background: var(--knowledge-embedded-control); }
+.dsh-knowledge-activity-error > button { min-height: 34px; margin-top: 6px; padding: 0 13px; border: 1px solid var(--knowledge-border); border-radius: 9px; background: var(--knowledge-embedded-control); cursor: pointer; }
 .dsh-knowledge-activity-error > button:hover { background: var(--knowledge-hover); }
 
 @keyframes dsh-knowledge-activity-enter { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: translateX(0); } }

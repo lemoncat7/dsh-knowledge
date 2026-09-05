@@ -2,13 +2,14 @@
 // KNOWLEDGE_PLAYWRIGHT_MODULE=/path/to/playwright-core/index.mjs node scripts/verify-ui.mjs
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { registerKnowledgeWeb } from '../lib/web.js'
 import { registerKnowledgeApi, LOCAL_MANAGEMENT_API_PREFIX } from '../lib/api.js'
 import { LocalKnowledgeProvider } from '../lib/local-provider.js'
+import { knowledgeDesignCss } from '../lib/design-tokens.js'
 
 const { chromium } = await import(process.env.KNOWLEDGE_PLAYWRIGHT_MODULE
   ? pathToFileURL(process.env.KNOWLEDGE_PLAYWRIGHT_MODULE).href : 'playwright-core')
@@ -39,6 +40,7 @@ assert.equal(noteResponse.status, 201)
 const note = await noteResponse.json()
 const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] })
 try {
+  await verifyMaterialParity(browser, root)
   const page = await browser.newPage({ viewport: { width: 1280, height: 850 } })
   const errors = []
   page.on('pageerror', error => errors.push(error.message))
@@ -124,4 +126,44 @@ try {
   await browser.close()
   await new Promise(resolve => server.close(resolve))
   await provider.close()
+}
+
+async function verifyMaterialParity(browser, outputDirectory) {
+  const [clientCss, activityCss, workspaceCss] = await Promise.all([
+    readFile(new URL('../src/client.css', import.meta.url), 'utf8'),
+    readFile(new URL('../src/knowledge-activity.css', import.meta.url), 'utf8'),
+    readFile(new URL('../web/styles.css', import.meta.url), 'utf8'),
+  ])
+  const page = await browser.newPage({ viewport: { width: 1100, height: 760 } })
+  try {
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.setContent(`<style>${knowledgeDesignCss('.dsh-knowledge-activity-panel', 'body[data-ds-dark-theme] .dsh-knowledge-activity-panel', false)}${clientCss}${activityCss}
+      body{margin:0;padding:24px;background:#e6e8ea}.comparison{height:690px;display:grid;grid-template-columns:1fr 1fr;gap:24px}iframe{width:100%;height:100%;border:0}
+      </style><div class="comparison"><section class="dsh-knowledge-activity-panel">
+      <header class="dsh-knowledge-activity-header">会话知识库</header><nav class="dsh-knowledge-activity-tabs"><button class="is-active">知识文档</button><button>笔记文档</button></nav>
+      <div class="dsh-knowledge-activity-browser"><form class="dsh-knowledge-activity-search"><input placeholder="搜索已挂载知识…"></form><div class="dsh-knowledge-activity-list-heading"><strong>项目资料</strong></div><button class="dsh-knowledge-activity-row">右栏 · 中性玻璃材质</button></div>
+      </section><iframe></iframe></div>`)
+    const frame = await (await page.locator('iframe').elementHandle()).contentFrame()
+    await frame.setContent(`<html data-dsh-embed-mode="embedded"><head><style>${knowledgeDesignCss()}${workspaceCss}</style></head><body><main class="main" style="margin:0;width:100%;height:690px"><header class="topbar">完整工作区</header><div style="padding:16px"><input class="input" placeholder="搜索文档…"><p>完整工作区 · 中性玻璃材质</p></div></main></body></html>`)
+    const material = node => {
+      const css = getComputedStyle(node)
+      return { background: css.backgroundColor, filter: css.backdropFilter, color: css.color }
+    }
+    for (const scheme of ['light', 'dark']) {
+      await page.evaluate(scheme => {
+        document.body.toggleAttribute('data-ds-dark-theme', scheme === 'dark')
+        document.body.style.background = scheme === 'dark' ? '#182022' : '#e6e8ea'
+      }, scheme)
+      await frame.evaluate(scheme => { document.documentElement.dataset.colorScheme = scheme }, scheme)
+      await frame.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+      const activity = await page.locator('.dsh-knowledge-activity-panel').evaluate(material)
+      const workspace = await frame.locator('.main').evaluate(material)
+      assert.deepEqual(activity, workspace, `${scheme}: activity and workspace material differ`)
+      assert.equal(await page.locator('.dsh-knowledge-activity-header').evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(0, 0, 0, 0)')
+      assert.equal(await page.locator('.dsh-knowledge-activity-tabs').evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(0, 0, 0, 0)')
+      const control = await page.locator('.dsh-knowledge-activity-search').evaluate(node => getComputedStyle(node).backgroundColor)
+      assert.equal(control, await frame.locator('.input').evaluate(node => getComputedStyle(node).backgroundColor))
+      await page.screenshot({ path: join(outputDirectory, `material-${scheme}.png`) })
+    }
+  } finally { await page.close() }
 }

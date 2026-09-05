@@ -28,13 +28,28 @@ export const KNOWLEDGE_FONTS = {
   '--font-mono': '"SFMono-Regular", "Cascadia Code", Menlo, Consolas, monospace',
 }
 
+/** One material for host-side activity and the embedded workspace panes. */
+export const KNOWLEDGE_EMBEDDED_MATERIAL: Record<KnowledgeColorScheme, Readonly<Record<string, string>>> = {
+  light: {
+    '--knowledge-embedded-surface': 'rgba(255, 255, 255, 0.08)',
+    '--knowledge-embedded-filter': 'saturate(.65) contrast(1.015) blur(24px)',
+    '--knowledge-embedded-control': 'rgba(255, 255, 255, 0.27)',
+  },
+  dark: {
+    '--knowledge-embedded-surface': 'rgb(16 23 25 / 18%)',
+    '--knowledge-embedded-filter': 'saturate(.55) contrast(1.02) blur(24px)',
+    '--knowledge-embedded-control': 'rgb(39 50 53 / 72%)',
+  },
+}
+
 function declarations(tokens: Readonly<Record<string, string>>): string {
   return Object.entries(tokens).map(([name, value]) => name + ':' + value + ';').join('')
 }
 
 export function knowledgeDesignCss(scope = ':root', dark = ':root[data-color-scheme="dark"]', systemMode = true): string {
-  const base = scope + '{' + declarations(KNOWLEDGE_FONTS) + declarations(KNOWLEDGE_PALETTE.light) + '}'
-  const darkRule = dark + '{' + declarations(KNOWLEDGE_PALETTE.dark) + '}'
-  const automatic = systemMode ? '@media(prefers-color-scheme:dark){' + scope + ':not([data-color-scheme]){' + declarations(KNOWLEDGE_PALETTE.dark) + '}}' : ''
+  const themeTokens = (scheme: KnowledgeColorScheme): string => declarations(KNOWLEDGE_PALETTE[scheme]) + declarations(KNOWLEDGE_EMBEDDED_MATERIAL[scheme])
+  const base = scope + '{' + declarations(KNOWLEDGE_FONTS) + themeTokens('light') + '}'
+  const darkRule = dark + '{' + themeTokens('dark') + '}'
+  const automatic = systemMode ? '@media(prefers-color-scheme:dark){' + scope + ':not([data-color-scheme]){' + themeTokens('dark') + '}}' : ''
   return base + automatic + darkRule
 }

@@ -102,13 +102,9 @@ body {
 /* The workspace and iframe remain transparent. Only the visible sidebar and
    main pane own material, preventing a full-page glass sheet. */
 :root[data-dsh-embed-mode="embedded"] {
-  --workspace-glass-surface: rgba(255, 255, 255, 0.08);
-  --glass-filter: saturate(.65) contrast(1.015) blur(24px);
-}
-
-:root[data-dsh-embed-mode="embedded"][data-color-scheme="dark"] {
-  --workspace-glass-surface: rgb(16 23 25 / 18%);
-  --glass-filter: saturate(.55) contrast(1.02) blur(24px);
+  --workspace-glass-surface: var(--knowledge-embedded-surface);
+  --glass-filter: var(--knowledge-embedded-filter);
+  --material-control: var(--knowledge-embedded-control);
 }
 
 :root[data-dsh-embed-mode="embedded"],

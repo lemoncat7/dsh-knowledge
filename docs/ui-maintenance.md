@@ -9,6 +9,9 @@ package or DSH source patch is required.
 - `src/design-tokens.ts`: canonical light/dark palette and font families. The
   build generates `web/design-tokens.css` from this source; do not edit the
   generated asset. Host client roots receive scoped copies of the same tokens.
+  Embedded workspace panes and the activity reader use `KNOWLEDGE_EMBEDDED_MATERIAL`
+  for the same surface, filter and control fill. Header/tab sections do not add
+  another tint layer; overlapping menus retain an opaque dialog surface.
 - `src/theme-bridge.ts` and `web/host-theme.js`: versioned, validated iframe
   theme transport. Only mode and allowlisted plugin tokens cross the boundary.
 - `src/client.css` / `src/knowledge-activity.css`: host-side launcher, activity
