@@ -74,6 +74,10 @@ try {
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'horizontal page overflow')
     if (width === 375) assert.equal(await page.locator('.notes-editor-outline').evaluate(node => getComputedStyle(node).backgroundColor), 'rgb(244, 244, 244)', 'mobile outline must occlude the document')
     const toolbar = page.locator('.notes-document-toolbar')
+    assert.equal(await page.locator('.notes-document-scroll').evaluate(node => getComputedStyle(node).backgroundColor),
+      scheme === 'dark' ? 'rgba(130, 138, 146, 0.06)' : 'rgba(218, 222, 226, 0.32)', 'reading tint must follow the color scheme')
+    assert.equal(await toolbar.evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(0, 0, 0, 0)', 'reading tint must not reach the toolbar')
+    assert.equal(await page.locator('.notes-content.is-document').evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(0, 0, 0, 0)', 'reading tint must not become a document workspace background')
     for (const selector of ['[data-note-save-state]', '[data-note-save]', '[data-note-outline]', '.notes-document-more > summary']) {
       const bounds = await toolbar.locator(selector).boundingBox()
       if (bounds && bounds.x + bounds.width > width) {
@@ -200,6 +204,12 @@ async function verifyKnowledgeActions(browser) {
     await page.goto(`${base}/knowledge/?view=entries&knowledgeBaseId=default&documentId=${document.id}`)
     const toolbar = page.locator('.note-editor-toolbar')
     await toolbar.locator('.notes-document-more').waitFor()
+    for (const scheme of ['dark', 'light']) {
+      await page.emulateMedia({ colorScheme: scheme })
+      assert.equal(await page.locator('.note-editor-scroll').evaluate(node => getComputedStyle(node).backgroundColor),
+        scheme === 'dark' ? 'rgba(130, 138, 146, 0.06)' : 'rgba(218, 222, 226, 0.32)')
+      assert.equal(await toolbar.evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(0, 0, 0, 0)')
+    }
     for (const width of [1280, 1024, 768, 375, 320]) {
       await page.setViewportSize({ width, height: 850 })
       const trigger = toolbar.locator('.notes-document-more > summary')
