@@ -8,9 +8,9 @@
 
 ## 兼容性
 
-正式版 `2.3.5` 针对 DeepSeek Harness `0.1.2-rc.1` 构建并完成部署验证，需要 Node.js `22.19+` 或 `24+`。浏览器端使用该版本的 Session Controller、Renderer、Chat、Settings 与 Theme 插槽接口。
+正式版 `2.3.6` 针对 DeepSeek Harness `0.1.2-rc.1` 构建并完成部署验证，需要 Node.js `22.19+` 或 `24+`。浏览器端使用该版本的 Session Controller、Renderer、Chat、Settings 与 Theme 插槽接口。
 
-`2.3.5` 修复长对话回写前检索触发 HTTP 400 / 431 的问题：自动检索使用有界关键词，长查询通过 POST 传输。使用远程知识库时，请同时更新发起回写的客户端；只更新中央服务不能修复旧客户端发送的超长 GET URL。更新并重启后，可重试之前失败的回写。
+`2.3.6` 包含长对话回写前检索触发 HTTP 400 / 431 的修复，并补全干净构建所需的依赖锁文件：自动检索使用有界关键词，长查询通过 POST 传输。使用远程知识库时，请同时更新发起回写的客户端；只更新中央服务不能修复旧客户端发送的超长 GET URL。更新并重启后，可重试之前失败的回写。
 
 当前版本提供可部署的多知识库、按需检索工具、本地与远程中央服务、文档型 Web 管理台，以及全局回写策略与安全直写协调：
 
@@ -60,7 +60,7 @@ dsh plugin --profile web add @lemoncat7/dsh-knowledge
 需要固定本次正式版本时：
 
 ```bash
-dsh plugin --profile web add @lemoncat7/dsh-knowledge@2.3.5
+dsh plugin --profile web add @lemoncat7/dsh-knowledge@2.3.6
 ```
 
 也可以从 [GitHub Releases](https://github.com/lemoncat7/dsh-knowledge/releases) 下载对应版本的完整预构建包后安装：

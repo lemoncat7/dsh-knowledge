@@ -28,7 +28,7 @@ export function KnowledgeActivityPanel(
   props: DetailsProps & { controller: KnowledgeActivityController },
 ): JSX.Element {
   const sessionId = String(props.sessionId)
-  const projectId = props.useSessions((state: SessionListState) => state.byId[sessionId]?.cwd)
+  const projectId = props.useSessions((state: SessionListState) => state.byId[props.sessionId]?.cwd)
   const initial = props.controller.selection(sessionId)
   const [mode, setMode] = useState<'knowledge' | 'notes'>(initial.mode ?? 'knowledge')
   const [mounts, setMounts] = useState<ResolvedKnowledgeMount[]>([])
