@@ -39,6 +39,8 @@ test('public API routes enforce the read/propose/write/admin capability matrix',
   assert.equal((await fetch(`${base}/stats`)).status, 401)
 
   const cases = [
+    { required: 'read', method: 'GET', path: '/search?q=test' },
+    { required: 'read', method: 'POST', path: '/search', body: { text: 'test', limit: 6 } },
     { required: 'read', method: 'GET', path: '/stats' },
     { required: 'read', method: 'GET', path: '/knowledge-bases' },
     { required: 'read', method: 'GET', path: '/mounts' },

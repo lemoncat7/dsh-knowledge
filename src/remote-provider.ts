@@ -31,10 +31,12 @@ import type {
 } from './domain.js'
 import type { KnowledgeProvider } from './provider.js'
 import { normalizeRemoteKnowledgeUrl } from './remote-url.js'
+import { buildSearchQuery } from './search-query.js'
 import type { KnowledgeNoteReference, KnowledgeNoteReferenceSource, NoteListRequest, NoteNode, NoteVersion } from './notes/domain.js'
 
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 const MAX_NOTE_RESPONSE_BYTES = 64 * 1024 * 1024
+const MAX_SEARCH_URL_BYTES = 6000
 
 interface RemoteRequestOptions {
   method?: string | undefined
@@ -160,7 +162,25 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     for (const tag of request.includeTags ?? []) params.append('includeTag', tag)
     for (const tag of request.excludeTags ?? []) params.append('excludeTag', tag)
     for (const type of request.types ?? []) params.append('type', type)
-    return this.request<SearchHit[]>(`search?${params}`, { signal })
+    const path = `search?${params}`
+    if (Buffer.byteLength(new URL(path, this.baseUrl).href) <= MAX_SEARCH_URL_BYTES) {
+      return this.request<SearchHit[]>(path, { signal })
+    }
+    try {
+      return await this.request<SearchHit[]>('search', { method: 'POST', body: request, signal })
+    } catch (error) {
+      // Old servers expose GET only. Never retry auth, validation, network or
+      // server failures, and never remove the caller's scope/tag filters.
+      if (!(error instanceof RemoteProviderError) || ![404, 405, 501].includes(error.status)) throw error
+      const query = buildSearchQuery(request.text)
+      if (!query) throw new RemoteProviderError('knowledge server does not support long searches; upgrade the server or use a shorter query', error.status)
+      params.set('q', query)
+      const fallback = `search?${params}`
+      if (Buffer.byteLength(new URL(fallback, this.baseUrl).href) > MAX_SEARCH_URL_BYTES) {
+        throw new RemoteProviderError('knowledge search filters exceed the legacy URL limit; upgrade the knowledge server', error.status)
+      }
+      return this.request<SearchHit[]>(fallback, { signal })
+    }
   }
 
   async stats(signal?: AbortSignal): Promise<KnowledgeStats> {
@@ -383,8 +403,12 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
   ): Promise<T> {
     const response = await this.fetchResponse(path, options)
     const text = await readBoundedResponse(response, MAX_RESPONSE_BYTES)
+    if (!response.ok) {
+      let payload: unknown
+      try { payload = text.length === 0 ? undefined : JSON.parse(text) } catch { /* Proxy errors may be HTML or plain text. */ }
+      throw remoteResponseError(path, response.status, payload, text)
+    }
     const payload = text.length === 0 ? undefined : safeJson(text)
-    if (!response.ok) throw remoteResponseError(path, response.status, payload, text)
     return payload as T
   }
 
@@ -514,9 +538,15 @@ function remoteErrorDetail(payload: unknown, text: string): string | undefined {
 }
 
 function remoteResponseError(path: string, status: number, payload: unknown, text: string): RemoteProviderError {
-  const detail = remoteErrorDetail(payload, text)
+  // Query strings can contain complete conversations, paths or share tokens.
+  // Search intermediaries may also echo the URL in their error body.
+  const endpoint = path.split('?')[0] ?? path
+  const detail = endpoint === 'search' ? undefined : remoteErrorDetail(payload, text)
+  const hint = endpoint === 'search' && [400, 414, 431].includes(status)
+    ? '; search request rejected (check query size and server/proxy limits)'
+    : ''
   const message = detail === undefined
-    ? `knowledge server returned HTTP ${status} for ${path}`
-    : `knowledge server rejected ${path}: ${detail}`
+    ? `knowledge server returned HTTP ${status} for ${endpoint}${hint}`
+    : `knowledge server rejected ${endpoint}: ${detail}`
   return new RemoteProviderError(message, status)
 }

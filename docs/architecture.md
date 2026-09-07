@@ -138,6 +138,8 @@ A local provider always supports its same-origin management console unless `expo
 
 ## Security boundaries
 
+Automatic writeback builds a deterministic, bounded retrieval hint from the question, Markdown headings and code identifiers (`search-query.ts`); the extractor still receives the original conversation. This adds no model calls. Search failures remain fatal to writeback so unavailable duplicate detection cannot silently create new documents. Remote search keeps GET for URLs up to 6,000 encoded bytes and uses authenticated POST JSON beyond that. Only explicit unsupported-route responses (404/405/501) fall back to a compact keyword GET for older servers; project, base, tag and type filters are retained. Search errors report status and endpoint without echoing conversation queries or proxy error bodies.
+
 - Stored connection secrets are never returned by plugin control APIs or written to logs.
 - Server tokens are stored as SHA-256 digests; generated client tokens are shown once.
 - Permissions are capability-oriented: `read`, `propose`, `write`, `admin`. `write` is currently instance-wide and also covers knowledge-base, mount, and note mutations; ordinary remote clients should use `read + propose` unless they explicitly need that broader authority.

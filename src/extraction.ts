@@ -6,6 +6,7 @@ import { applyKnowledgeTextEdits } from './knowledge-merge.js'
 import { knowledgeDocumentPath } from './documents/path.js'
 import type { KnowledgeProvider } from './provider.js'
 import { mapConcurrent } from './async-pool.js'
+import { buildSearchQuery } from './search-query.js'
 import { messageText, type MessageLike, type RuntimeContextLike, type SessionLike } from './runtime.js'
 
 interface TurnSnapshot {
@@ -73,8 +74,8 @@ export class ExtractionCoordinator {
     try {
       const groups = groupMountsByRoute(mounts, this.config, snapshot, this.clientRoute())
       const proposals: CandidateProposal[] = []
+      const query = buildSearchQuery(snapshot.userText, snapshot.assistantText)
       for (const group of groups) {
-        const query = `${snapshot.userText}\n${snapshot.assistantText}`.slice(0, 4000)
         const existing = await findExistingEntries(
           this.provider,
           group.mounts,

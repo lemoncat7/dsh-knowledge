@@ -278,8 +278,24 @@ async function dispatch(
     }
   }
 
-  if (method === 'GET' && segments[0] === 'search' && segments.length === 1) {
+  if ((method === 'GET' || method === 'POST') && segments[0] === 'search' && segments.length === 1) {
     requirePermission(actor.permissions, 'read')
+    if (method === 'POST') {
+      const body = await readObject(req)
+      if (typeof body.text !== 'string') throw httpError(400, 'search text must be a string')
+      if (body.projectId !== undefined && typeof body.projectId !== 'string') throw httpError(400, 'projectId must be a string')
+      const types = stringArray(body.types, 'types', 100)
+      if (!types.every(isKnowledgeType)) throw httpError(400, 'search types are invalid')
+      return sendJson(res, 200, await provider.search({
+        text: body.text,
+        ...body.projectId === undefined ? {} : { projectId: body.projectId },
+        knowledgeBaseIds: stringArray(body.knowledgeBaseIds, 'knowledgeBaseIds', 100),
+        includeTags: stringArray(body.includeTags, 'includeTags', 100),
+        excludeTags: stringArray(body.excludeTags, 'excludeTags', 100),
+        types,
+        limit: boundedInteger(body.limit, 'limit', 10, 1, 100),
+      }))
+    }
     const types = url.searchParams.getAll('type').filter(isKnowledgeType)
     const projectId = url.searchParams.get('projectId') ?? undefined
     const knowledgeBaseIds = url.searchParams.getAll('knowledgeBaseId').filter(Boolean)
