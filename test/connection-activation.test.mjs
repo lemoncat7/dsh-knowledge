@@ -174,6 +174,7 @@ test('plugin verifies, persists, hot-switches, and restores remote connections',
     description: 'Created through the currently active remote provider.',
     defaultTags: ['central'],
     writebackPolicy: 'proactive',
+    useCurrentSessionModel: false,
     writebackProvider: 'kimi',
     writebackModel: 'kimi-k2.7-code',
   }, toolExec))

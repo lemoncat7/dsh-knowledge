@@ -33,6 +33,7 @@ The browser integration is compiled against the exact official client packages u
 
 - `domain.ts` owns stable value types, normalization, IDs and content hashing. It has no DSH dependency.
 - `provider.ts` is the storage/application port. Local and remote clients implement the same asynchronous contract.
+- `mount-management.ts` provides the optional host-only `dshKnowledgeMountManagement` v1 service for partner administration. It exposes safe active-base metadata, scoped mount snapshots/revisions and one-base batch configuration. It is not a global Agent tool and does not grant public HTTP access. Callers derive and authorize scopes themselves; the partner adapter supplies a final live-authorization guard before mutation. All operations use the selected provider and its existing bearer permissions, with no local fallback. Discovery is bounded to 100 scopes and eight concurrent requests. Connection revisions reject snapshots taken across local/remote switches. A disabled mount remains an explicit override rather than restoring project inheritance. Snapshot revision checks detect stale reads, but are not a distributed compare-and-swap lock against unrelated remote clients; provider batch writes retain their existing atomic transaction boundary.
 - `local-provider.ts` owns schema migrations, transactions, FTS and token hashes.
 - `remote-provider.ts` is an authenticated, timeout-bounded HTTPS adapter.
 - `management-proxy.ts` lets the embedded console operate on the selected central service while keeping the saved remote token on the DSH server.

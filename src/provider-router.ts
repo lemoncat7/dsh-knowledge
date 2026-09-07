@@ -20,6 +20,9 @@ export class KnowledgeProviderRouter {
   private current: ProviderState
   private readonly states = new Set<ProviderState>()
   private closing = false
+  private connectionRevision = 0
+
+  get revision(): number { return this.connectionRevision }
 
   constructor(initial: KnowledgeProvider, options: { owned?: boolean } = {}) {
     this.current = this.state(initial, options.owned !== false)
@@ -42,6 +45,7 @@ export class KnowledgeProviderRouter {
     }
     const previous = this.current
     this.current = this.state(next, options.owned !== false)
+    this.connectionRevision += 1
     previous.retired = true
     // Closing a retired provider is cleanup; it must not make an already
     // completed switch look like it failed to callers.

@@ -204,10 +204,22 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
   )
   await assert.rejects(
     tools.get('knowledge_base_create').execute({
-      name: 'Invalid model base', writebackProvider: 'missing', writebackModel: 'unknown-model',
+      name: 'Invalid model base', useCurrentSessionModel: false, writebackProvider: 'missing', writebackModel: 'unknown-model',
     }, toolExec),
     /write-back model missing\/unknown-model is unavailable/,
   )
+  assert.equal(tools.get('knowledge_base_create').parameters.properties.useCurrentSessionModel.default, true)
+  for (const fields of [
+    { writebackProvider: 'other-machine', writebackModel: 'unavailable' },
+    { useCurrentSessionModel: true, writebackProvider: 'other-machine' },
+  ]) {
+    const inherited = JSON.parse(await tools.get('knowledge_base_create').execute({ name: `Inherited route ${fields.useCurrentSessionModel ?? 'default'}`, ...fields }, toolExec))
+    assert.equal(inherited.knowledgeBase.writebackProvider, undefined)
+    assert.equal(inherited.knowledgeBase.writebackModel, undefined)
+    assert.match(inherited.warning, /ignored/)
+  }
+  await assert.rejects(tools.get('knowledge_base_create').execute({ name: 'Bad mode', useCurrentSessionModel: 'false' }, toolExec), /must be a boolean/)
+  await assert.rejects(tools.get('knowledge_base_create').execute({ name: 'Incomplete route', useCurrentSessionModel: false, writebackProvider: 'missing' }, toolExec), /writebackModel/)
   const created = JSON.parse(await tools.get('knowledge_base_create').execute({
     name: 'Tool-managed base',
     description: 'Reusable knowledge managed through DSH tools.',
@@ -217,6 +229,8 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
   assert.equal(created.storage, 'local')
   assert.equal(created.operation, 'created')
   assert.equal(created.mountsChanged, false)
+  assert.equal(created.knowledgeBase.writebackProvider, undefined)
+  assert.equal(created.knowledgeBase.writebackModel, undefined)
   assert.deepEqual(created.knowledgeBase.defaultTags, ['dsh', 'tools'])
 
   await assert.rejects(

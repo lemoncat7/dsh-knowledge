@@ -29,6 +29,7 @@ import type { AgentLike, RuntimeContextLike } from './runtime.js'
 import { loadServiceSettings, serviceSettingsPath, storeServiceSettings, type KnowledgeServiceSettings } from './service-settings.js'
 import { registerKnowledgeTools } from './tools.js'
 import { createKnowledgeTrackingService, KNOWLEDGE_TRACKING_SERVICE } from './tracking.js'
+import { createKnowledgeMountManagement, KNOWLEDGE_MOUNT_MANAGEMENT_SERVICE } from './mount-management.js'
 import { registerKnowledgeWeb } from './web.js'
 
 export const Config = ConfigSchema
@@ -124,6 +125,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   registerKnowledgeCatalog(runtime, provider, resolved)
   registerKnowledgeTools(runtime, provider, handleCodec, noteHandleCodec)
   runtime.provide?.(KNOWLEDGE_TRACKING_SERVICE, createKnowledgeTrackingService(provider))
+  runtime.provide?.(KNOWLEDGE_MOUNT_MANAGEMENT_SERVICE, createKnowledgeMountManagement(provider, () => providerRouter.revision))
 
   let refreshManagementApi = (): void => {}
   let switching: Promise<unknown> = Promise.resolve()

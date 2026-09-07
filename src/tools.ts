@@ -73,7 +73,7 @@ function searchKnowledgeBaseTool(provider: KnowledgeProvider): ToolDefinitionLik
 function createKnowledgeBaseTool(provider: KnowledgeProvider, llm: LlmLike): ToolDefinitionLike {
   return {
     name: 'knowledge_base_create',
-    description: 'Create a knowledge base only when the user explicitly asks. The tool always uses the currently active knowledge provider and reports whether it created the base in local or remote storage; it never guesses, falls back, copies, or synchronizes. Creating a base does not mount it to the current project or session.',
+    description: 'Create a knowledge base only when the user explicitly asks. By default do NOT fill provider/model: write-back follows this client\'s configured override or the current session at execution time, even with remote knowledge storage. Never copy another machine\'s model route from existing bases. A dedicated model requires the user to request it and useCurrentSessionModel=false. The tool uses the active knowledge storage provider and reports local or remote storage; it never copies or synchronizes. Creating a base does not mount it.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -83,8 +83,9 @@ function createKnowledgeBaseTool(provider: KnowledgeProvider, llm: LlmLike): Too
         defaultTags: { type: 'array', items: { type: 'string' }, maxItems: 32 },
         extractionInstructions: { type: 'string', description: 'Additional write-back rules, at most 4000 characters.' },
         writebackPolicy: { type: 'string', enum: ['conservative', 'proactive'], description: 'Write-back strictness; defaults to conservative.' },
-        writebackProvider: { type: 'string', description: 'Optional dedicated write-back provider. Must be supplied together with writebackModel.' },
-        writebackModel: { type: 'string', description: 'Optional dedicated write-back model. Must be supplied together with writebackProvider.' },
+        useCurrentSessionModel: { type: 'boolean', default: true, description: 'Default true: leave the dedicated route unset and follow this client override, otherwise the current session. Set false ONLY when the user explicitly requests a dedicated write-back model.' },
+        writebackProvider: { type: 'string', description: 'Only used when useCurrentSessionModel=false. A provider registered in THIS DSH client, never a copied remote-storage provider. Supply with writebackModel.' },
+        writebackModel: { type: 'string', description: 'Only used when useCurrentSessionModel=false. Supply together with writebackProvider; otherwise omit both.' },
       },
       required: ['name'],
     },
@@ -93,11 +94,14 @@ function createKnowledgeBaseTool(provider: KnowledgeProvider, llm: LlmLike): Too
       const agent = requireAgent(exec)
       assertExplicitKnowledgeBaseManagementRequest(agent, 'create')
       const args = asRecord(raw)
-      const writebackProvider = optionalString(args.writebackProvider, 'writebackProvider', 100)
-      const writebackModel = optionalString(args.writebackModel, 'writebackModel', 200)
-      if ((writebackProvider === undefined) !== (writebackModel === undefined)) {
-        throw new Error('writebackProvider and writebackModel must be configured together')
+      if (args.useCurrentSessionModel !== undefined && typeof args.useCurrentSessionModel !== 'boolean') {
+        throw new Error('useCurrentSessionModel must be a boolean')
       }
+      const dedicated = args.useCurrentSessionModel === false
+      // Legacy/auto-filled model fields must not turn an ordinary create into
+      // a machine-specific route. Only an explicit mode switch consumes them.
+      const writebackProvider = dedicated ? requireNonEmptyString(args.writebackProvider, 'writebackProvider', 100) : undefined
+      const writebackModel = dedicated ? requireNonEmptyString(args.writebackModel, 'writebackModel', 200) : undefined
       if (writebackProvider !== undefined && writebackModel !== undefined) {
         await validateWritebackRoute(llm, writebackProvider, writebackModel, exec.signal)
       }
@@ -111,7 +115,9 @@ function createKnowledgeBaseTool(provider: KnowledgeProvider, llm: LlmLike): Too
       }
       const storage = provider.mode
       const base = await provider.createKnowledgeBase(draft, exec.signal)
-      return formatKnowledgeBaseMutation(storage, 'created', base)
+      return formatKnowledgeBaseMutation(storage, 'created', base, !dedicated && (args.writebackProvider !== undefined || args.writebackModel !== undefined)
+        ? 'Dedicated provider/model fields were ignored because useCurrentSessionModel defaults to true. Write-back follows this client override or the current session; no remote model configuration was copied.'
+        : undefined)
     },
   }
 }
@@ -132,7 +138,7 @@ function updateKnowledgeBaseTool(provider: KnowledgeProvider, llm: LlmLike): Too
         writebackPolicy: { type: 'string', enum: ['conservative', 'proactive'], description: 'Replacement write-back strictness.' },
         writebackProvider: { type: 'string', description: 'Replacement dedicated provider. Must be supplied together with writebackModel.' },
         writebackModel: { type: 'string', description: 'Replacement dedicated model. Must be supplied together with writebackProvider.' },
-        useCurrentSessionModel: { type: 'boolean', description: 'Set true to clear the dedicated model and follow each current conversation model.' },
+        useCurrentSessionModel: { type: 'boolean', description: 'Set true to clear the dedicated model and follow this client override, otherwise each current conversation model.' },
       },
       required: ['base'],
     },
@@ -277,12 +283,14 @@ function formatKnowledgeBaseMutation(
   storage: KnowledgeProvider['mode'],
   operation: 'created' | 'updated',
   base: KnowledgeBase,
+  warning?: string,
 ): string {
   return JSON.stringify({
     storage,
     operation,
     knowledgeBase: base,
     mountsChanged: false,
+    ...warning ? { warning } : {},
     note: storage === 'remote'
       ? 'The central knowledge service was modified. No local copy was created or synchronized.'
       : 'The current DSH local knowledge database was modified. No remote copy was created or synchronized.',
