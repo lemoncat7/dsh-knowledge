@@ -853,8 +853,8 @@ html,
 .note-tree-group[data-expanded="true"] .tree-folder-icon { color: var(--text-secondary); opacity: .8; }
 .tree-base-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree-count { min-width: 20px; color: var(--text-tertiary); font-size: 10px; font-variant-numeric: tabular-nums; text-align: right; }
-.note-tree-documents { display: grid; gap: 1px; margin: 1px 0 5px 18px; padding-left: 10px; border-left: 1px solid color-mix(in srgb, var(--border-strong) 55%, transparent); }
-.note-tree-document { position: relative; min-height: 40px; gap: 8px; border-radius: 9px; padding: 5px 8px; transition: background var(--motion-fast) ease, color var(--motion-fast) ease; }
+.note-tree-documents { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 1px; margin: 1px 0 5px 18px; padding-left: 10px; border-left: 1px solid color-mix(in srgb, var(--border-strong) 55%, transparent); }
+.note-tree-document { position: relative; min-width: 0; min-height: 40px; gap: 8px; border-radius: 9px; padding: 5px 8px; transition: background var(--motion-fast) ease, color var(--motion-fast) ease; }
 .note-tree-document[aria-busy="true"] { opacity: .58; pointer-events: none; }
 .note-tree-document[aria-current="page"] { background: var(--material-control); color: var(--text); box-shadow: inset 2px 0 0 color-mix(in srgb, var(--text-secondary) 74%, transparent), var(--shadow-control); }
 .tree-document-icon {
@@ -870,7 +870,7 @@ html,
 .note-tree-document:hover .tree-document-icon { opacity: .72; }
 .note-tree-document[aria-current="page"] .tree-document-icon { color: var(--text); opacity: .88; }
 .tree-document-copy { min-width: 0; flex: 1; }
-.note-tree-document > .badge { min-height: 17px; padding: 1px 5px; font-size: 8px; }
+.note-tree-document > .badge { flex: none; min-height: 17px; padding: 1px 5px; font-size: 8px; }
 .tree-document-copy strong, .tree-document-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree-document-copy strong { font-size: 12px; font-weight: 540; }
 .tree-document-copy small { margin-top: 1px; color: var(--text-tertiary); font-size: 10px; }

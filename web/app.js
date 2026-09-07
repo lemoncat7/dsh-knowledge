@@ -1676,7 +1676,7 @@ function renderDocumentWorkspace(workspace, options = {}) {
           onDragEnd: clearKnowledgeDocumentDragState,
           onClick: () => { view.knowledgeBaseId = base.id; void selectDocument(workspace, document.id) },
         }, element('span', { class: 'tree-document-icon', 'aria-hidden': 'true' }), element('span', { class: 'tree-document-copy' },
-          element('strong', {}, document.title), element('small', {}, document.relPath)),
+          element('strong', { title: document.title }, document.title), element('small', { title: document.relPath }, document.relPath)),
         document.documentState !== 'open' ? badge(DOCUMENT_STATE_LABELS[document.documentState] || '已结束', 'success') : null)),
         !query && page.nextCursor ? element('button', {
           type: 'button', class: 'note-tree-more', disabled: page.loading,

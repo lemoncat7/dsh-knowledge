@@ -130,6 +130,7 @@ try {
   await page.locator('.app-sidebar-scrim').click({ position: { x: 350, y: 300 } })
   assert.equal(await page.evaluate(() => window.originalEditor === document.querySelector('.ProseMirror')), true, 'navigation destroyed the editor')
   await verifyKnowledgeActions(browser)
+  await verifyKnowledgeTreeOverflow(browser)
   await verifyRestrainedMotion(page)
 
   // Exercise the shared select with real form semantics and keyboard focus.
@@ -194,6 +195,54 @@ try {
   await browser.close()
   await new Promise(resolve => server.close(resolve))
   await provider.close()
+}
+
+async function verifyKnowledgeTreeOverflow(browser) {
+  const documents = []
+  for (const state of ['open', 'resolved', 'complete']) {
+    const title = `${state}-知识目录中的超长文件名称用于验证状态不被遮挡-${'VeryLongUnbrokenFilename'.repeat(6)}`
+    const entry = await provider.create({ knowledgeBaseId: 'default', title, body: '隔离目录布局验证。', type: 'fact', tags: [], scope: { kind: 'global' }, confidence: 1 })
+    if (state !== 'open') await provider.finalize(entry.id, state, '测试确认')
+    documents.push({ id: entry.id, title, state })
+  }
+  const page = await browser.newPage({ reducedMotion: 'reduce' })
+  try {
+    for (const [width, height] of [[1280, 850], [1024, 768], [768, 1024], [375, 812], [812, 375], [320, 740]]) {
+      await page.setViewportSize({ width, height })
+      for (const scheme of ['light', 'dark']) {
+        await page.emulateMedia({ colorScheme: scheme })
+        await page.goto(`${base}/knowledge/?view=entries&knowledgeBaseId=default&documentId=${documents[0].id}`)
+        await page.locator('.note-tree-document').first().waitFor({ state: 'attached' })
+        await page.waitForLoadState('networkidle')
+        const toggle = page.getByRole('button', { name: /知识目录/, exact: false }).first()
+        if (await page.locator('.note-workspace').getAttribute('data-tree-open') !== 'true') await toggle.click()
+        for (const document of documents) {
+          const row = page.locator(`.note-tree-document[data-document-id="${document.id}"]`)
+          await row.evaluate(node => node.scrollIntoView({ block: 'nearest' }))
+          const label = row.locator('strong')
+          assert.equal(await label.getAttribute('title'), document.title, 'hover must expose the original full title')
+          assert.equal(await label.textContent(), document.title, 'truncate visually, never cut the stored title')
+          const measured = await page.waitForFunction(id => {
+            const node = document.querySelector(`.note-tree-document[data-document-id="${id}"]`)
+            if (!node) return false
+            const tree = node.closest('.note-tree').getBoundingClientRect(), row = node.getBoundingClientRect()
+            const label = node.querySelector('strong'), badge = node.querySelector('.badge')
+            const status = badge?.getBoundingClientRect()
+            const result = { fits: row.width > 0 && row.left >= tree.left && row.right <= tree.right + 1, truncated: label.scrollWidth > label.clientWidth, ellipsis: getComputedStyle(label).textOverflow,
+              badgeFits: !status || (status.right <= row.right && status.left >= row.left && badge.scrollWidth <= badge.clientWidth), status: badge?.textContent }
+            return result.fits && result.truncated && result.badgeFits && result.ellipsis === 'ellipsis' ? result : false
+          }, document.id, { timeout: 5000 })
+          const bounds = await measured.jsonValue()
+          await measured.dispose()
+          assert.ok(bounds.fits && bounds.truncated && bounds.badgeFits, `${width} ${scheme}: ${JSON.stringify(bounds)}`)
+          assert.equal(bounds.ellipsis, 'ellipsis')
+          assert.equal(bounds.status, { resolved: '已解决', complete: '已收集完成' }[document.state])
+        }
+        if (width === 375 || width === 1280) await page.screenshot({ path: join(root, `knowledge-tree-${width}-${scheme}.png`) })
+      }
+    }
+    console.log('Knowledge tree: long titles truncate; full title tooltip and status retained across 6 viewports and both themes.')
+  } finally { await page.close() }
 }
 
 async function verifyKnowledgeActions(browser) {

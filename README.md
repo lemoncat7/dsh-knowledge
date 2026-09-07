@@ -8,7 +8,9 @@
 
 ## 兼容性
 
-正式版 `2.5.0` 针对 DeepSeek Harness `0.1.2-rc.1` 构建并完成部署验证，需要 Node.js `22.19+` 或 `24+`。浏览器端使用该版本的 Session Controller、Renderer、Chat、Settings 与 Theme 插槽接口。
+正式版 `2.5.1` 针对 DeepSeek Harness `0.1.2-rc.1` 构建并完成部署验证，需要 Node.js `22.19+` 或 `24+`。浏览器端使用该版本的 Session Controller、Renderer、Chat、Settings 与 Theme 插槽接口。
+
+`2.5.1` 修复知识目录的长文件名撑宽列表、遮挡结束状态的问题：名称按剩余空间省略，悬停可查看完整名称和路径，“已解决／已收集完成”标签完整保留。不改变文档内容、权限、配色或动画。
 
 `2.5.0` 支持在用户明确确认问题解决或收集结束后，由 Agent 或轮后提取更新知识文档状态。整篇结束保留正文与历史并封存，局部问题仅修订对应段落；继续遵循挂载权限、审核模式、敏感内容审查及版本冲突保护。远程客户端与中央服务应同时升级。
 
@@ -65,7 +67,7 @@ dsh plugin --profile web add @lemoncat7/dsh-knowledge
 需要固定本次正式版本时：
 
 ```bash
-dsh plugin --profile web add @lemoncat7/dsh-knowledge@2.5.0
+dsh plugin --profile web add @lemoncat7/dsh-knowledge@2.5.1
 ```
 
 也可以从 [GitHub Releases](https://github.com/lemoncat7/dsh-knowledge/releases) 下载对应版本的完整预构建包后安装：
