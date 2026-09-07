@@ -5,6 +5,7 @@ import {
   type ApiTokenRecord, type CandidateChange, type ExtractionJobCompletion, type KnowledgeBasePatch, type KnowledgeMountDraft, type ReviewDecision, type TokenPermission,
 } from './domain.js'
 import { LocalKnowledgeProvider } from './local-provider.js'
+import { normalizeFinalizationChange } from './document-lifecycle.js'
 import type { RuntimeContextLike } from './runtime.js'
 import { isNoteId, type NoteReference } from './notes/domain.js'
 import { renderNoteSharePage } from './notes/share-page.js'
@@ -641,6 +642,7 @@ function parseExtractionCompletion(value: unknown): ExtractionJobCompletion {
         documentTitle: string(destination.documentTitle, `destinations[${index}].documentTitle`, 500),
         ...destination.documentPath === undefined ? {} : { documentPath: string(destination.documentPath, `destinations[${index}].documentPath`, 1000) },
         disposition: destination.disposition,
+        ...destination.documentState === 'resolved' || destination.documentState === 'complete' ? { documentState: destination.documentState } : {},
       }
     }),
   }
@@ -885,6 +887,7 @@ function parseReview(value: Record<string, unknown>): ReviewDecision {
 function parseCandidateChange(value: unknown): CandidateChange {
   if (!isRecord(value)) throw httpError(400, 'proposal change is invalid')
   if (value.kind === 'append') return { kind: 'append' }
+  if (value.kind === 'finalize') return normalizeFinalizationChange(value)
   if (value.kind !== 'revise' || !Array.isArray(value.edits)) throw httpError(400, 'proposal change is invalid')
   const baseVersion = Number(value.baseVersion)
   const baseHash = typeof value.baseHash === 'string' ? value.baseHash.trim().toLocaleLowerCase() : ''

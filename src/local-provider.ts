@@ -54,6 +54,7 @@ import { knowledgeDocumentPath } from './documents/path.js'
 import { KnowledgeDocumentStore } from './documents/store.js'
 import { enqueueDocumentProjection } from './documents/projection-queue.js'
 import { applyKnowledgeTextEdits, mergeKnowledgeBodies } from './knowledge-merge.js'
+import { normalizeFinalizationChange } from './document-lifecycle.js'
 import { NoteStore } from './notes/store.js'
 import {
   type KnowledgeNoteReference,
@@ -681,34 +682,36 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   async finalize(id: string, state: 'resolved' | 'complete', note?: string): Promise<KnowledgeEntry> {
     this.assertOpen()
     await this.documentsReady
-    const entry = this.transaction(() => {
-      const row = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM knowledge_entries WHERE id=?`).get(id) as SqlRow | undefined
-      if (row === undefined) throw notFound('knowledge entry', id)
-      const current = rowToEntry(row)
-      if (current.status !== 'active') throw conflict('only active knowledge documents can be finalized')
-      const finalizationNote = normalizeFinalizationNote(note)
-      if (current.documentState === state && current.finalizationNote === finalizationNote) return current
-      if (current.documentState !== 'open') throw finalizedConflict(current)
-      const timestamp = nowIso()
-      const updated: KnowledgeEntry = {
-        ...current,
-        documentState: state,
-        finalizedAt: timestamp,
-        ...finalizationNote === undefined ? {} : { finalizationNote },
-        version: current.version + 1,
-        updatedAt: timestamp,
-      }
-      this.db.prepare(`
-        UPDATE knowledge_entries
-        SET document_state=?,finalized_at=?,finalization_note=?,version=?,updated_at=?
-        WHERE id=?
-      `).run(state, timestamp, finalizationNote ?? null, updated.version, timestamp, id)
-      this.writeVersion(updated, 'update')
-      this.upsertFts(updated)
-      return updated
-    })
+    const entry = this.transaction(() => this.finalizeEntry(id, state, note))
     await this.syncKnowledgeEntryQueued(entry.id)
     return entry
+  }
+
+  private finalizeEntry(id: string, state: 'resolved' | 'complete', note?: string): KnowledgeEntry {
+    const row = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM knowledge_entries WHERE id=?`).get(id) as SqlRow | undefined
+    if (row === undefined) throw notFound('knowledge entry', id)
+    const current = rowToEntry(row)
+    if (current.status !== 'active') throw conflict('only active knowledge documents can be finalized')
+    const finalizationNote = normalizeFinalizationNote(note)
+    if (current.documentState === state && current.finalizationNote === finalizationNote) return current
+    if (current.documentState !== 'open') throw finalizedConflict(current)
+    const timestamp = nowIso()
+    const updated: KnowledgeEntry = {
+      ...current,
+      documentState: state,
+      finalizedAt: timestamp,
+      ...finalizationNote === undefined ? {} : { finalizationNote },
+      version: current.version + 1,
+      updatedAt: timestamp,
+    }
+    this.db.prepare(`
+      UPDATE knowledge_entries
+      SET document_state=?,finalized_at=?,finalization_note=?,version=?,updated_at=?
+      WHERE id=?
+    `).run(state, timestamp, finalizationNote ?? null, updated.version, timestamp, id)
+    this.writeVersion(updated, 'update')
+    this.upsertFts(updated)
+    return updated
   }
 
   async reopen(id: string): Promise<KnowledgeEntry> {
@@ -1048,7 +1051,9 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       if (resolution.outcome === 'conflict') return { outcome: 'conflict', candidate }
       const entry = resolution.proposal.action === 'create'
         ? this.insertEntry(resolution.proposal.draft)
-        : this.updateEntry(resolution.proposal.targetId as string, resolution.proposal.draft, 'update')
+        : resolution.proposal.change?.kind === 'finalize'
+          ? this.finalizeEntry(resolution.proposal.targetId as string, resolution.proposal.change.state, resolution.proposal.change.note)
+          : this.updateEntry(resolution.proposal.targetId as string, resolution.proposal.draft, 'update')
       const reviewedAt = nowIso()
       this.db.prepare('UPDATE knowledge_candidates SET status=?, reviewed_at=?, review_note=? WHERE id=?')
         .run('approved', reviewedAt, resolution.outcome === 'merged'
@@ -1108,7 +1113,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
         return { outcome: 'conflict', proposal: { ...proposal, action: 'conflict' } }
       }
       const draft = applied.draft
-      if (contentHash(draft) === contentHash(target)) return { outcome: 'duplicate', entry: target }
+      if (proposal.change?.kind !== 'finalize' && contentHash(draft) === contentHash(target)) return { outcome: 'duplicate', entry: target }
       return { outcome: 'merged', proposal: { ...proposal, action: 'update', draft } }
     }
 
@@ -1187,7 +1192,14 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       if (candidate.status !== 'pending') throw conflict(`candidate ${id} was already ${candidate.status}`)
       let draft = decision.draft === undefined ? candidate.draft : normalizeDraft(decision.draft)
       if (decision.decision === 'approve') {
-        if (candidate.action !== 'create' && decision.draft !== undefined) {
+        if (candidate.change?.kind === 'finalize') {
+          if (decision.draft !== undefined) throw conflict('结束候选不能替换正文，请拒绝后重新提交')
+          const target = this.activeEntry(candidate.targetId as string)
+          assertExpectedReviewVersion(target, decision.expectedVersion)
+          const applied = applyCandidateToTarget(target, candidate, false)
+          if (!applied.ok) throw conflict(`${applied.reason}；请拒绝过期的结束候选并重新确认`)
+          touchedEntryId = this.finalizeEntry(target.id, candidate.change.state, candidate.change.note).id
+        } else if (candidate.action !== 'create' && decision.draft !== undefined) {
           if (candidate.action === 'conflict' && decision.resolution !== 'merge') {
             throw conflict('conflict candidate requires an explicit merge resolution')
           }
@@ -1741,6 +1753,7 @@ function normalizeProposal(input: CandidateProposal): CandidateProposal {
 function normalizeCandidateChange(input: CandidateChange | undefined): CandidateChange | undefined {
   if (input === undefined) return undefined
   if (input.kind === 'append') return { kind: 'append' }
+  if (input.kind === 'finalize') return normalizeFinalizationChange(input)
   if (input.kind !== 'revise') throw new Error('unsupported candidate change kind')
   if (!Number.isSafeInteger(input.baseVersion) || input.baseVersion < 1) {
     throw new Error('revision baseVersion must be a positive integer')
@@ -1782,6 +1795,13 @@ function applyCandidateToTarget(
   proposal: Pick<CandidateProposal, 'change' | 'draft'>,
   preferIncomingTitle: boolean,
 ): { ok: true; draft: KnowledgeDraft } | { ok: false; reason: string } {
+  if (proposal.change?.kind === 'finalize') {
+    if (current.documentState !== 'open' || current.version !== proposal.change.baseVersion || contentHash(current) !== proposal.change.baseHash
+      || current.knowledgeBaseId !== proposal.draft.knowledgeBaseId || contentHash(current) !== contentHash(proposal.draft)) {
+      return { ok: false, reason: '文档或结束范围已变化，不能封存未核验的新内容' }
+    }
+    return { ok: true, draft: proposal.draft }
+  }
   if (proposal.change?.kind !== 'revise') {
     if (potentiallyConflicts(current, proposal.draft)) return { ok: false, reason: 'candidate contradicts the current document' }
     return { ok: true, draft: mergeKnowledgeDraft(current, proposal.draft, preferIncomingTitle) }
@@ -1993,6 +2013,7 @@ function normalizeExtractionCompletion(value: ExtractionJobCompletion | number):
         documentTitle: text(destination.documentTitle, 'documentTitle', 500),
         ...destination.documentPath === undefined ? {} : { documentPath: text(destination.documentPath, 'documentPath', 1000) },
         disposition: destination.disposition,
+        ...destination.documentState === 'resolved' || destination.documentState === 'complete' ? { documentState: destination.documentState } : {},
       }
     }),
   }

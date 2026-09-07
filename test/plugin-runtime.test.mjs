@@ -180,6 +180,7 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
     'knowledge_base_create',
     'knowledge_base_search',
     'knowledge_base_update',
+    'knowledge_document_status',
     'knowledge_note_create',
     'knowledge_note_delete',
     'knowledge_note_list',
@@ -398,7 +399,7 @@ test('content write-back is not exposed to the main agent tool surface', async (
 
   assert.equal(tools.has('knowledge_write'), false)
   assert.deepEqual([...tools.keys()].sort(), [
-    'knowledge_base_create', 'knowledge_base_search', 'knowledge_base_update', 'knowledge_note_create',
+    'knowledge_base_create', 'knowledge_base_search', 'knowledge_base_update', 'knowledge_document_status', 'knowledge_note_create',
     'knowledge_note_delete', 'knowledge_note_list', 'knowledge_note_move', 'knowledge_note_read',
     'knowledge_note_references', 'knowledge_note_search', 'knowledge_note_update', 'knowledge_read', 'knowledge_search',
   ])

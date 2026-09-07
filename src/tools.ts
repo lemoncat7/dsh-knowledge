@@ -21,6 +21,7 @@ import type { AgentLike, LlmLike, RuntimeContextLike, ToolDefinitionLike, ToolRu
 import { registerKnowledgeNoteReferenceTools } from './note-reference-tools.js'
 import { registerKnowledgeNoteTools } from './note-tools.js'
 import type { KnowledgeNoteHandleCodec } from './note-reference-handle.js'
+import { documentLifecycleTool } from './document-lifecycle-tool.js'
 
 const textOutput = {
   schema: { type: 'string' },
@@ -37,6 +38,7 @@ export function registerKnowledgeTools(
   ctx.tools.register(searchKnowledgeBaseTool(provider))
   ctx.tools.register(searchTool(provider, codec))
   ctx.tools.register(readTool(provider, codec))
+  ctx.tools.register(documentLifecycleTool(provider, codec))
   ctx.tools.register(createKnowledgeBaseTool(provider, ctx.llm))
   ctx.tools.register(updateKnowledgeBaseTool(provider, ctx.llm))
   registerKnowledgeNoteTools(ctx, provider, noteCodec)

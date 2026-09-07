@@ -8,7 +8,9 @@
 
 ## 兼容性
 
-正式版 `2.3.6` 针对 DeepSeek Harness `0.1.2-rc.1` 构建并完成部署验证，需要 Node.js `22.19+` 或 `24+`。浏览器端使用该版本的 Session Controller、Renderer、Chat、Settings 与 Theme 插槽接口。
+正式版 `2.5.0` 针对 DeepSeek Harness `0.1.2-rc.1` 构建并完成部署验证，需要 Node.js `22.19+` 或 `24+`。浏览器端使用该版本的 Session Controller、Renderer、Chat、Settings 与 Theme 插槽接口。
+
+`2.5.0` 支持在用户明确确认问题解决或收集结束后，由 Agent 或轮后提取更新知识文档状态。整篇结束保留正文与历史并封存，局部问题仅修订对应段落；继续遵循挂载权限、审核模式、敏感内容审查及版本冲突保护。远程客户端与中央服务应同时升级。
 
 `2.3.6` 包含长对话回写前检索触发 HTTP 400 / 431 的修复，并补全干净构建所需的依赖锁文件：自动检索使用有界关键词，长查询通过 POST 传输。使用远程知识库时，请同时更新发起回写的客户端；只更新中央服务不能修复旧客户端发送的超长 GET URL。更新并重启后，可重试之前失败的回写。
 
@@ -28,7 +30,9 @@
 - 全局与项目范围，以及偏好、事实、决策、流程、经验五类知识。
 - SQLite WAL、FTS5 全文搜索、原子事务、完整版本历史和幂等提取任务。
 - 回答前通过 DSH 官方提示组装接口提供有界的挂载库地图，并自动召回最多 3 条达到相关性门槛的摘要；不自动注入完整文档。模型可继续按“`knowledge_base_search` 找库 → `knowledge_search` 搜索指定库 → `knowledge_read` 读取文档”的顺序核对完整内容。
-- 内容回写完全独立于主 Agent：主模型不暴露 `knowledge_write`，普通沉淀和用户明确提出的“写入知识库”都在回答完整结束后由独立提取调用处理；正文不得叙述尝试、拒绝或结果，真实状态只显示在回答下方，也不追加伪用户消息。
+- 普通知识沉淀独立于主 Agent：主模型不暴露通用 `knowledge_write`，在回答结束后由独立提取调用处理，真实回写状态显示在回答下方。
+- 用户明确确认“问题已解决”或“收集完成／结束”时，Agent 可通过 `knowledge_document_status` 更新对应知识状态，也支持回答后的自动提取。工具先搜索并读取目标文档，提交当前版本、用户确认原话和结论；仅解决其中一个问题时只修订对应段落，整篇保持开放。整篇结束保留正文和结论、生成历史版本并停止后续回写，可在界面重新打开。
+- 状态更新遵循挂载权限：仅召回不能写，审核模式产生待审核候选，直接模式在版本核验通过后生效；敏感内容转人工审核。Agent 只能按实际工具结果说明“已标记”或“待审核”。不能用模型自述、疑问或普通“好了”封存文档，过期版本也不能确认结束。远程使用同一候选协议，服务端需同步升级到支持文档状态候选的版本，不会在远端失败后回退写本地。
 - 用户明确要求时，模型可调用 `knowledge_base_create` 和 `knowledge_base_update` 创建或修改知识库，包括描述、标签、回写策略与专用回写模型；工具内部跟随当前 Provider 自动写入本地 SQLite 或远程中央服务，模型不传也不猜存储位置。
 - `knowledge_base_create` 默认不保存专用 provider/model，回写沿用本机覆盖设置，否则跟随每次会话；即使连接远程知识库，也不复制远端模型配置。只有明确指定 `useCurrentSessionModel: false` 时，才要求并校验成对的专用模型参数。默认模式下旧调用夹带的模型字段会被忽略，并在结果中说明。
 - 创建或修改工具不会自动挂载知识库，也不会回退、双写或同步到另一端；结果会明确返回实际写入的 `local` 或 `remote`。
@@ -61,7 +65,7 @@ dsh plugin --profile web add @lemoncat7/dsh-knowledge
 需要固定本次正式版本时：
 
 ```bash
-dsh plugin --profile web add @lemoncat7/dsh-knowledge@2.3.6
+dsh plugin --profile web add @lemoncat7/dsh-knowledge@2.5.0
 ```
 
 也可以从 [GitHub Releases](https://github.com/lemoncat7/dsh-knowledge/releases) 下载对应版本的完整预构建包后安装：

@@ -28,6 +28,7 @@ export interface KnowledgeTextEdit {
 
 export type CandidateChange =
   | { kind: 'append' }
+  | { kind: 'finalize'; baseVersion: number; baseHash: string; state: 'resolved' | 'complete'; note: string; confirmation: string }
   | {
     kind: 'revise'
     baseVersion: number
@@ -284,6 +285,7 @@ export interface ExtractionWriteDestination {
   documentTitle: string
   documentPath?: string
   disposition: 'written' | 'pending-review'
+  documentState?: 'resolved' | 'complete'
 }
 
 export interface ExtractionJobCompletion {

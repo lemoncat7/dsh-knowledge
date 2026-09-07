@@ -3600,7 +3600,8 @@ function renderCandidates() {
 function renderCandidateCard(candidate) {
   const pending = candidate.status === 'pending'
   const target = candidate.targetId ? state.candidateTargets.get(candidate.targetId) : null
-  const targetAvailable = candidate.action === 'create' || Boolean(target)
+  const targetAvailable = candidate.action === 'create' || Boolean(target && (candidate.change?.kind !== 'finalize'
+    || target.documentState === 'open' && target.version === candidate.change.baseVersion))
   const action = candidatePrimaryAction(candidate)
   return element('article', { class: 'candidate' },
     element('div', { class: 'candidate-header' },
@@ -3608,7 +3609,7 @@ function renderCandidateCard(candidate) {
         element('div', {},
           badge(knowledgeBaseName(candidate.draft.knowledgeBaseId)), ' ',
           badge(ACTION_LABELS[candidate.action], candidate.action === 'conflict' ? 'warning' : 'accent'), ' ',
-          candidate.change?.kind === 'revise' ? badge('原文修订', 'warning') : candidate.change?.kind === 'append' ? badge('内容补充') : null, ' ',
+          candidate.change?.kind === 'finalize' ? badge(candidate.change.state === 'resolved' ? '标记已解决' : '标记收集完成', 'warning') : candidate.change?.kind === 'revise' ? badge('原文修订', 'warning') : candidate.change?.kind === 'append' ? badge('内容补充') : null, ' ',
           badge(TYPE_LABELS[candidate.draft.type]), ' ',
           candidate.draft.source?.evidence ? badge(EVIDENCE_LABELS[candidate.draft.source.evidence] || candidate.draft.source.evidence) : null),
         element('h3', {}, candidate.draft.title),
@@ -3622,7 +3623,7 @@ function renderCandidateCard(candidate) {
           element('strong', {}, '写入位置'),
           element('span', { class: 'candidate-target' }, candidate.action === 'create'
             ? `创建“${candidate.draft.title}”`
-            : target ? `${candidate.change?.kind === 'revise' ? '修订' : '补充到'}“${target.title}”` : `目标 ${candidate.targetId || '不可用'}`),
+            : target ? `${candidate.change?.kind === 'finalize' ? '结束整篇' : candidate.change?.kind === 'revise' ? '修订' : '补充到'}“${target.title}”` : `目标 ${candidate.targetId || '不可用'}`),
         ),
         renderCandidateMetadataChanges(candidate, target),
         element('section', {},
@@ -3639,7 +3640,7 @@ function renderCandidateCard(candidate) {
       element('small', {}, `${scopeLabel(candidate.draft.scope)} · 置信度 ${Math.round(candidate.draft.confidence * 100)}%${candidate.targetId ? ` · 目标 ${candidate.targetId}` : ''} · ${formatDate(candidate.createdAt)}`),
       pending ? element('div', { class: 'candidate-actions' },
         actionButton('拒绝', () => reviewCandidate(candidate, 'reject'), 'danger small'),
-        actionButton(action.editLabel, () => openEntryEditor(undefined, candidate), 'small', {
+        candidate.change?.kind === 'finalize' ? null : actionButton(action.editLabel, () => openEntryEditor(undefined, candidate), 'small', {
           disabled: !targetAvailable,
           title: targetAvailable ? action.editLabel : '目标文档不可用，无法安全编辑合并结果',
         }),
@@ -3653,6 +3654,17 @@ function renderCandidateCard(candidate) {
 }
 
 function renderCandidateDiff(candidate, target) {
+  if (candidate.change?.kind === 'finalize') {
+    return element('section', { class: 'candidate-change', 'aria-label': '文档结束预览' },
+      element('strong', {}, `${target?.title || candidate.draft.title} · ${candidate.change.state === 'resolved' ? '标记已解决' : '标记收集完成'}`),
+      element('p', {}, `确认版本：${candidate.change.baseVersion} · 当前版本：${target?.version ?? '不可用'}`),
+      element('p', {}, `用户确认：${candidate.change.confirmation}`),
+      element('p', {}, `结论：${candidate.change.note}`),
+      target && candidate.status === 'pending' && (target.documentState !== 'open' || target.version !== candidate.change.baseVersion)
+        ? element('p', { role: 'alert' }, '文档已变化，请拒绝此候选后重新读取并确认。') : null,
+      element('p', {}, '正文保持不变，整篇将停止回写；需要继续补充时可在文档中重新打开。'),
+    )
+  }
   if (candidate.action !== 'create' && !target) {
     return element('section', { class: 'candidate-change candidate-change-unavailable', role: 'alert' },
       element('strong', {}, '无法生成变更预览'),
@@ -3712,6 +3724,7 @@ function renderDiffLine(line) {
 }
 
 function renderCandidateMetadataChanges(candidate, target) {
+  if (candidate.change?.kind === 'finalize') return null
   if (!target || candidate.action === 'create') return null
   const changes = []
   if (target.title !== candidate.draft.title) changes.push(`标题：${target.title} → ${candidate.draft.title}`)
@@ -3728,6 +3741,7 @@ function renderCandidateMetadataChanges(candidate, target) {
 }
 
 function candidatePrimaryAction(candidate) {
+  if (candidate.change?.kind === 'finalize') return { label: candidate.change.state === 'resolved' ? '确认标记已解决' : '确认收集完成', manualOnly: candidate.action === 'conflict' }
   if (candidate.action === 'create') return { label: '写入新文档', editLabel: '编辑后写入' }
   if (candidate.action === 'conflict' && candidate.change?.kind !== 'revise') {
     return { label: '需要手动解决', editLabel: '手动解决', resolution: 'merge', manualOnly: true }
@@ -4226,6 +4240,8 @@ async function reviewCandidate(candidate, decision, resolution) {
   const title = approve ? `${action.label}？` : '拒绝这条候选？'
   const message = !approve
     ? '拒绝后会保留审核记录，但不会进入知识库。'
+    : candidate.change?.kind === 'finalize'
+      ? '确认后整篇文档将结束并停止回写，正文保持不变。如需继续补充，可在文档中重新打开；版本变化时本次确认不会生效。'
     : candidate.action === 'create'
       ? '确认后将创建新文档，并立即参与后续对话召回。'
       : candidate.action === 'conflict'
@@ -4249,7 +4265,7 @@ async function reviewCandidate(candidate, decision, resolution) {
         await navigate('candidates')
         return
       }
-      showToast(approve ? candidate.action === 'create' ? '新文档已写入。' : candidate.change?.kind === 'revise' ? '原文已修订。' : '内容已补充。' : '候选已拒绝。')
+      showToast(approve ? candidate.change?.kind === 'finalize' ? (candidate.change.state === 'resolved' ? '文档已标记解决。' : '文档已标记收集完成。') : candidate.action === 'create' ? '新文档已写入。' : candidate.change?.kind === 'revise' ? '原文已修订。' : '内容已补充。' : '候选已拒绝。')
       state.stats = null
       await navigate('candidates')
     },

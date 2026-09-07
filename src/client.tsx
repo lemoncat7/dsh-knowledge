@@ -66,6 +66,7 @@ interface WritebackDestinationView {
   documentTitle: string
   documentPath?: string
   disposition: 'written' | 'pending-review'
+  documentState?: 'resolved' | 'complete'
 }
 
 interface WritebackStatusView {
@@ -185,7 +186,7 @@ function KnowledgeWritebackStatus({
             onClick={() => { workspace.openDocument({ knowledgeBaseId: destination.knowledgeBaseId, documentId: destination.documentId! }) }}
           ><strong>{destination.documentPath ?? destination.documentTitle}</strong></button>
           : <strong title={destination.documentTitle}>{`拟新建：${destination.documentTitle}`}</strong>}
-        <small data-disposition={destination.disposition}>{destination.disposition === 'written' ? '已写入' : '待审核'}</small>
+        <small data-disposition={destination.disposition}>{destination.disposition === 'written' ? (destination.documentState === 'resolved' ? '已解决' : destination.documentState === 'complete' ? '已完成' : '已写入') : (destination.documentState ? '待审核 · 标记' + (destination.documentState === 'resolved' ? '解决' : '完成') : '待审核')}</small>
       </li>)}
     </ul>}
     {state.status === 'failed' && state.error && <p className="dsh-knowledge-writeback-error" role="alert">{state.error}</p>}

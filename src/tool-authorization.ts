@@ -83,7 +83,7 @@ function clauseRequestsKnowledgeBaseManagement(
     || /(?:knowledge\s*(?:base|store)|memory\s*(?:base|store)).{0,40}(?:update|edit|modify|rename|change|configure|clear|remove|set)/iu.test(text)
 }
 
-function currentDirectUserText(agent: AgentLike): string {
+export function currentDirectUserText(agent: AgentLike): string {
   const events = agent.session.snapshotEvents()
   let turnStart = -1
   for (let index = events.length - 1; index >= 0; index -= 1) {

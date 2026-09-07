@@ -16,6 +16,24 @@ DSH events / pre-step / HTTP / Web console
 
 The DSH core is never patched. `src/index.ts` is the composition root; every other module is independently testable.
 
+## Confirmed document lifecycle
+
+`document-lifecycle.ts` builds either a version/hash-bound `finalize` candidate
+change or a unique-anchor section revision from explicit user confirmation.
+`document-lifecycle-tool.ts` supplies session-handle and mounted-write checks;
+`extraction.ts` uses the same builder for automatic whole-subject closure and
+normal revisions for individual issues. A simultaneous content edit suppresses
+closure, and truncated model context cannot finalize a whole document.
+
+Candidates retain the existing `update` action and store their new change kind
+in `change_json`, so no database migration or separate status-write pipeline is
+needed. Both providers retain `propose`/`write` authorization; audit approval and
+direct finalization verify the original full document version/hash atomically.
+Finalization preserves body text, records a conclusion/history version and
+syncs the Markdown projection. The existing UI reopen action remains the only
+way to resume writes. Review previews show status/conclusion rather than a fake
+body diff; persisted writeback destinations distinguish applied and pending states.
+
 ## DSH client contract
 
 The browser integration is compiled against the exact official client packages used by the supported DSH release. These packages are pinned as development-only dependencies; they are never bundled into the plugin:
