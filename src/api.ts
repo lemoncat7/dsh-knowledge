@@ -559,6 +559,11 @@ async function dispatch(
     }
   }
 
+  if (segments[0] === 'writeback-protocol' && segments.length === 1 && method === 'GET') {
+    requirePermission(actor.permissions, 'read')
+    return sendJson(res, 200, await provider.writebackProtocol?.() ?? { idempotentDirectWrites: false })
+  }
+
   if (segments[0] === 'extraction-jobs' && segments[1] !== undefined) {
     const sourceKey = segments[1]
     if (method === 'GET' && segments.length === 2) {

@@ -1,5 +1,7 @@
 import Schema from '@deepseek-ai/schemastery'
 import { isIP } from 'node:net'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { normalizeRemoteKnowledgeUrl } from './remote-url.js'
 
 export interface Config {
@@ -9,6 +11,7 @@ export interface Config {
   remoteToken?: string
   remoteTimeoutMs: number
   connectionPath?: string
+  writebackQueuePath?: string
   exposeApi: boolean
   apiToken?: string
   apiPrefix: string
@@ -34,6 +37,7 @@ export const Config: Schema<Config> = Schema.object({
   remoteToken: Schema.string().role('secret'),
   remoteTimeoutMs: Schema.number().min(100).max(120_000).default(10_000),
   connectionPath: Schema.string(),
+  writebackQueuePath: Schema.string().description('本机持久化回写队列；默认与知识库数据库或连接配置相邻。'),
   exposeApi: Schema.boolean().default(false),
   apiToken: Schema.string().role('secret'),
   apiPrefix: Schema.string().default('/knowledge-api/v1'),
@@ -72,6 +76,8 @@ export function resolveConfig(config: Config): ResolvedConfig {
     ...config,
     remoteTimeoutMs: config.remoteTimeoutMs ?? 10_000,
     ...connectionPath === undefined ? {} : { connectionPath },
+    writebackQueuePath: config.writebackQueuePath ?? (config.databasePath === ':memory:' ? ':memory:' : config.databasePath
+      ? `${config.databasePath}.writeback.sqlite` : connectionPath ? `${connectionPath}.writeback.sqlite` : join(homedir(), '.dsh', 'knowledge', 'writeback.sqlite')),
     apiPrefix: normalizePrefix(config.apiPrefix ?? '/knowledge-api/v1'),
     exposeWeb: config.exposeWeb ?? true,
     webPath: normalizePrefix(config.webPath ?? '/knowledge'),

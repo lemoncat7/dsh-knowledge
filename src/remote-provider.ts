@@ -395,6 +395,14 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     }
   }
 
+  async writebackProtocol(signal?: AbortSignal): Promise<{ idempotentDirectWrites: boolean }> {
+    try { return await this.request('writeback-protocol', { signal }) }
+    catch (error) {
+      if (error instanceof RemoteProviderError && error.status === 404) return { idempotentDirectWrites: false }
+      throw error
+    }
+  }
+
   async close(): Promise<void> {}
 
   private async request<T>(

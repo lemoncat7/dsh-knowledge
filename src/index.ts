@@ -16,7 +16,7 @@ import { Config as ConfigSchema, resolveConfig, type Config as KnowledgeConfig }
 import { KNOWLEDGE_SETTINGS_NAMESPACE } from './constants.js'
 import { registerKnowledgeControl, type KnowledgeConnectionUpdate } from './control.js'
 import { ExtractionCoordinator } from './extraction.js'
-import type { ExtractionJobRecord, ExtractionWriteDestination } from './domain.js'
+import type { ExtractionJobRecord } from './domain.js'
 import { LocalKnowledgeProvider } from './local-provider.js'
 import { registerRemoteManagementProxy } from './management-proxy.js'
 import type { KnowledgeProvider } from './provider.js'
@@ -25,12 +25,13 @@ import { registerKnowledgeCatalog, registerKnowledgeRecall } from './recall.js'
 import { KnowledgeHandleCodec } from './retrieval.js'
 import { KnowledgeNoteHandleCodec } from './note-reference-handle.js'
 import { RemoteKnowledgeProvider, RemoteProviderError } from './remote-provider.js'
-import type { AgentLike, RuntimeContextLike } from './runtime.js'
+import type { RuntimeContextLike } from './runtime.js'
 import { loadServiceSettings, serviceSettingsPath, storeServiceSettings, type KnowledgeServiceSettings } from './service-settings.js'
 import { registerKnowledgeTools } from './tools.js'
 import { createKnowledgeTrackingService, KNOWLEDGE_TRACKING_SERVICE } from './tracking.js'
 import { createKnowledgeMountManagement, KNOWLEDGE_MOUNT_MANAGEMENT_SERVICE } from './mount-management.js'
 import { registerKnowledgeWeb } from './web.js'
+import { WritebackQueue, WritebackDeferred, type WritebackStatus, type WritebackWork } from './writeback/queue.js'
 
 export const Config = ConfigSchema
 export type Config = KnowledgeConfig
@@ -39,14 +40,6 @@ export * from './provider.js'
 export * from './notes/domain.js'
 export { LocalKnowledgeProvider } from './local-provider.js'
 export { RemoteKnowledgeProvider, RemoteProviderError } from './remote-provider.js'
-
-type WritebackStatus = {
-  status: 'running' | 'completed' | 'failed'
-  summary: string
-  error?: string
-  retryable: boolean
-  destinations?: ExtractionWriteDestination[]
-}
 
 /** Human-readable Cordis plugin name. */
 export const name = 'dsh-knowledge'
@@ -109,6 +102,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   const providerRouter = new KnowledgeProviderRouter(initial.provider, { owned: initial.owned })
   const provider: KnowledgeProvider = providerRouter.provider
   let activeConnection = initialConnection
+  let connectionChanging = false
 
   const coordinator = new ExtractionCoordinator(runtime, provider, resolved, () => (
     clientSettings.writebackProvider && clientSettings.writebackModel
@@ -116,8 +110,21 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
       : undefined
   ))
   const writebackStatuses = new Map<string, WritebackStatus>()
-  const writebackSources = new Map<string, { agent: AgentLike; turn: number }>()
-  let runWriteback: (agent: AgentLike, turn: number, signal: AbortSignal, phase?: 'initial' | 'retry') => Promise<WritebackStatus>
+  const writebackSources = new Map<string, WritebackWork>()
+  const destination = (): string => activeConnection.backend === 'local' ? `local:${resolved.databasePath}` : `remote:${activeConnection.remoteUrl}`
+  const writebackQueue = resolved.extractionEnabled ? new WritebackQueue(resolved.writebackQueuePath!, async (work, checkpoint, signal) => {
+    if (connectionChanging) throw new WritebackDeferred('知识库连接正在切换，等待稳定后回写')
+    if (work.destination !== destination()) throw new Error('知识库连接已切换，旧回写仍绑定原目标；请恢复原连接后重试')
+    const existing = await provider.extractionJob(work.snapshot.sourceKey, signal)
+    if (existing?.status === 'completed') return statusFromExtractionJob(existing, false)
+    if (existing?.status === 'failed' && existing.attempts >= 3) await provider.resetExtraction(work.snapshot.sourceKey, signal)
+    const result = await coordinator.runSnapshot(work.snapshot, signal, checkpoint)
+    if (result.status !== 'duplicate') return statusFromExtractionResult(result)
+    const job = await provider.extractionJob(work.snapshot.sourceKey, signal)
+    if (job?.status === 'completed') return statusFromExtractionJob(job, false)
+    if (job?.status === 'running') throw new WritebackDeferred('上一次远端回写租约尚未释放，等待恢复')
+    throw new Error(job?.lastError ?? '未能确认远端回写状态，请重试')
+  }, message => runtime.logger.warn(message)) : undefined
   const handleCodec = new KnowledgeHandleCodec(randomBytes(32))
   const noteHandleCodec = new KnowledgeNoteHandleCodec(randomBytes(32))
   const managementEmbedToken = randomBytes(32).toString('base64url')
@@ -139,8 +146,10 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
       }
       validateConnectionSettings(next, publicApiEnabled, resolved.databasePath !== undefined && resolved.databasePath.trim().length > 0)
       if (sameConnection(next, activeConnection)) return activeConnection
+      if (writebackQueue?.isRunning) throw connectionError(409, '回写正在执行，请完成后再切换知识库连接')
       if (resolved.connectionPath === undefined) throw connectionError(409, '当前插件没有配置持久化路径，无法保存连接。')
       const candidate = connectionProvider(next)
+      connectionChanging = true
       let persisted = false
       let installed = false
       let managementRouteChanged = false
@@ -178,7 +187,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
           })
         }
         throw error
-      }
+      } finally { connectionChanging = false }
     })
     const operation = pending.catch(error => {
       runtime.logger.warn(`dsh-knowledge: connection switch rejected: ${error instanceof Error ? error.message : String(error)}`)
@@ -307,26 +316,17 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
           const turn = Number(url.searchParams.get('turn'))
           if (!sessionId || !Number.isInteger(turn) || turn < 0) throw connectionError(400, 'sessionId and a non-negative integer turn are required')
           const key = `${sessionId}:${turn}`
-          let state = writebackStatuses.get(key)
+          let state = writebackQueue?.status(key) ?? writebackStatuses.get(key)
           if (state === undefined) {
             const job = await provider.extractionJob(key).catch(() => undefined)
-            state = job === undefined ? undefined : statusFromExtractionJob(job, writebackSources.has(key))
-            if (state !== undefined) rememberWritebackStatus(writebackStatuses, writebackSources, key, state)
+            state = job === undefined ? undefined : statusFromExtractionJob(job, false)
           }
           if (req.method === 'POST') {
+            if (!writebackQueue) throw connectionError(409, '知识库回写已停用')
             const source = writebackSources.get(key)
-            if (state?.status !== 'failed' || !state.retryable || source === undefined) {
-              throw connectionError(409, 'writeback is not retryable')
-            }
-            writebackStatuses.set(key, { status: 'running', summary: '知识库回写 · 正在重试', retryable: false })
-            try {
-              await provider.resetExtraction(key)
-              state = await runWriteback(source.agent, source.turn, new AbortController().signal, 'retry')
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error)
-              state = { status: 'failed', summary: '知识库回写 · 重试失败', error: message, retryable: true }
-              writebackStatuses.set(key, state)
-            }
+            state = source ? writebackQueue.enqueue(source) : writebackQueue.retry(key)
+            writebackSources.delete(key)
+            writebackStatuses.delete(key)
           }
           res.writeHead(state === undefined ? 404 : 200, {
             'content-type': 'application/json; charset=utf-8',
@@ -365,47 +365,31 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   }
 
   if (resolved.extractionEnabled) {
-    runWriteback = async (agent: AgentLike, turn: number, signal: AbortSignal, phase = 'initial'): Promise<WritebackStatus> => {
+    runtime.on('agent/turn-stopping', ({ agent, turn }) => {
       const key = `${agent.session.id}:${turn}`
-      writebackStatuses.set(key, {
-        status: 'running', summary: phase === 'retry' ? '知识库回写 · 正在重试' : '知识库回写 · 正在处理', retryable: false,
-      })
-      let state: WritebackStatus
+      let work: WritebackWork | undefined
       try {
-        const result = await coordinator.run(agent.session, turn, signal)
-        if (result.status === 'duplicate') {
-          const job = await provider.extractionJob(key, signal)
-          if (job?.status === 'failed') throw new Error(job.lastError ?? '知识库回写失败')
-          state = job === undefined
-            ? { status: 'completed', summary: '知识库回写 · 已处理', retryable: false }
-            : statusFromExtractionJob(job, false)
-        } else {
-          state = statusFromExtractionResult(result)
-        }
+        const snapshot = coordinator.capture(agent.session, turn)
+        if (snapshot) work = { snapshot, destination: destination() }
+        if (work) writebackQueue!.enqueue(work)
+        else writebackQueue!.completeEmpty(key, agent.session.id)
+        writebackStatuses.delete(key)
         writebackSources.delete(key)
       } catch (error) {
-        if (signal.aborted) throw error
         const message = error instanceof Error ? error.message : String(error)
-        runtime.logger.warn(`dsh-knowledge: synchronous writeback failed: ${message}`)
-        const job = await provider.extractionJob(key).catch(() => undefined)
-        const retryable = job?.status === 'failed'
-        const summary = message.includes('max-tokens')
-          ? '知识库回写 · 失败：提取结果超过模型输出上限'
-          : '知识库回写 · 失败'
-        state = { status: 'failed', summary, error: message, retryable }
-        if (retryable) writebackSources.set(key, { agent: snapshotAgent(agent), turn })
-        else writebackSources.delete(key)
+        // Disk/queue failures are explicit; never pretend an unsaved job succeeded.
+        rememberWritebackStatus(writebackStatuses, writebackSources, key, {
+          status: 'failed', summary: '知识库回写 · 未能可靠入队', error: message, retryable: work !== undefined,
+        })
+        if (work) writebackSources.set(key, work)
+        runtime.logger.warn(`dsh-knowledge: writeback enqueue failed: ${message}`)
       }
-      rememberWritebackStatus(writebackStatuses, writebackSources, key, state)
-      runtime.logger.info(`dsh-knowledge: ${state.summary}`)
-      return state
-    }
-    runtime.on('agent/turn-stopping', async ({ agent, turn, signal }) => {
-      await runWriteback(agent, turn, signal).catch(() => {})
     })
+    writebackQueue?.start()
   }
 
   runtime.effect(() => async () => {
+    await writebackQueue?.close()
     await coordinator.close()
     await providerRouter.close()
     await managementProvider?.close()
@@ -467,7 +451,7 @@ function summarizeWritebackCounts(bases: Array<{ name: string; directCount: numb
 
 function rememberWritebackStatus(
   statuses: Map<string, WritebackStatus>,
-  sources: Map<string, { agent: AgentLike; turn: number }>,
+  sources: Map<string, WritebackWork>,
   key: string,
   state: WritebackStatus,
 ): void {
@@ -477,17 +461,6 @@ function rememberWritebackStatus(
     if (oldest === undefined) break
     statuses.delete(oldest)
     sources.delete(oldest)
-  }
-}
-
-function snapshotAgent(agent: AgentLike): AgentLike {
-  const events = agent.session.snapshotEvents()
-  return {
-    session: {
-      id: agent.session.id,
-      header: { ...agent.session.header },
-      snapshotEvents: () => events,
-    },
   }
 }
 

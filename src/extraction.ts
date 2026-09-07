@@ -10,7 +10,7 @@ import { mapConcurrent } from './async-pool.js'
 import { buildSearchQuery } from './search-query.js'
 import { messageText, type MessageLike, type RuntimeContextLike, type SessionLike } from './runtime.js'
 
-interface TurnSnapshot {
+export interface TurnSnapshot {
   sourceKey: string
   sessionId: string
   turn: number
@@ -20,6 +20,16 @@ interface TurnSnapshot {
   assistantText: string
   assistantMessageId?: string
   route?: { provider: string; model: string }
+}
+
+export interface PlannedWrite {
+  proposal: CandidateProposal
+  delivery: 'direct' | 'audit'
+}
+
+export interface ExtractionCheckpoint {
+  load(): PlannedWrite[] | undefined
+  save(proposals: PlannedWrite[]): void
 }
 
 export class ExtractionCoordinator {
@@ -38,10 +48,22 @@ export class ExtractionCoordinator {
     const sourceKey = `${session.id}:${turn}`
     const snapshot = snapshotTurn(session, turn, this.config.extractionMaxInputChars)
     if (snapshot === undefined) return this.completeEmpty(sourceKey, 'skipped', parentSignal)
-    const mounts = (await this.provider.resolveMounts(session.id, snapshot.projectId, parentSignal))
+    return this.runSnapshot(snapshot, parentSignal)
+  }
+
+  capture(session: SessionLike, turn: number): TurnSnapshot | undefined {
+    return snapshotTurn(session, turn, this.config.extractionMaxInputChars)
+  }
+
+  async runSnapshot(snapshot: TurnSnapshot, parentSignal: AbortSignal, checkpoint?: ExtractionCheckpoint): Promise<ExtractionResult> {
+    if (this.closing) throw new Error('knowledge coordinator is shutting down')
+    const mounts = (await this.provider.resolveMounts(snapshot.sessionId, snapshot.projectId, parentSignal))
       .filter(mount => mount.writeMode !== 'none')
-    if (mounts.length === 0) return this.completeEmpty(sourceKey, 'unmounted', parentSignal)
-    return this.process(snapshot, mounts, AbortSignal.any([parentSignal, this.shutdown.signal]))
+    if (mounts.length === 0) {
+      if (checkpoint?.load()?.length) throw new Error('回写计划的可写挂载已撤回，请恢复挂载后重试')
+      return this.completeEmpty(snapshot.sourceKey, 'unmounted', parentSignal)
+    }
+    return this.process(snapshot, mounts, AbortSignal.any([parentSignal, this.shutdown.signal]), checkpoint)
   }
 
   async close(): Promise<void> {
@@ -71,10 +93,12 @@ export class ExtractionCoordinator {
     snapshot: TurnSnapshot,
     mounts: ResolvedKnowledgeMount[],
     signal: AbortSignal,
+    checkpoint?: ExtractionCheckpoint,
   ): Promise<ExtractionResult> {
     if (!await this.provider.claimExtraction(snapshot.sourceKey, signal)) return emptyResult('duplicate')
     try {
-      const groups = groupMountsByRoute(mounts, this.config, snapshot, this.clientRoute())
+      const saved = checkpoint?.load()
+      const groups = saved === undefined ? groupMountsByRoute(mounts, this.config, snapshot, this.clientRoute()) : []
       const proposals: CandidateProposal[] = []
       const query = buildSearchQuery(snapshot.userText, snapshot.assistantText)
       for (const group of groups) {
@@ -96,7 +120,26 @@ export class ExtractionCoordinator {
           signal,
         ))
       }
-      const uniqueProposals = coalesceDocumentProposals(proposals)
+      const plan: PlannedWrite[] = saved ?? coalesceDocumentProposals(proposals).flatMap(proposal => {
+        const mount = mounts.find(item => item.knowledgeBaseId === proposal.draft.knowledgeBaseId)
+        if (!mount) return []
+        const sensitive = inspectSensitiveContent(`${proposal.draft.title}\n${proposal.draft.body}\n${proposal.reason}`)
+        const direct = mount.writeMode === 'direct' && sensitive.length === 0 && qualifiesForDirectWrite(proposal, mount.base.writebackPolicy)
+        return [{
+          delivery: direct ? 'direct' as const : 'audit' as const,
+          proposal: sensitive.length === 0 || mount.writeMode !== 'direct' ? proposal : {
+            ...proposal,
+            reason: `${proposal.reason} Automatic direct write was withheld because credential-like content requires manual review (${sensitive.map(item => item.kind).join(', ')}).`,
+          },
+        }]
+      })
+      if (checkpoint && saved === undefined) checkpoint.save(plan)
+      // A slow model must not preserve a permission that was revoked meanwhile.
+      if (checkpoint && plan.length > 0) mounts = (await this.provider.resolveMounts(snapshot.sessionId, snapshot.projectId, signal)).filter(mount => mount.writeMode !== 'none')
+      if (checkpoint && this.provider.mode === 'remote' && plan.some(item => item.delivery === 'direct')) {
+        const protocol = await this.provider.writebackProtocol?.(signal)
+        if (protocol?.idempotentDirectWrites !== true) throw new Error('远端知识库需升级以支持可靠回写与幂等重试；写入计划已保留')
+      }
       let candidateCount = 0
       let directCount = 0
       let auditCount = 0
@@ -107,44 +150,34 @@ export class ExtractionCoordinator {
         directCount: 0,
         auditCount: 0,
       }]))
-      for (const proposal of uniqueProposals) {
+      for (const { proposal, delivery } of plan) {
         const mount = mounts.find(candidate => candidate.knowledgeBaseId === proposal.draft.knowledgeBaseId)
-        if (mount === undefined) continue
+        if (mount === undefined) {
+          if (checkpoint) throw new Error('回写计划的可写挂载已撤回，请恢复挂载后重试')
+          continue
+        }
         const counts = byBase.get(mount.knowledgeBaseId)
-        if (mount.writeMode === 'direct') {
-          const sensitiveFindings = inspectSensitiveContent(`${proposal.draft.title}\n${proposal.draft.body}\n${proposal.reason}`)
-          if (sensitiveFindings.length > 0 || !qualifiesForDirectWrite(proposal, mount.base.writebackPolicy)) {
-            const guardedProposal = sensitiveFindings.length === 0 ? proposal : {
-              ...proposal,
-              reason: `${proposal.reason} Automatic direct write was withheld because credential-like content requires manual review (${sensitiveFindings.map(item => item.kind).join(', ')}).`,
-            }
-            const proposed = await proposeUnlessFinalized(this.provider, guardedProposal, snapshot.sourceKey, signal)
-            if (!proposed) continue
-            candidateCount += 1
+        if (delivery === 'direct') {
+          if (mount.writeMode !== 'direct') throw new Error('回写计划的直接写入权限已撤回，请恢复权限后重试')
+          const result = await this.provider.writeDirect(proposal, snapshot.sourceKey, signal)
+          if (result.outcome === 'finalized' || (result.outcome === 'duplicate' && !result.entry)) continue
+          candidateCount += 1
+          if (result.outcome === 'conflict') {
             auditCount += 1
             if (counts !== undefined) counts.auditCount += 1
-            destinations.push(pendingDestination(mount, proposed))
+            if (result.candidate !== undefined) destinations.push(pendingDestination(mount, result.candidate))
           } else {
-            const result = await this.provider.writeDirect(proposal, snapshot.sourceKey, signal)
-            if (result.outcome === 'duplicate' || result.outcome === 'finalized') continue
-            candidateCount += 1
-            if (result.outcome === 'conflict') {
-              auditCount += 1
-              if (counts !== undefined) counts.auditCount += 1
-              if (result.candidate !== undefined) destinations.push(pendingDestination(mount, result.candidate))
-            } else {
-              directCount += 1
-              if (counts !== undefined) counts.directCount += 1
-              if (result.entry !== undefined) destinations.push({
-                knowledgeBaseId: mount.knowledgeBaseId,
-                knowledgeBaseName: mount.base.name,
-                documentId: result.entry.id,
-                documentTitle: result.entry.title,
-                documentPath: knowledgeDocumentPath(result.entry),
-                disposition: 'written',
-                ...result.entry.documentState === 'open' ? {} : { documentState: result.entry.documentState },
-              })
-            }
+            directCount += 1
+            if (counts !== undefined) counts.directCount += 1
+            if (result.entry !== undefined) destinations.push({
+              knowledgeBaseId: mount.knowledgeBaseId,
+              knowledgeBaseName: mount.base.name,
+              documentId: result.entry.id,
+              documentTitle: result.entry.title,
+              documentPath: knowledgeDocumentPath(result.entry),
+              disposition: 'written',
+              ...result.entry.documentState === 'open' ? {} : { documentState: result.entry.documentState },
+            })
           }
         } else {
           const proposed = await proposeUnlessFinalized(this.provider, proposal, snapshot.sourceKey, signal)

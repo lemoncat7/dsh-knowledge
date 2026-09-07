@@ -5,6 +5,16 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { apply, LocalKnowledgeProvider } from '../lib/index.js'
 
+async function waitForJob(provider, key) {
+  for (let attempt = 0; attempt < 250; attempt++) {
+    const job = await provider.extractionJob(key)
+    if (job?.status === 'completed') return job
+    if (job?.status === 'failed') assert.fail(job.lastError)
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  assert.fail(`writeback did not complete: ${key}`)
+}
+
 test('plugin gates completed-turn extraction and keeps knowledge surface messages out of model input', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-knowledge-runtime-'))
   const databasePath = join(root, 'knowledge.sqlite')
@@ -112,7 +122,7 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
     enabled: true, recallEnabled: true, writeMode: 'audit', includeTags: [], excludeTags: [], extractionInstructions: '',
   })
   await listeners.get('agent/turn-stopping')({ agent: { session }, turn: 1, signal: new AbortController().signal })
-  const job = await observer.extractionJob('session-1:1')
+  const job = await waitForJob(observer, 'session-1:1')
   assert.equal(job?.status, 'completed')
   assert.equal(job?.completion?.destinations.length, 6)
   assert.equal(job?.completion?.destinations.every(destination => destination.disposition === 'pending-review'), true)
@@ -359,6 +369,7 @@ test('conservative write-back accepts durable source-backed GitHub research with
   }
   await listeners.get('agent/turn-stopping')({ agent: { session }, turn: 1, signal: new AbortController().signal })
 
+  await waitForJob(observer, 'github-session:1')
   const payload = JSON.parse(extractionRequest.messages[0].content[0].text)
   assert.deepEqual(payload.sourceReferences, ['https://github.com/lemoncat7/dsh-remote-settings-compat'])
   assert.match(extractionRequest.system, /Do not reject a durable source-backed research result/)
@@ -523,6 +534,7 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
     type: 'decision', tags: ['policy'], scope: { kind: 'global' }, confidence: 1,
   })
   targetId = existing.id
+  await waitForJob(observer, 'unmounted:1')
   await observer.upsertMount({
     targetKind: 'project', targetId: '/workspace/direct', knowledgeBaseId: 'default',
     enabled: true, recallEnabled: true, writeMode: 'direct', includeTags: [], excludeTags: [], extractionInstructions: '',
@@ -532,6 +544,7 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
   await observer.updateSettings({ writebackProvider: 'global-provider', writebackModel: 'global-model' })
   const direct = sessionFor('direct', 1)
   await listeners.get('agent/turn-stopping')({ agent: { session: direct }, turn: 1, signal: new AbortController().signal })
+  await waitForJob(observer, 'direct:1')
   assert.equal(streamCalls, 3)
   assert.deepEqual(streamBudgets, [1200, 2400, 2400])
   assert.deepEqual(streamRoutes, [['mock', 'extractor'], ['mock', 'extractor'], ['mock', 'extractor']])

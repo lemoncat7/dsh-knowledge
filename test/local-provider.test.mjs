@@ -870,6 +870,12 @@ test('candidate approval is transactional and extraction claims are idempotent',
   recoveryDb.close()
   assert.equal(await provider.claimExtraction('session-crashed:1'), true)
   assert.equal((await provider.extractionJob('session-crashed:1'))?.attempts, 2)
+  const lastAttemptDb = new DatabaseSync(join(provider.fixtureRoot, 'knowledge.sqlite'))
+  lastAttemptDb.prepare('UPDATE extraction_jobs SET attempts=3,updated_at=? WHERE source_key=?')
+    .run('2000-01-01T00:00:00.000Z', 'session-crashed:1')
+  lastAttemptDb.close()
+  assert.equal(await provider.claimExtraction('session-crashed:1'), true, 'crash on the last attempt must still be recoverable')
+  assert.equal((await provider.extractionJob('session-crashed:1'))?.attempts, 4)
   await provider.completeExtraction('session-crashed:1', 0)
   assert.equal(await provider.claimExtraction('session-details:1'), true)
   await provider.completeExtraction('session-details:1', {

@@ -105,12 +105,15 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     this.db = new DatabaseSync(path)
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
     migrateKnowledgeDatabase(this.db, this.notes)
+    this.db.exec('CREATE TABLE IF NOT EXISTS writeback_receipts (source_key TEXT NOT NULL, proposal_hash TEXT NOT NULL, result_json TEXT NOT NULL, PRIMARY KEY(source_key, proposal_hash));')
     this.documentsReady = this.enqueueDocumentSync(() => this.syncAllDocuments())
   }
 
   private assertOpen(): void {
     if (this.closed) throw new Error('knowledge provider is closed')
   }
+
+  async writebackProtocol(): Promise<{ idempotentDirectWrites: boolean }> { return { idempotentDirectWrites: true } }
 
   async getSettings(): Promise<KnowledgeSettings> {
     this.assertOpen()
@@ -1042,13 +1045,29 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     this.assertOpen()
     await this.documentsReady
     let touchedEntryId: string | undefined
+    const normalized = normalizeProposal(input)
+    const requestHash = createHash('sha256').update(JSON.stringify([
+      contentHash(normalized.draft), normalized.action, normalized.targetId ?? '', normalized.change ?? null,
+    ])).digest('hex')
     const result = this.transaction((): DirectWriteResult => {
-      const resolution = this.resolveDirectProposal(normalizeProposal(input))
+      if (sourceKey !== undefined) {
+        const receipt = this.db.prepare('SELECT result_json FROM writeback_receipts WHERE source_key=? AND proposal_hash=?').get(sourceKey, requestHash) as SqlRow | undefined
+        if (receipt) {
+          const previous = JSON.parse(String(receipt.result_json)) as DirectWriteResult
+          touchedEntryId = previous.entry?.id
+          return previous
+        }
+      }
+      const resolution = this.resolveDirectProposal(normalized)
       if (resolution.outcome === 'duplicate') return { outcome: 'duplicate', ...resolution.entry === undefined ? {} : { entry: resolution.entry } }
       if (resolution.outcome === 'finalized') return { outcome: 'finalized', entry: resolution.entry }
       const candidate = this.insertCandidate(resolution.proposal, sourceKey)
       if (candidate.status !== 'pending') return { outcome: 'duplicate', candidate }
-      if (resolution.outcome === 'conflict') return { outcome: 'conflict', candidate }
+      if (resolution.outcome === 'conflict') {
+        const pending: DirectWriteResult = { outcome: 'conflict', candidate }
+        if (sourceKey !== undefined) this.db.prepare('INSERT INTO writeback_receipts VALUES(?,?,?)').run(sourceKey, requestHash, JSON.stringify(pending))
+        return pending
+      }
       const entry = resolution.proposal.action === 'create'
         ? this.insertEntry(resolution.proposal.draft)
         : resolution.proposal.change?.kind === 'finalize'
@@ -1060,7 +1079,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
           ? 'Automatically merged by direct-write reconciliation.'
           : 'Automatically approved by direct-write policy.', candidate.id)
       touchedEntryId = entry.id
-      return {
+      const committed: DirectWriteResult = {
         outcome: resolution.outcome,
         candidate: {
           ...candidate,
@@ -1072,6 +1091,8 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
         },
         entry,
       }
+      if (sourceKey !== undefined) this.db.prepare('INSERT INTO writeback_receipts VALUES(?,?,?)').run(sourceKey, requestHash, JSON.stringify(committed))
+      return committed
     })
     if (touchedEntryId !== undefined) await this.syncKnowledgeEntryQueued(touchedEntryId)
     return result
@@ -1331,8 +1352,8 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       ON CONFLICT(source_key) DO UPDATE SET
         status='running', attempts=extraction_jobs.attempts+1, candidate_count=0,
         last_error=NULL, completion_json=NULL, updated_at=excluded.updated_at
-      WHERE extraction_jobs.attempts < 3 AND (
-        extraction_jobs.status='failed'
+      WHERE (
+        (extraction_jobs.status='failed' AND extraction_jobs.attempts < 3)
         OR (extraction_jobs.status='running' AND extraction_jobs.updated_at < ?)
       )
     `).run(sourceKey, claimedAt, staleBefore)

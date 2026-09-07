@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { WritebackStatusClient } from './writeback/status-client.js'
+import type { WritebackStatus } from './writeback/queue.js'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
@@ -59,23 +61,6 @@ export type KnowledgeDocumentTarget =
   | { view?: 'entries'; knowledgeBaseId: string; documentId: string }
   | { view: 'notes'; noteId?: string }
 
-interface WritebackDestinationView {
-  knowledgeBaseId: string
-  knowledgeBaseName: string
-  documentId?: string
-  documentTitle: string
-  documentPath?: string
-  disposition: 'written' | 'pending-review'
-  documentState?: 'resolved' | 'complete'
-}
-
-interface WritebackStatusView {
-  status: 'running' | 'completed' | 'failed'
-  summary: string
-  error?: string
-  retryable: boolean
-  destinations?: WritebackDestinationView[]
-}
 
 const CONNECTION_CONTROL_PATH = '/knowledge-control/v1/connection'
 let cachedConnectionView: KnowledgeConnectionView | undefined
@@ -116,60 +101,48 @@ function KnowledgeWritebackStatus({
   turn,
   workspace,
 }: { sessionId: string; turn: number; workspace: KnowledgeWorkspaceController }) {
-  const [state, setState] = useState<WritebackStatusView>()
+  const [state, setState] = useState<WritebackStatus>()
   const [retrying, setRetrying] = useState(false)
+  const [readError, setReadError] = useState<string>()
+  const client = useRef<WritebackStatusClient>()
+  const container = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    const controller = new AbortController()
-    let timer: ReturnType<typeof setTimeout> | undefined
-    let missingAttempts = 0
-    const schedule = (delay: number): void => {
-      if (!controller.signal.aborted) timer = setTimeout(() => { void load() }, delay)
+    setState(undefined)
+    setRetrying(false)
+    setReadError(undefined)
+    const status = new WritebackStatusClient(
+      `/knowledge-control/v1/writeback-status?sessionId=${encodeURIComponent(sessionId)}&turn=${turn}`,
+      (value, pending, error) => { setState(value); setRetrying(pending); setReadError(error) },
+    )
+    client.current = status
+    let inView = true
+    const refresh = (): void => status.setVisible(inView && !document.hidden)
+    const observer = typeof IntersectionObserver === 'undefined' ? undefined : new IntersectionObserver(entries => {
+      inView = entries[0]?.isIntersecting ?? true
+      refresh()
+    }, { rootMargin: '100px' })
+    if (container.current) observer?.observe(container.current)
+    document.addEventListener('visibilitychange', refresh)
+    window.addEventListener('focus', refresh)
+    window.addEventListener('online', refresh)
+    refresh()
+    return () => {
+      observer?.disconnect()
+      document.removeEventListener('visibilitychange', refresh)
+      window.removeEventListener('focus', refresh)
+      window.removeEventListener('online', refresh)
+      status.dispose()
+      client.current = undefined
     }
-    const load = async (): Promise<void> => {
-      try {
-        const response = await fetch(`/knowledge-control/v1/writeback-status?sessionId=${encodeURIComponent(sessionId)}&turn=${turn}`, {
-          headers: { accept: 'application/json', 'x-dsh-knowledge-client': 'conversation-web' }, signal: controller.signal,
-        })
-        if (response.ok) {
-          const value = await response.json() as WritebackStatusView
-          if (value.summary) setState(value)
-          if (value.status === 'running') schedule(1_500)
-          return
-        }
-        if (response.status === 404 && missingAttempts < 3) {
-          missingAttempts += 1
-          schedule(1_500)
-        }
-      } catch {
-        if (!controller.signal.aborted && missingAttempts < 3) {
-          missingAttempts += 1
-          schedule(2_000)
-        }
-      }
-    }
-    void load()
-    return () => { controller.abort(); if (timer !== undefined) clearTimeout(timer) }
   }, [sessionId, turn])
-  if (state === undefined) return null
-  const retry = async (): Promise<void> => {
-    setRetrying(true)
-    try {
-      const response = await fetch(`/knowledge-control/v1/writeback-status?sessionId=${encodeURIComponent(sessionId)}&turn=${turn}`, {
-        method: 'POST', headers: { accept: 'application/json', 'x-dsh-knowledge-client': 'conversation-web' },
-      })
-      const body = await response.json().catch(() => ({})) as WritebackStatusView & { error?: string }
-      if (!response.ok) throw new Error(body.error ?? `retry failed with HTTP ${response.status}`)
-      setState(body)
-    } catch (error) {
-      setState(previous => previous === undefined ? previous : {
-        ...previous, error: error instanceof Error ? error.message : String(error), retryable: true,
-      })
-    } finally { setRetrying(false) }
-  }
+  if (state === undefined) return <div ref={container}>
+    {readError && <div className="dsh-knowledge-writeback-notice" role="status">{readError}</div>}
+  </div>
+  const retry = (): void => client.current?.retry()
   const destinations = state.destinations ?? []
   const summary = state.summary.replace(/^知识库回写\s*·\s*/u, '')
-  return <div className="dsh-knowledge-writeback-notice" data-status={state.status}>
-    <div className="dsh-knowledge-writeback-summary" role={state.status === 'running' ? 'status' : undefined} aria-atomic="true">
+  return <div ref={container} className="dsh-knowledge-writeback-notice" data-status={state.status}>
+    <div className="dsh-knowledge-writeback-summary" role="status" aria-atomic="true">
       <span>知识库回写</span><strong>@lemoncat7/dsh-knowledge</strong><span title={state.error}>{summary}</span>
       {state.status === 'failed' && state.retryable && <button type="button" disabled={retrying} onClick={() => { void retry() }}>{retrying ? '重试中…' : '重试'}</button>}
     </div>
@@ -190,6 +163,7 @@ function KnowledgeWritebackStatus({
       </li>)}
     </ul>}
     {state.status === 'failed' && state.error && <p className="dsh-knowledge-writeback-error" role="alert">{state.error}</p>}
+    {readError && <p className="dsh-knowledge-writeback-error" role="status">{readError}</p>}
   </div>
 }
 

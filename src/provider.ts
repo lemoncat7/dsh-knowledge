@@ -33,6 +33,7 @@ import type { KnowledgeNoteReference, KnowledgeNoteReferenceSource, NoteListRequ
 
 /** Stable storage boundary shared by local SQLite and remote HTTP clients. */
 export interface KnowledgeProvider {
+  writebackProtocol?(signal?: AbortSignal): Promise<{ idempotentDirectWrites: boolean }>
   readonly mode: 'local' | 'remote'
   getSettings(signal?: AbortSignal): Promise<KnowledgeSettings>
   updateSettings(patch: KnowledgeSettingsPatch, signal?: AbortSignal): Promise<KnowledgeSettings>

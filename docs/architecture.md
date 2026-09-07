@@ -112,11 +112,11 @@ An active content hash unique index blocks byte-equivalent duplicate knowledge. 
 
 ## Extraction flow
 
-1. Awaited `agent/turn-stopping` observes the completed answer before `turn/end` is committed.
+1. `agent/turn-stopping` synchronously persists an immutable turn snapshot in the local writeback outbox before `turn/end`. The worker starts across a macrotask boundary; network/model work never blocks turn completion or channel replies.
 2. Project mounts are resolved and then overlaid by explicit session mounts; a disabled session mount blocks inheritance.
-3. Without a writable mount, no extraction model call or job claim occurs.
-4. The relevant direct user input and final non-empty assistant message are copied into an immutable job snapshot.
-5. `extraction_jobs` atomically claims `sessionId:turn`; replaying the event cannot duplicate work. A running claim is a 15-minute lease, so an interrupted process can recover the turn without leaving it permanently stuck; proposal hashes and a three-attempt ceiling keep recovery bounded and idempotent.
+3. Without a writable mount, no extraction model call occurs; a no-op status is retained.
+4. The snapshot contains direct user input, the final non-empty assistant message, its model route and source ids. The destination connection is pinned; changing it cannot redirect old queued work.
+5. `extraction_jobs` atomically claims `sessionId:turn`. A running claim has a 15-minute lease. Failed claims permit three attempts before an explicit reset; the durable worker resets exhausted failed claims within its own bounded retry policy. Expired running claims remain recoverable even if the last attempt crashed. Active claims are never forcibly reset.
 6. The authoritative writeback policy is loaded and writable mounts are grouped by their configured extraction model route.
 7. Each route group searches its mounted bases for related existing documents, globally ranks the results and caps the comparison set.
 8. One bounded model call decides destination relevance and extracts strict document-mutation JSON together. It returns a stable `documentTitle`, optional `sectionTitle`, Markdown body and an existing `targetId` whenever relevant. This avoids a second routing-model call and prevents an overly conservative first gate from discarding valid destination-specific knowledge. Model selection is explicit and deterministic: a client-local override wins first, then a knowledge-base-specific route, then the completed assistant turn's actual model, and finally the legacy static extraction route.
@@ -126,6 +126,16 @@ An active content hash unique index blocks byte-equivalent duplicate knowledge. 
 12. Before every later model request, legacy plugin notices and prior recall snapshots are removed from the final request message list. Extraction snapshots accept only direct user messages.
 
 The extractor explicitly refuses secrets and ephemeral output in its system policy. Conflicts always remain behind human review, including on direct-write mounts.
+
+### Durable outbox and retry boundaries
+
+- `writeback/queue.ts` owns a separate SQLite WAL database (`synchronous=FULL`, file mode 0600). `writebackQueuePath` overrides the default next to the database/connection configuration. Use a separate path per DSH profile. `:memory:` is for isolated tests, not durable production storage.
+- Enqueue and retry only persist state, then schedule a worker. One leased worker runs per outbox; unfinished jobs in the same session stay ordered. A failed predecessor blocks that session and the UI explains why; other sessions continue. Queue capacity is 1,000 unfinished jobs. It never evicts pending/failed jobs. Capacity/disk failures show an explicit enqueue error; if disk persistence failed, only the current process can retain a retry snapshot.
+- `extraction.ts` persists the entire validated mutation plan and its direct/audit decisions before the first write. Retries reuse it without another model call. Current mounts are rechecked before delivery; removed permissions fail visibly instead of rerouting or bypassing review.
+- Direct-write receipts are saved in the knowledge server's SQL transaction alongside entry changes and approval. They are keyed by source and a bounded SHA-256 digest of the original proposal. Lost acknowledgment and Markdown projection failure retry the same receipt/projection without appending again or creating another version. Remote direct writes negotiate this capability; old servers must upgrade before retrying.
+- Transient failures use 5/15/60/180-second backoff, with at most five attempted executions before manual retry. Configuration/permission failures require manual correction and retry. Shutdown and waiting for an active claim do not consume the retry budget. Restart resumes queued work; recovery may wait up to the existing server's 15-minute claim lease. Completed jobs retain status/destinations but release their snapshots/plans; failed jobs retain both.
+- `writeback/status-client.ts` owns cancellable status requests. Retry immediately disables repeat clicks, invalidates older GET responses and restarts polling. Hidden/off-screen turns pause polling; focus/network recovery refreshes status. Status is keyed to the original session/turn, never to the current conversation tail. Legacy failed records without an outbox snapshot remain visible but cannot be safely reconstructed for retry.
+- This is at-least-once execution with idempotent write effects, not a distributed transaction across channel delivery and knowledge writes. Channel delivery can succeed while writeback fails. Storage loss, revoked credentials and an unavailable server cannot be guaranteed away; failures remain explicit and recoverable once their cause is corrected.
 
 ## Recall flow
 
