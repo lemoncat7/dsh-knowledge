@@ -45,6 +45,8 @@ export interface NoteShareImportResult {
 
 export interface NoteShareRequestPolicy {
   trustedPrivateOrigins?: readonly string[]
+  /** Explicit administrator approval, scoped to one canonical share, never persisted. */
+  confirmedPrivateShareUrl?: string
 }
 
 export function createNoteShareManifest(share: NoteShare, nodes: NoteNode[], truncated: boolean): NoteShareManifest {
@@ -240,11 +242,14 @@ export async function resolveShareTarget(
   lookupHost: typeof lookup = lookup,
 ): Promise<{ address: string; family: 4 | 6 }> {
   if (url.protocol !== 'https:' && url.protocol !== 'http:') throw inputError('分享链接只支持 HTTP 或 HTTPS')
-  const hostname = url.hostname.toLocaleLowerCase()
+  const hostname = url.hostname.toLocaleLowerCase().replace(/^\[|\]$/g, '')
   if (hostname === 'localhost' || hostname.endsWith('.localhost')) throw inputError('分享链接不能指向本机或私有网络')
   const literalFamily = isIP(hostname)
   if (literalFamily !== 0) {
-    if (!isPublicAddress(hostname)) throw inputError('分享链接不能指向本机或私有网络')
+    if (!isPublicAddress(hostname)) {
+      if (!isLanAddress(hostname)) throw inputError('分享链接不能指向本机或敏感网络地址')
+      requirePrivateShareConfirmation(url, policy)
+    }
     return { address: hostname, family: literalFamily as 4 | 6 }
   }
   let addresses: { address: string; family: number }[]
@@ -255,11 +260,31 @@ export async function resolveShareTarget(
   }
   const trustedPrivateOrigin = policy.trustedPrivateOrigins?.includes(url.origin) === true && isShareResourcePath(url.pathname)
   if (!trustedPrivateOrigin) {
-    throw inputError('分享链接不能解析到本机或私有网络')
+    if (!addresses.length || addresses.some(item => !isPublicAddress(item.address) && !isLanAddress(item.address))) throw inputError('分享链接不能解析到本机或敏感网络地址')
+    requirePrivateShareConfirmation(url, policy)
   }
   const pinned = addresses.find(item => isIP(item.address) !== 0)
   if (pinned === undefined) throw upstreamError('无法解析分享链接的主机名')
   return { address: pinned.address, family: pinned.family === 6 ? 6 : 4 }
+}
+
+function requirePrivateShareConfirmation(url: URL, policy: NoteShareRequestPolicy): void {
+  if (!isShareResourcePath(url.pathname)) throw inputError('私有网络访问仅允许笔记分享接口')
+  if (policy.confirmedPrivateShareUrl) {
+    const approved = canonicalShareUrl(policy.confirmedPrivateShareUrl)
+    if (url.origin === approved.origin && [approved.pathname, `${approved.pathname}/manifest`, `${approved.pathname}/content`].includes(url.pathname)) return
+  }
+  throw Object.assign(new Error(`分享链接解析到私有网络；请确认允许从 ${url.origin} 读取本次分享`), {
+    status: 409, code: 'PRIVATE_SHARE_CONFIRMATION_REQUIRED', origin: url.origin,
+  })
+}
+
+function isLanAddress(address: string): boolean {
+  if (isIP(address) === 4) {
+    const [a, b] = address.split('.').map(Number)
+    return a === 10 || a === 172 && b! >= 16 && b! <= 31 || a === 192 && b === 168 || a === 100 && b! >= 64 && b! <= 127
+  }
+  return isIP(address) === 6 && /^(fc|fd)/i.test(address)
 }
 
 function isShareResourcePath(pathname: string): boolean {
@@ -268,9 +293,15 @@ function isShareResourcePath(pathname: string): boolean {
 
 function isPublicAddress(address: string): boolean {
   if (address.includes(':')) {
-    const normalized = address.toLocaleLowerCase()
+    let normalized: string
+    try { normalized = new URL(`http://[${address}]/`).hostname.slice(1, -1).toLowerCase() } catch { return false }
     if (normalized === '::' || normalized === '::1' || normalized.startsWith('fc') || normalized.startsWith('fd') || normalized.startsWith('fe8') || normalized.startsWith('fe9') || normalized.startsWith('fea') || normalized.startsWith('feb') || normalized.startsWith('ff') || normalized.startsWith('2001:db8:')) return false
     const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1]
+    const mappedHex = normalized.match(/^::ffff:([a-f0-9]{1,4}):([a-f0-9]{1,4})$/)
+    if (mappedHex) {
+      const upper = parseInt(mappedHex[1]!, 16), lower = parseInt(mappedHex[2]!, 16)
+      return isPublicAddress(`${upper >> 8}.${upper & 255}.${lower >> 8}.${lower & 255}`)
+    }
     return mapped === undefined || isPublicAddress(mapped)
   }
   const octets = address.split('.').map(Number)

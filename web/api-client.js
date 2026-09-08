@@ -30,6 +30,8 @@ export function createApiClient({ apiBase, authMode, getToken }) {
     if (!response.ok) {
       const error = new Error(payload?.error || `请求失败（HTTP ${response.status}）`)
       error.status = response.status
+      error.code = payload?.code
+      error.origin = payload?.origin
       throw error
     }
     return payload
@@ -91,4 +93,3 @@ export function createApiClient({ apiBase, authMode, getToken }) {
 
   return { api, binaryRequest, binaryUploadRequest }
 }
-

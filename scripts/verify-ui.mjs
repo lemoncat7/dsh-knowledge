@@ -40,6 +40,7 @@ assert.equal(noteResponse.status, 201)
 const note = await noteResponse.json()
 const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] })
 try {
+  await verifyPrivateShareConfirmation(browser)
   await verifyMaterialParity(browser, root)
   const page = await browser.newPage({ viewport: { width: 1280, height: 850 } })
   const errors = []
@@ -195,6 +196,39 @@ try {
   await browser.close()
   await new Promise(resolve => server.close(resolve))
   await provider.close()
+}
+
+async function verifyPrivateShareConfirmation(browser) {
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
+  const requests = []
+  const url = `https://notes.example.com:1443/knowledge-api/v1/shared/share_${'a'.repeat(32)}`
+  await page.route('**/notes/import-share/inspect', async route => {
+    const body = route.request().postDataJSON()
+    requests.push(body)
+    await route.fulfill({ status: body.confirmPrivateShare ? 200 : 409, contentType: 'application/json', body: JSON.stringify(body.confirmPrivateShare
+      ? { url, manifest: { share: { name: '内网笔记', kind: 'document', fileCount: 1, totalSize: 10 }, truncated: false } }
+      : { error: '分享链接解析到私有网络', code: 'PRIVATE_SHARE_CONFIRMATION_REQUIRED', origin: 'https://notes.example.com:1443' }) })
+  })
+  try {
+    await page.goto(`${base}/knowledge/?view=notes`)
+    await page.getByRole('button', { name: '已分享', exact: true }).first().click()
+    await page.getByRole('button', { name: '从分享导入', exact: true }).click()
+    const input = page.locator('.share-import-form input[type="url"]')
+    await input.fill(url)
+    await page.getByRole('button', { name: '读取分享', exact: true }).click()
+    const allow = page.getByRole('button', { name: '允许本次内网分享并读取', exact: true })
+    await allow.waitFor()
+    assert.equal(requests[0].confirmPrivateShare, false)
+    assert.ok(await page.locator('.share-import-dialog').evaluate(el => el.scrollWidth <= el.clientWidth + 1))
+    await page.screenshot({ path: '/tmp/knowledge-private-share-confirmation.png', fullPage: true })
+    await allow.click()
+    await page.getByText('可以导入', { exact: true }).waitFor()
+    assert.equal(requests[1].confirmPrivateShare, true)
+    await input.fill(url + '/')
+    await page.getByRole('button', { name: '读取分享', exact: true }).click()
+    await allow.waitFor()
+    assert.equal(requests[2].confirmPrivateShare, false, 'editing the URL clears approval')
+  } finally { await page.close() }
 }
 
 async function verifyKnowledgeTreeOverflow(browser) {

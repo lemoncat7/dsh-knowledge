@@ -955,12 +955,8 @@ html,
 .notes-search-row strong, .notes-search-row small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .notes-search-row strong { font-size: 11px; }
 .notes-search-row small { margin-top: 1px; color: var(--text-tertiary); font-size: 10px; }
-.note-node-icon { position: relative; width: 18px; height: 21px; display: grid; place-items: end center; flex: none; border: 1px solid var(--border-strong); border-radius: 3px; padding-bottom: 2px; background: var(--surface-raised); color: var(--text-tertiary); font-size: 5px; font-weight: 720; letter-spacing: .02em; }
-.note-node-icon.is-folder { width: 20px; height: 15px; margin-top: 2px; border-radius: 3px; background: color-mix(in srgb, var(--text-tertiary) 11%, var(--surface-raised)); }
-.note-node-icon.is-folder::before { content: ""; position: absolute; top: -4px; left: 1px; width: 9px; height: 4px; border: 1px solid var(--border-strong); border-bottom: 0; border-radius: 3px 3px 0 0; background: inherit; }
-.note-node-icon.is-document, .note-node-icon[data-media-kind="text"] { border-color: color-mix(in srgb, var(--accent) 30%, var(--border-strong)); color: var(--accent); }
-.note-node-icon.is-large { width: 38px; height: 46px; border-radius: 6px; padding-bottom: 5px; font-size: 7px; }
-.note-node-icon.is-folder.is-large { width: 44px; height: 32px; }
+.note-node-icon.is-large { width: 38px; height: 42px; }
+.note-node-icon.tree-folder-icon.is-large { width: 40px; height: 35px; }
 .notes-content { min-width: 0; min-height: 0; overflow: auto; background: transparent; }
 .notes-content-header { position: sticky; top: 0; z-index: 2; border-bottom: 1px solid var(--separator); padding: 11px 22px 13px; background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; }
 .notes-breadcrumb { min-width: 0; display: flex; align-items: center; gap: 5px; overflow: hidden; color: var(--text-tertiary); font-size: 10px; }
@@ -1028,8 +1024,8 @@ html,
 .share-import-preview strong, .share-import-preview p { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .share-import-preview strong { color: var(--text); font-size: 12px; }
 .share-import-preview p { margin: 4px 0 0; color: var(--text-tertiary); font-size: 10px; }
-.share-import-preview-mark { position: relative; width: 42px; height: 32px; border: 1.5px solid var(--border-strong); border-radius: 8px; background: var(--surface-soft); }
-.share-import-preview-mark::after { position: absolute; inset: 8px 12px; border: solid var(--text-tertiary); border-width: 0 1.5px 1.5px 0; content: ""; transform: rotate(45deg); }
+.share-import-preview-mark { display: grid; place-items: center; width: 42px; height: 42px; border: 1px solid var(--glass-border); border-radius: 12px; background: var(--surface-soft); color: var(--text-secondary); }
+.share-import-preview-mark > .interface-icon { width: 24px; height: 24px; }
 .share-import-note { margin: -4px 0 0; border-left: 2px solid var(--border-strong); padding: 5px 0 5px 10px; color: var(--text-tertiary); font-size: 10px; line-height: 1.6; }
 .dialog.share-import-dialog { width: min(560px, calc(100vw - 32px)); }
 .notes-content.is-document, .notes-content.is-file { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; }

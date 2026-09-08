@@ -2181,8 +2181,9 @@ function openImportNoteShare() {
   destination.input.disabled = true
   const inspectButton = actionButton('读取分享', () => { void inspect() }, 'small')
   const fieldError = element('p', { class: 'share-import-field-error', role: 'alert', hidden: true })
+  const privateConfirmation = element('div', { class: 'share-import-note', hidden: true, role: 'status' })
   const preview = element('div', { class: 'share-import-preview', 'data-state': 'empty', 'aria-live': 'polite' },
-    element('span', { class: 'share-import-preview-mark', 'aria-hidden': 'true' }),
+    element('span', { class: 'share-import-preview-mark', 'aria-hidden': 'true' }, interfaceIcon('share-import')),
     element('div', {}, element('strong', {}, '等待读取分享'), element('p', {}, '读取后会显示类型、文件数量与大小；导入前不会写入任何内容。')),
   )
   const destinationHint = element('span', { class: 'field-hint' }, '正在读取你的笔记目录…')
@@ -2191,11 +2192,13 @@ function openImportNoteShare() {
   urlField.wrapper.replaceChildren(element('label', {}, '分享链接'), inputRow, fieldError)
   const form = element('form', { class: 'share-import-form', onSubmit: event => { event.preventDefault(); void inspect() } },
     urlField.wrapper,
+    privateConfirmation,
     preview,
     destination.wrapper,
     element('p', { class: 'share-import-note' }, '导入会创建一份独立副本；之后对方更新或停止分享，都不会改动你已经导入的内容。'),
   )
   let inspectedUrl = ''
+  let confirmedPrivateUrl = ''
 
   const showFieldError = message => {
     fieldError.textContent = message
@@ -2215,33 +2218,54 @@ function openImportNoteShare() {
     )
   }
   const inspect = async () => {
+    if (inspectButton.disabled) return false
     if (!urlField.input.reportValidity()) return false
+    const requestedUrl = urlField.input.value.trim()
+    urlField.input.disabled = true
+    privateConfirmation.hidden = true
     inspectButton.disabled = true
     inspectButton.setAttribute('aria-busy', 'true')
     inspectButton.textContent = '正在读取…'
     showFieldError('')
     preview.dataset.state = 'loading'
     try {
-      const result = await api('notes/import-share/inspect', { method: 'POST', body: { url: urlField.input.value.trim() } })
-      inspectedUrl = urlField.input.value.trim()
+      const result = await api('notes/import-share/inspect', { method: 'POST', body: { url: requestedUrl, confirmPrivateShare: confirmedPrivateUrl === requestedUrl } })
+      inspectedUrl = requestedUrl
       renderPreview(result.manifest)
       return !result.manifest.truncated
     } catch (error) {
       inspectedUrl = ''
       preview.dataset.state = 'error'
       preview.replaceChildren(
-        element('span', { class: 'share-import-preview-mark', 'aria-hidden': 'true' }),
+        element('span', { class: 'share-import-preview-mark', 'aria-hidden': 'true' }, interfaceIcon('share-import')),
         element('div', {}, element('strong', {}, '无法读取这个分享'), element('p', {}, '请检查链接是否完整、分享是否仍有效。')),
       )
       showFieldError(friendlyError(error))
+      if (error.code === 'PRIVATE_SHARE_CONFIRMATION_REQUIRED' && error.origin === new URL(requestedUrl).origin) {
+        confirmedPrivateUrl = ''
+        showFieldError('')
+        preview.dataset.state = 'empty'
+        preview.replaceChildren(
+          element('span', { class: 'share-import-preview-mark', 'aria-hidden': 'true' }, interfaceIcon('share-import')),
+          element('div', {}, element('strong', {}, '等待内网访问确认'), element('p', {}, '确认后读取分享清单，不会立即导入。')),
+        )
+        privateConfirmation.replaceChildren(
+          element('p', {}, `目标 ${error.origin} 解析到内网地址。确认后，DSH 服务端将访问此链接的分享接口；请仅允许你信任的来源。授权仅用于本次读取和导入，不会保存到白名单。`),
+          actionButton('允许本次内网分享并读取', () => { confirmedPrivateUrl = requestedUrl; void inspect() }, 'small'),
+        )
+        privateConfirmation.hidden = false
+      }
       return false
     } finally {
       inspectButton.disabled = false
+      urlField.input.disabled = false
       inspectButton.removeAttribute('aria-busy')
       inspectButton.textContent = '读取分享'
     }
   }
   urlField.input.addEventListener('input', () => {
+    confirmedPrivateUrl = ''
+    privateConfirmation.hidden = true
     if (urlField.input.value.trim() !== inspectedUrl) {
       inspectedUrl = ''
       preview.dataset.state = 'empty'
@@ -2265,7 +2289,7 @@ function openImportNoteShare() {
       showFieldError('')
       try {
         const result = await api('notes/import-share', {
-          method: 'POST', body: { url: requestedUrl, parentId: destination.input.value || null },
+          method: 'POST', body: { url: requestedUrl, parentId: destination.input.value || null, confirmPrivateShare: confirmedPrivateUrl === requestedUrl },
         })
         state.notes.children.clear()
         state.notes.loadedFolders.clear()
@@ -2747,8 +2771,7 @@ function noteInfoItem(label, value, title = '', key = '') {
 }
 
 function renderNoteIcon(node, large = false) {
-  const label = node.kind === 'folder' ? '' : noteExtension(node.name)
-  return element('span', { class: `note-node-icon is-${node.kind}${large ? ' is-large' : ''}`, 'data-media-kind': noteMediaKind(node), 'aria-hidden': 'true' }, label)
+  return element('span', { class: `note-node-icon ${node.kind === 'folder' ? 'tree-folder-icon' : 'tree-document-icon'}${large ? ' is-large' : ''}`, 'data-media-kind': noteMediaKind(node), 'aria-hidden': 'true' })
 }
 
 function noteKindLabel(node) {
@@ -3557,11 +3580,6 @@ function noteMediaKind(node) {
   if (node.mediaType?.startsWith('image/')) return 'image'
   if (node.mediaType === 'application/pdf') return 'pdf'
   return 'file'
-}
-
-function noteExtension(name) {
-  const extension = name.includes('.') ? name.split('.').pop() : 'FILE'
-  return extension.slice(0, 4).toLocaleUpperCase()
 }
 
 function shortNoteId(id) {

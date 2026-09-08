@@ -72,6 +72,8 @@ test('public API routes enforce the read/propose/write/admin capability matrix',
     { required: 'admin', method: 'POST', path: '/notes/missing/share' },
     { required: 'admin', method: 'DELETE', path: '/notes/missing/share' },
     { required: 'admin', method: 'GET', path: '/tokens' },
+    { required: 'admin', method: 'POST', path: '/notes/import-share/inspect', body: { url: 'invalid', confirmPrivateShare: true } },
+    { required: 'admin', method: 'POST', path: '/notes/import-share', body: { url: 'invalid', confirmPrivateShare: true } },
   ]
 
   for (const route of cases) {

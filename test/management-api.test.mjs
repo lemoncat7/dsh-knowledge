@@ -132,7 +132,15 @@ test('same-origin management API controls public access and deletes revoked toke
     body: JSON.stringify({ url: `http://127.0.0.1:${address.port}${LOCAL_MANAGEMENT_API_PREFIX}/shared/share_${'x'.repeat(32)}` }),
   })
   assert.equal(blockedInspectResponse.status, 400)
-  assert.match((await blockedInspectResponse.json()).error, /私有网络/)
+  assert.match((await blockedInspectResponse.json()).error, /本机或敏感网络/)
+  const privateInspectResponse = await fetch(`${base}/notes/import-share/inspect`, {
+    method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ url: `http://192.168.2.9:3081/knowledge-api/v1/shared/share_${'z'.repeat(32)}` }),
+  })
+  assert.equal(privateInspectResponse.status, 409)
+  const privateError = await privateInspectResponse.json()
+  assert.equal(privateError.code, 'PRIVATE_SHARE_CONFIRMATION_REQUIRED')
+  assert.equal(privateError.origin, 'http://192.168.2.9:3081')
   const importResponse = await fetch(`${base}/notes/import-share`, {
     method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
     body: JSON.stringify({ url: `${base}/shared/${share.token}`, parentId: null }),

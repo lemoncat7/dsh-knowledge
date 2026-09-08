@@ -156,16 +156,26 @@ async function dispatch(
     if (method === 'POST' && segments[1] === 'import-share' && segments[2] === 'inspect' && segments.length === 3) {
       requirePermission(actor.permissions, 'read')
       const body = await readObject(req)
-      return sendJson(res, 200, await inspectNoteShareUrl(requiredString(body.url, 'url'), provider.notes, options.shareRequestPolicy?.()))
+      const policy = { ...options.shareRequestPolicy?.() }
+      if (body.confirmPrivateShare === true) {
+        requirePermission(actor.permissions, 'admin')
+        policy.confirmedPrivateShareUrl = requiredString(body.url, 'url')
+      }
+      return sendJson(res, 200, await inspectNoteShareUrl(requiredString(body.url, 'url'), provider.notes, policy))
     }
     if (method === 'POST' && segments[1] === 'import-share' && segments.length === 2) {
       requirePermission(actor.permissions, 'write')
       const body = await readObject(req)
+      const policy = { ...options.shareRequestPolicy?.() }
+      if (body.confirmPrivateShare === true) {
+        requirePermission(actor.permissions, 'admin')
+        policy.confirmedPrivateShareUrl = requiredString(body.url, 'url')
+      }
       return sendJson(res, 201, await importNoteShare(
         provider.notes,
         requiredString(body.url, 'url'),
         nullableString(body.parentId, 'parentId'),
-        options.shareRequestPolicy?.(),
+        policy,
       ))
     }
     const id = segments[1]
@@ -1018,7 +1028,9 @@ function sendOpaqueFile(
 function sendError(res: ServerResponse, error: unknown): void {
   const status = statusOf(error)
   const message = error instanceof Error ? error.message : 'internal knowledge API error'
-  sendJson(res, status, { error: status >= 500 ? 'internal knowledge API error' : message, code: codeOf(error) })
+  sendJson(res, status, { error: status >= 500 ? 'internal knowledge API error' : message, code: codeOf(error),
+    ...(isRecord(error) && error.code === 'PRIVATE_SHARE_CONFIRMATION_REQUIRED' && typeof error.origin === 'string' ? { origin: error.origin } : {}),
+  })
 }
 
 function statusOf(error: unknown): number {
