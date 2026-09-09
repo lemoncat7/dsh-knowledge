@@ -7,6 +7,52 @@ const queued = { status: 'queued', summary: '等待回写', retryable: false }
 const completed = { status: 'completed', summary: '回写成功', retryable: false }
 const response = body => new Response(JSON.stringify(body), { status: 200 })
 
+test('notification during an in-flight read triggers a trailing authoritative refresh', async t => {
+  let release, calls = 0
+  const changes = []
+  const client = new WritebackStatusClient('/status', value => changes.push(value), async () => {
+    if (++calls === 1) return new Promise(resolve => { release = resolve })
+    return response(completed)
+  })
+  t.after(() => client.dispose())
+  client.refresh()
+  client.invalidate(); client.invalidate()
+  release(response(queued))
+  await tick(); await tick()
+  assert.equal(calls, 2)
+  assert.equal(changes.at(-1).status, 'completed')
+})
+
+test('unrelated HTTP 404 does not masquerade as an authoritative missing record', async t => {
+  let calls = 0
+  const changes = []
+  const client = new WritebackStatusClient('/status', (value, pending, error) => changes.push({ value, error }), async () => ++calls === 1 ? response(queued) : new Response('{}', { status: 404 }))
+  t.after(() => client.dispose())
+  client.refresh(); await tick()
+  client.refresh(); await tick()
+  assert.equal(changes.at(-1).value.status, 'queued')
+  assert.match(changes.at(-1).error, /暂时无法读取/)
+})
+
+test('authoritative missing clears old queued state, stays explicit and later recovers', async t => {
+  let body = response(queued)
+  const changes = []
+  const client = new WritebackStatusClient('/status', (value, pending, error) => changes.push({ value, error }), async () => body.clone())
+  t.after(() => client.dispose())
+  client.refresh(); await tick()
+  assert.equal(changes.at(-1).value.status, 'queued')
+  body = new Response(JSON.stringify({ status: 'missing' }), { status: 404 })
+  client.refresh(); await tick()
+  assert.equal(changes.at(-1).value, undefined)
+  assert.match(changes.at(-1).error, /旧等待状态已失效/)
+  client.refresh(); await tick()
+  assert.match(changes.at(-1).error, /旧等待状态已失效/)
+  body = response(completed)
+  client.refresh(); await tick()
+  assert.equal(changes.at(-1).value.status, 'completed')
+  assert.equal(changes.at(-1).error, undefined)
+})
+
 test('default transport preserves the browser global fetch receiver', async t => {
   const original = globalThis.fetch
   const changes = []

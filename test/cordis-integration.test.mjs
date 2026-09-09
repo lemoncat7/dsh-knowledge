@@ -53,6 +53,8 @@ test('real Cordis context dynamically mounts API and Web routes', async (t) => {
     ['prefix', '/knowledge'],
     ['prefix', '/knowledge-api/v1'],
     ['exact', '/knowledge-control/v1/connection'],
+    ['exact', '/knowledge-control/v1/writeback-jobs'],
+    ['exact', '/knowledge-control/v1/writeback-changes'],
     ['exact', '/knowledge-control/v1/writeback-status'],
     ['exact', '/knowledge-control/v1/models'],
   ])

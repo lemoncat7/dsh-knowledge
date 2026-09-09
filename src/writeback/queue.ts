@@ -6,12 +6,14 @@ import type { ExtractionWriteDestination } from '../domain.js'
 import type { ExtractionCheckpoint, PlannedWrite, TurnSnapshot } from '../extraction.js'
 
 export interface WritebackStatus {
-  status: 'queued' | 'running' | 'completed' | 'failed'
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
   summary: string
   error?: string
   retryable: boolean
   destinations?: ExtractionWriteDestination[]
   nextAttemptAt?: number
+  blockedBy?: string
+  cancelRequested?: boolean
 }
 export interface WritebackWork {
   snapshot: TurnSnapshot
@@ -29,8 +31,28 @@ export class WritebackQueue {
   private timer: NodeJS.Timeout | undefined
   private active: Promise<void> | undefined
   private controller: AbortController | undefined
+  private activeKey: string | undefined
   private closed = false
   private closing: Promise<void> | undefined
+  private readonly listeners = new Set<() => void>()
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
+  get revision(): string {
+    if (this.closed) return `${this.owner}:closed`
+    const external = this.db.prepare('PRAGMA data_version').get() as { data_version: number }
+    const local = this.db.prepare('SELECT total_changes() AS changes').get() as { changes: number }
+    return `${this.owner}:${external.data_version}:${local.changes}`
+  }
+
+  private notify(): void {
+    for (const listener of this.listeners) {
+      try { listener() } catch (error) { this.warn(`writeback status notification: ${String(error)}`) }
+    }
+  }
   constructor(path: string, private readonly execute: (work: WritebackWork, checkpoint: ExtractionCheckpoint, signal: AbortSignal) => Promise<WritebackStatus>, private readonly warn: (message: string) => void = () => {}) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
     this.db = new DatabaseSync(path)
@@ -43,24 +65,33 @@ export class WritebackQueue {
       CREATE INDEX IF NOT EXISTS queue_capacity ON queue_jobs(id) WHERE status!='completed';
       CREATE TABLE IF NOT EXISTS queue_lease(id INTEGER PRIMARY KEY CHECK(id=1), owner TEXT NOT NULL, expires INTEGER NOT NULL);
       INSERT OR IGNORE INTO queue_lease VALUES(1,'',0);`)
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const columns = this.db.prepare('PRAGMA table_info(queue_jobs)').all() as { name: string }[]
+      if (!columns.some(column => column.name === 'cancel_requested')) this.db.exec('ALTER TABLE queue_jobs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0')
+      if (!columns.some(column => column.name === 'created_at')) this.db.exec('ALTER TABLE queue_jobs ADD COLUMN created_at INTEGER')
+      this.db.exec('DROP INDEX IF EXISTS queue_management_order')
+      this.db.exec('COMMIT')
+    } catch (error) { this.db.exec('ROLLBACK'); this.db.close(); throw error }
   }
 
   enqueue(work: WritebackWork): WritebackStatus {
     if (this.closed) throw new Error('知识库回写队列已关闭')
     const existing = this.status(work.snapshot.sourceKey)
     if (existing) return existing
-    const count = this.db.prepare("SELECT count(*) AS count FROM queue_jobs WHERE status != 'completed'").get() as { count: number }
+    const count = this.db.prepare("SELECT count(*) AS count FROM queue_jobs WHERE status NOT IN ('completed','cancelled')").get() as { count: number }
     if (count.count >= 1000) throw new Error('回写队列已满，请先处理失败任务；未删除任何未完成记录')
     const view: WritebackStatus = { status: 'queued', summary: '知识库回写 · 等待回写', retryable: false }
-    this.db.prepare('INSERT OR IGNORE INTO queue_jobs(source_key,session_id,payload,status,view) VALUES(?,?,?,?,?)')
-      .run(work.snapshot.sourceKey, work.snapshot.sessionId, JSON.stringify(work), 'queued', JSON.stringify(view))
+    this.db.prepare('INSERT OR IGNORE INTO queue_jobs(source_key,session_id,payload,status,view,created_at) VALUES(?,?,?,?,?,?)')
+      .run(work.snapshot.sourceKey, work.snapshot.sessionId, JSON.stringify(work), 'queued', JSON.stringify(view), Date.now())
     this.kick()
     return this.status(work.snapshot.sourceKey)!
   }
 
   completeEmpty(sourceKey: string, sessionId: string): WritebackStatus {
     const view: WritebackStatus = { status: 'completed', summary: '知识库回写 · 当前回答无可提取内容', retryable: false }
-    this.db.prepare('INSERT OR IGNORE INTO queue_jobs(source_key,session_id,status,view) VALUES(?,?,?,?)').run(sourceKey, sessionId, view.status, JSON.stringify(view))
+    this.db.prepare('INSERT OR IGNORE INTO queue_jobs(source_key,session_id,status,view,created_at) VALUES(?,?,?,?,?)').run(sourceKey, sessionId, view.status, JSON.stringify(view), Date.now())
+    this.notify()
     return this.status(sourceKey)!
   }
 
@@ -68,8 +99,9 @@ export class WritebackQueue {
     const row = this.db.prepare('SELECT id,session_id,status,view FROM queue_jobs WHERE source_key=?').get(key) as Pick<Row, 'id' | 'session_id' | 'status' | 'view'> | undefined
     if (!row) return undefined
     const view = JSON.parse(row.view) as WritebackStatus
-    if (row.status === 'queued' && this.db.prepare("SELECT 1 FROM queue_jobs WHERE session_id=? AND id<? AND status!='completed' LIMIT 1").get(row.session_id, row.id)) {
-      return { ...view, summary: '知识库回写 · 等待本会话前一轮回写完成；若前一轮失败，请先重试' }
+    const blocker = row.status === 'queued' ? this.db.prepare("SELECT source_key FROM queue_jobs WHERE session_id=? AND id<? AND status NOT IN ('completed','cancelled') ORDER BY id LIMIT 1").get(row.session_id, row.id) as { source_key: string } | undefined : undefined
+    if (blocker) {
+      return { ...view, blockedBy: blocker.source_key, summary: '知识库回写 · 等待本会话前一轮回写完成；可在回写任务中重试或取消阻塞项' }
     }
     return view
   }
@@ -86,6 +118,37 @@ export class WritebackQueue {
     return this.status(key)!
   }
 
+  list(sessionId = '', offset = 0, limit = 50) {
+    const where = sessionId ? 'WHERE session_id=?' : ''
+    const args = sessionId ? [sessionId] : []
+    const total = (this.db.prepare(`SELECT count(*) AS count FROM queue_jobs ${where}`).get(...args) as { count: number }).count
+    const rows = this.db.prepare(`SELECT source_key,session_id,attempts,created_at FROM queue_jobs ${where} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...args, limit, offset) as { source_key: string; session_id: string; attempts: number; created_at: number | null }[]
+    return { total, items: rows.map(row => ({ sourceKey: row.source_key, sessionId: row.session_id, attempts: row.attempts, createdAt: row.created_at, ...this.status(row.source_key)! })) }
+  }
+
+  cancel(key: string): WritebackStatus {
+    if (this.closed) throw new Error('知识库回写队列已关闭')
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const current = this.status(key)
+      if (!current) throw Object.assign(new Error('回写任务不存在'), { status: 404 })
+      if (current.status === 'running') {
+        this.db.prepare('UPDATE queue_jobs SET cancel_requested=1,view=? WHERE source_key=?').run(JSON.stringify({ ...current, cancelRequested: true, summary: '知识库回写 · 正在取消，等待当前写入结束' }), key)
+      } else if (current.status !== 'completed' && current.status !== 'cancelled') {
+        this.finishCancellation(key)
+      }
+      this.db.exec('COMMIT')
+    } catch (error) { this.db.exec('ROLLBACK'); throw error }
+    if (this.activeKey === key) this.controller?.abort(new Error('用户取消回写'))
+    this.kick()
+    return this.status(key)!
+  }
+
+  private finishCancellation(key: string): void {
+    const view: WritebackStatus = { status: 'cancelled', summary: '知识库回写 · 已取消；已写入的内容不会撤销', retryable: false }
+    this.db.prepare("UPDATE queue_jobs SET status='cancelled',payload=NULL,plan=NULL,view=? WHERE source_key=?").run(JSON.stringify(view), key)
+  }
+
   start(): void {
     if (this.timer || this.closed) return
     this.timer = setInterval(() => this.kick(), 2_000)
@@ -96,6 +159,7 @@ export class WritebackQueue {
   get isRunning(): boolean { return this.controller !== undefined }
 
   private kick(): void {
+    if (!this.closed) this.notify()
     if (this.closed || this.active) return
     // A macrotask boundary lets the host finish its turn/channel reply first.
     this.active = new Promise<void>(resolve => setImmediate(resolve)).then(() => this.drain())
@@ -109,10 +173,11 @@ export class WritebackQueue {
       const lease = this.db.prepare('SELECT owner,expires FROM queue_lease WHERE id=1').get() as { owner: string; expires: number }
       if (lease.owner !== this.owner && lease.expires > now) { this.db.exec('COMMIT'); return undefined }
       // Only the current lease owner may recover work abandoned by a dead process.
+      for (const cancelled of this.db.prepare("SELECT source_key FROM queue_jobs WHERE status='running' AND cancel_requested=1").all() as { source_key: string }[]) this.finishCancellation(cancelled.source_key)
       this.db.prepare("UPDATE queue_jobs SET status='queued',next_at=0,view=? WHERE status='running'")
         .run(JSON.stringify({ status: 'queued', summary: '知识库回写 · 中断后等待恢复', retryable: false }))
       const row = this.db.prepare(`SELECT j.* FROM queue_jobs j WHERE j.status='queued' AND j.next_at<=?
-        AND NOT EXISTS(SELECT 1 FROM queue_jobs p WHERE p.session_id=j.session_id AND p.id<j.id AND p.status!='completed')
+        AND NOT EXISTS(SELECT 1 FROM queue_jobs p WHERE p.session_id=j.session_id AND p.id<j.id AND p.status NOT IN ('completed','cancelled'))
         ORDER BY j.id LIMIT 1`).get(now) as unknown as Row | undefined
       if (!row) { this.db.exec('COMMIT'); return undefined }
       this.db.prepare('UPDATE queue_lease SET owner=?,expires=? WHERE id=1').run(this.owner, now + LEASE_MS)
@@ -129,10 +194,13 @@ export class WritebackQueue {
       if (!row) break
       const controller = new AbortController()
       this.controller = controller
+      this.activeKey = row.source_key
+      this.notify()
       const assertLease = (): void => {
         controller.signal.throwIfAborted()
         const lease = this.db.prepare('SELECT owner,expires FROM queue_lease WHERE id=1').get() as { owner: string; expires: number }
         if (lease.owner !== this.owner || lease.expires < Date.now()) throw new Error('回写工作租约已失效')
+        if (this.db.prepare('SELECT 1 FROM queue_jobs WHERE id=? AND cancel_requested=1').get(row.id)) throw new Error('用户取消回写')
       }
       const renewal = setInterval(() => {
         try {
@@ -153,6 +221,10 @@ export class WritebackQueue {
       } catch (error) {
         const lease = this.db.prepare('SELECT owner FROM queue_lease WHERE id=1').get() as { owner: string }
         if (lease.owner !== this.owner) return
+        if (this.db.prepare('SELECT 1 FROM queue_jobs WHERE id=? AND cancel_requested=1').get(row.id)) {
+          this.finishCancellation(row.source_key)
+          continue
+        }
         const message = error instanceof Error ? error.message : String(error)
         const waiting = error instanceof WritebackDeferred
         const transient = /network|fetch failed|EOF|ECONN|ETIMEDOUT|EAI_AGAIN|SQLITE_BUSY|timeout|timed out|\b(?:429|500|502|503|504)\b|invalid JSON|网络|超时|租约已失效/i.test(message)
@@ -165,7 +237,9 @@ export class WritebackQueue {
       } finally {
         clearInterval(renewal)
         this.controller = undefined
+        this.activeKey = undefined
         this.db.prepare('UPDATE queue_lease SET owner=\'\',expires=0 WHERE owner=?').run(this.owner)
+        this.notify()
       }
     }
   }

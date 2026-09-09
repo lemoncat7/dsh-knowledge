@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { WritebackStatusClient } from './writeback/status-client.js'
+import { subscribeWritebackChanges } from '../web/writeback-live.js'
 import type { WritebackStatus } from './writeback/queue.js'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
@@ -60,6 +61,7 @@ export interface KnowledgeWorkspaceController {
 export type KnowledgeDocumentTarget =
   | { view?: 'entries'; knowledgeBaseId: string; documentId: string }
   | { view: 'notes'; noteId?: string }
+  | { view: 'writeback'; sessionId: string }
 
 
 const CONNECTION_CONTROL_PATH = '/knowledge-control/v1/connection'
@@ -115,6 +117,7 @@ function KnowledgeWritebackStatus({
       (value, pending, error) => { setState(value); setRetrying(pending); setReadError(error) },
     )
     client.current = status
+    const unsubscribeChanges = subscribeWritebackChanges('conversation-web', () => status.invalidate())
     let inView = true
     const refresh = (): void => status.setVisible(inView && !document.hidden)
     const observer = typeof IntersectionObserver === 'undefined' ? undefined : new IntersectionObserver(entries => {
@@ -132,11 +135,12 @@ function KnowledgeWritebackStatus({
       window.removeEventListener('focus', refresh)
       window.removeEventListener('online', refresh)
       status.dispose()
+      unsubscribeChanges()
       client.current = undefined
     }
   }, [sessionId, turn])
   if (state === undefined) return <div ref={container}>
-    {readError && <div className="dsh-knowledge-writeback-notice" role="status">{readError}</div>}
+    {readError && <div className="dsh-knowledge-writeback-notice" role="status">{readError}<button type="button" onClick={() => workspace.openDocument({ view: 'writeback', sessionId })}>管理回写</button></div>}
   </div>
   const retry = (): void => client.current?.retry()
   const destinations = state.destinations ?? []
@@ -145,6 +149,7 @@ function KnowledgeWritebackStatus({
     <div className="dsh-knowledge-writeback-summary" role="status" aria-atomic="true">
       <span>知识库回写</span><strong>@lemoncat7/dsh-knowledge</strong><span title={state.error}>{summary}</span>
       {state.status === 'failed' && state.retryable && <button type="button" disabled={retrying} onClick={() => { void retry() }}>{retrying ? '重试中…' : '重试'}</button>}
+      {state.status !== 'completed' && <button type="button" onClick={() => workspace.openDocument({ view: 'writeback', sessionId })}>管理回写</button>}
     </div>
     {destinations.length > 0 && <ul className="dsh-knowledge-writeback-destinations" aria-label="回写目标">
       {destinations.map((destination, index) => <li key={`${destination.knowledgeBaseId}:${destination.documentId ?? destination.documentTitle}:${index}`}>
@@ -559,7 +564,10 @@ function knowledgePanelUrl(managementPath: string, sessionId?: string, projectId
   if (sessionId !== undefined) params.set('sessionId', sessionId)
   if (projectId !== undefined) params.set('projectId', projectId)
   if (target !== undefined) {
-    if (target.view === 'notes') {
+    if (target.view === 'writeback') {
+      params.set('view', 'writeback')
+      params.set('sessionId', target.sessionId)
+    } else if (target.view === 'notes') {
       params.set('view', 'notes')
       if (target.noteId !== undefined) params.set('noteId', target.noteId)
     } else {

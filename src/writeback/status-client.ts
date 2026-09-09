@@ -10,6 +10,8 @@ export class WritebackStatusClient {
   private failures = 0
   private value: WritebackStatus | undefined
   private readError: string | undefined
+  private missing = false
+  private invalidated = false
   // Browser fetch checks its Window receiver. Never store it as an unbound
   // instance method: this.fetcher() would supply the client as its receiver.
   constructor(private readonly url: string, private readonly change: (value: WritebackStatus | undefined, retrying: boolean, readError?: string) => void, private readonly fetcher: typeof fetch = (...args) => globalThis.fetch(...args)) {}
@@ -23,6 +25,12 @@ export class WritebackStatusClient {
   refresh(): void {
     if (this.disposed || !this.visible || this.retrying || this.request && !this.request.signal.aborted) return
     void this.load(false)
+  }
+
+  invalidate(): void {
+    if (this.disposed || !this.visible) return
+    if (this.retrying || this.request && !this.request.signal.aborted) this.invalidated = true
+    else this.refresh()
   }
 
   retry(): void {
@@ -46,13 +54,22 @@ export class WritebackStatusClient {
       })
       const body = await response.json() as WritebackStatus
       if (this.request !== controller || this.disposed) return
-      if (!response.ok && (retry || response.status !== 404)) throw new Error(body.error ?? `状态请求失败（HTTP ${response.status}）`)
-      this.readError = undefined
+      if (!response.ok && (retry || response.status !== 404 || String(body.status) !== 'missing')) throw new Error(body.error ?? `状态请求失败（HTTP ${response.status}）`)
+      if (response.ok && !body.summary) throw new Error('无效的回写状态响应')
       if (response.ok && body.summary) {
+        this.readError = undefined
+        this.missing = false
         this.value = body
         this.failures = 0
-        delay = body.status === 'completed' ? 0 : body.status === 'failed' ? 15_000 : 1_500
+        delay = body.status === 'completed' || body.status === 'cancelled' ? 0 : body.status === 'failed' ? 15_000 : 1_500
       } else {
+        // A definitive missing response must invalidate a previously displayed state.
+        // Initial absence is normal before turn-stopping has persisted the snapshot.
+        if (this.value || this.missing) {
+          this.missing = true
+          this.value = undefined
+          this.readError = '当前客户端找不到这轮回写记录；旧等待状态已失效，请在回写任务中核对。'
+        } else this.readError = undefined
         delay = ++this.failures <= 3 ? 1_500 : 60_000
       }
     } catch (error) {
@@ -66,7 +83,10 @@ export class WritebackStatusClient {
         this.request = undefined
         if (retry) this.retrying = false
         this.change(this.value, this.retrying, this.readError)
-        if (delay && this.visible) this.timer = setTimeout(() => this.refresh(), delay)
+        if (this.invalidated && this.visible) {
+          this.invalidated = false
+          this.refresh()
+        } else if (delay && this.visible) this.timer = setTimeout(() => this.refresh(), delay)
       }
     }
   }

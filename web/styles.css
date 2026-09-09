@@ -2028,3 +2028,12 @@ html,
 @media (forced-colors: active) {
   .status-dot, .history-dot { forced-color-adjust: none; }
 }
+/* Durable outbox: reuse workspace controls and surfaces, no animated cards. */
+.writeback-workspace { display: grid; gap: 12px; min-width: 0; }
+.writeback-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.writeback-toolbar input { flex: 1 1 220px; min-width: 0; }
+.writeback-job-list { display: grid; gap: 12px; }
+.writeback-job { padding: 12px; border: 1px solid var(--border); border-radius: 12px; min-width: 0; }
+.writeback-job p { margin: 8px 0; overflow-wrap: anywhere; }
+.writeback-job-key { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 8px; }
+.writeback-job pre { white-space: pre-wrap; overflow-wrap: anywhere; }

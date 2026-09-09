@@ -3,6 +3,8 @@ import Schema from '@deepseek-ai/schemastery'
 import { randomBytes } from 'node:crypto'
 import { assertKnowledgeBrowserRequest, LOCAL_MANAGEMENT_API_PREFIX, registerKnowledgeApi } from './api.js'
 import { registerKnowledgeActivityControl } from './activity-control.js'
+import { registerWritebackControl } from './writeback/control.js'
+import { registerWritebackLive } from './writeback/live-control.js'
 import {
   connectionSettingsBase,
   createConnectionProvider,
@@ -301,6 +303,10 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
     })
     httpRuntime.effect(() => disposeControl, 'dsh-knowledge.connection-control')
 
+    const disposeWritebackControl = registerWritebackControl(httpRuntime, writebackQueue)
+    const disposeWritebackLive = registerWritebackLive(httpRuntime, writebackQueue)
+    if (disposeWritebackLive) httpRuntime.effect(() => disposeWritebackLive, 'dsh-knowledge.writeback-live')
+    if (disposeWritebackControl) httpRuntime.effect(() => disposeWritebackControl, 'dsh-knowledge.writeback-control')
     const disposeWritebackStatus = httpRuntime.webServer?.register({
       kind: 'exact',
       path: '/knowledge-control/v1/writeback-status',
@@ -318,8 +324,13 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
           const key = `${sessionId}:${turn}`
           let state = writebackQueue?.status(key) ?? writebackStatuses.get(key)
           if (state === undefined) {
-            const job = await provider.extractionJob(key).catch(() => undefined)
+            // Transport failure is not authoritative absence. Return an error so
+            // clients retain their last known state with a disconnected warning.
+            const job = await provider.extractionJob(key)
             state = job === undefined ? undefined : statusFromExtractionJob(job, false)
+            if (state && job?.status !== 'completed') {
+              state = { ...state, summary: `${state.summary}（历史服务端记录；本客户端无恢复快照，请到发起回写的客户端核对）` }
+            }
           }
           if (req.method === 'POST') {
             if (!writebackQueue) throw connectionError(409, '知识库回写已停用')

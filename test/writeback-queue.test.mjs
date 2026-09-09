@@ -7,6 +7,75 @@ import { DatabaseSync } from 'node:sqlite'
 import { WritebackQueue } from '../lib/writeback/queue.js'
 
 const done = { status: 'completed', summary: '已写入', retryable: false }
+
+test('management lists newest first and preserves original creation time on duplicate enqueue', async t => {
+  const queue = new WritebackQueue(':memory:', async () => done)
+  t.after(() => queue.close())
+  const before = Date.now()
+  queue.enqueue(work('older'))
+  const createdAt = queue.list().items[0].createdAt
+  queue.enqueue(work('newer'))
+  queue.enqueue(work('older'))
+  assert.deepEqual(queue.list().items.map(item => item.sourceKey), ['newer:1', 'older:1'])
+  assert.equal(queue.list('older').items[0].createdAt, createdAt)
+  assert.ok(createdAt >= before && createdAt <= Date.now())
+})
+
+test('cancel failed head unblocks successors and survives restart without replay', async t => {
+  const path = await fixture(t)
+  const queue = new WritebackQueue(path, async input => {
+    if (input.snapshot.turn === 1) throw new Error('configuration unavailable')
+    return done
+  })
+  t.after(() => queue.close())
+  queue.enqueue(work()); queue.enqueue(work('a', 2))
+  await waitFor(() => queue.status('a:1').status === 'failed')
+  assert.equal(queue.status('a:2').blockedBy, 'a:1')
+  assert.equal(queue.list('a').total, 2)
+  assert.equal(queue.list('a').items[0].payload, undefined)
+  assert.equal(queue.cancel('a:1').status, 'cancelled')
+  assert.equal(queue.cancel('a:1').status, 'cancelled')
+  await waitFor(() => queue.status('a:2').status === 'completed')
+  await queue.close()
+  const reopened = new WritebackQueue(path, async () => { assert.fail('cancelled task must not run') })
+  t.after(() => reopened.close())
+  assert.equal(reopened.retry('a:1').status, 'cancelled')
+  reopened.start()
+})
+
+test('running cancellation holds lease until executor actually exits', async t => {
+  const path = await fixture(t)
+  let release, entered = false, successor = false
+  const gate = new Promise(resolve => { release = resolve })
+  const queue = new WritebackQueue(path, async input => {
+    if (input.snapshot.turn === 1) { entered = true; await gate } else successor = true
+    return done
+  })
+  t.after(async () => { release(); await queue.close() })
+  queue.enqueue(work()); queue.enqueue(work('a', 2))
+  await waitFor(() => entered)
+  assert.equal(queue.cancel('a:1').cancelRequested, true)
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(successor, false)
+  assert.equal(queue.status('a:1').status, 'running')
+  release()
+  await waitFor(() => successor)
+  assert.equal(queue.status('a:1').status, 'cancelled')
+})
+
+test('crash recovery honors durable cancellation before running successor', async t => {
+  const path = await fixture(t)
+  const calls = []
+  const queue = new WritebackQueue(path, async input => { calls.push(input.snapshot.sourceKey); return done })
+  t.after(() => queue.close())
+  queue.enqueue(work()); queue.enqueue(work('a', 2))
+  const disk = new DatabaseSync(path)
+  disk.exec("UPDATE queue_jobs SET status='running',cancel_requested=1 WHERE source_key='a:1'; UPDATE queue_lease SET owner='dead',expires=1")
+  disk.close()
+  await waitFor(() => queue.status('a:2').status === 'completed')
+  assert.deepEqual(calls, ['a:2'])
+  assert.equal(queue.status('a:1').status, 'cancelled')
+})
 const work = (session = 'a', turn = 1) => ({ destination: 'local:fixture', snapshot: {
   sourceKey: `${session}:${turn}`, sessionId: session, turn, userText: 'original question',
   userTextTruncated: false, assistantText: 'original result',

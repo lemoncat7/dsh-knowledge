@@ -151,6 +151,7 @@ export class ExtractionCoordinator {
         auditCount: 0,
       }]))
       for (const { proposal, delivery } of plan) {
+        signal.throwIfAborted()
         const mount = mounts.find(candidate => candidate.knowledgeBaseId === proposal.draft.knowledgeBaseId)
         if (mount === undefined) {
           if (checkpoint) throw new Error('回写计划的可写挂载已撤回，请恢复挂载后重试')
