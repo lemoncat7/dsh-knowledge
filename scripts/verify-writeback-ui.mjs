@@ -29,6 +29,11 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}/knowledge/?view=writeback`)
   await page.getByRole('button', { name: '取消回写', exact: true }).waitFor()
   assert.equal(await page.locator('.writeback-job time').count(), 1)
+  await page.getByRole('button', { name: '只看失败', exact: true }).click()
+  await page.getByText('当前范围没有失败的回写任务', { exact: true }).waitFor()
+  assert.equal(await page.getByRole('button', { name: '只看失败', exact: true }).getAttribute('aria-pressed'), 'true')
+  await page.getByRole('button', { name: '只看失败', exact: true }).click()
+  await page.getByRole('button', { name: '取消回写', exact: true }).waitFor()
   for (const [width, height] of [[1280, 850], [375, 812], [768, 1024]]) {
     await page.setViewportSize({ width, height })
     await page.evaluate(async () => {
@@ -36,6 +41,11 @@ try {
       await Promise.all(document.getAnimations().filter(animation => animation.effect?.getComputedTiming().iterations !== Infinity).map(animation => animation.finished.catch(() => {})))
     })
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, `overflow at ${width}`)
+    assert.equal(await page.evaluate(() => {
+      const header=document.querySelector('.topbar'), content=document.querySelector('.page'), main=document.querySelector('.main')
+      content.scrollTop=100000
+      return content.getBoundingClientRect().top >= header.getBoundingClientRect().bottom - 1 && main.scrollHeight <= main.clientHeight + 1
+    }), true, 'writeback content must not overlap transparent header')
     assert.ok(await page.getByRole('button', { name: '取消回写', exact: true }).isVisible())
     if (width === 375) await page.screenshot({ path: '/tmp/knowledge-writeback-mobile.png', fullPage: true })
   }

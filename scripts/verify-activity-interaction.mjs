@@ -25,9 +25,9 @@ try {
   }
   await page.goto(process.env.DSH_TEST_URL || 'http://127.0.0.1:3080')
   await page.getByText(process.env.DSH_TEST_SESSION_TITLE, { exact: true }).click()
-  await page.locator('.dsh-knowledge-trigger[aria-label="展开会话知识库"]').waitFor()
+  await page.locator('.dsh-knowledge-panel-trigger[aria-label="展开会话知识库"]').waitFor()
   await page.waitForTimeout(800)
-  const launch = () => page.locator('.dsh-knowledge-trigger').evaluate(node => node.click())
+  const launch = () => page.locator('.dsh-knowledge-panel-trigger').evaluate(node => node.click())
   await launch()
   await page.locator('.dsh-knowledge-activity-viewport').waitFor()
   const opening = await page.evaluate(async () => {
@@ -50,12 +50,12 @@ try {
       window.panelBeforeClose.style.setProperty('--test-identity', 'retained')
     })
     const snapshot = await page.evaluate(async () => {
-      document.querySelector('.dsh-knowledge-trigger').click()
+      document.querySelector('.dsh-knowledge-panel-trigger').click()
       await new Promise(requestAnimationFrame)
       const viewport = document.querySelector('.dsh-knowledge-activity-viewport')
       const panel = document.querySelector('.dsh-knowledge-activity-panel')
       const snapshot = { width: panel?.getBoundingClientRect().width || 0, hidden: viewport?.getAttribute('aria-hidden'), inert: viewport?.hasAttribute('inert') }
-      document.querySelector('.dsh-knowledge-trigger').click()
+      document.querySelector('.dsh-knowledge-panel-trigger').click()
       return snapshot
     })
     assert.ok(snapshot.width > 300, 'reader squeezed during collapse')

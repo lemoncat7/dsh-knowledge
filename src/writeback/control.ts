@@ -15,7 +15,9 @@ export function registerWritebackControl(ctx: RuntimeContextLike, queue: Writeba
         if (req.method === 'GET') {
           const offset = Number(url.searchParams.get('offset') ?? 0)
           if (!Number.isSafeInteger(offset) || offset < 0) throw Object.assign(new Error('无效分页参数'), { status: 400 })
-          result = queue.list(url.searchParams.get('sessionId')?.trim(), offset)
+          const status = url.searchParams.get('status') || undefined
+          if (status !== undefined && status !== 'failed') throw Object.assign(new Error('无效状态筛选'), { status: 400 })
+          result = queue.list(url.searchParams.get('sessionId')?.trim(), offset, 50, status)
         } else if (req.method === 'POST') {
           const key = url.searchParams.get('sourceKey')
           const action = url.searchParams.get('action')

@@ -19,6 +19,8 @@ test('management lists newest first and preserves original creation time on dupl
   assert.deepEqual(queue.list().items.map(item => item.sourceKey), ['newer:1', 'older:1'])
   assert.equal(queue.list('older').items[0].createdAt, createdAt)
   assert.ok(createdAt >= before && createdAt <= Date.now())
+  assert.equal(queue.list('', 0, 50, 'failed').total, 0)
+  assert.equal(queue.list('older', 0, 50, 'queued').total, 1)
 })
 
 test('exhausted head releases successors and can still be cancelled without replay', async t => {
@@ -33,6 +35,9 @@ test('exhausted head releases successors and can still be cancelled without repl
   disk.exec("UPDATE queue_jobs SET attempts=4 WHERE source_key='a:1'")
   disk.close()
   await waitFor(() => queue.status('a:1').status === 'failed')
+  assert.equal(queue.list('', 0, 50, 'failed').total, 1)
+  assert.deepEqual(queue.list('', 0, 50, 'failed').items.map(item => item.sourceKey), ['a:1'])
+  assert.equal(queue.list('', 1, 50, 'failed').items.length, 0)
   await waitFor(() => queue.status('a:2').status === 'completed')
   assert.equal(queue.status('a:2').blockedBy, undefined)
   assert.equal(queue.list('a').total, 2)

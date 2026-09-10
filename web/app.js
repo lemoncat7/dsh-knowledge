@@ -1013,7 +1013,7 @@ function renderShell() {
           'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': String(Math.round(state.loadingProgress * 100)),
         }, element('span', { style: `--route-progress: ${state.loadingProgress}` })) : null,
       ),
-      element('div', { class: 'page' }, element('div', { class: 'view-stage', 'data-view-stage': state.view }, renderCurrentView())),
+      element('div', { class: 'page', 'data-scroll-key': 'page' }, element('div', { class: 'view-stage', 'data-view-stage': state.view }, renderCurrentView())),
     ),
   )
   app.replaceChildren(shell)

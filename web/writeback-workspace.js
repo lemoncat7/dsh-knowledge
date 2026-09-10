@@ -3,6 +3,12 @@ import { subscribeWritebackChanges } from './writeback-live.js'
 export function createWritebackWorkspace({ element, actionButton, openConfirm, sessionId = '' }) {
   const labels = { queued: '排队中', running: '回写中', failed: '失败', completed: '已完成', cancelled: '已取消' }
   let disposed = false, timer, request, offset = 0, busy = false, previous = '', dirty = false
+  let failedOnly = false
+  const failedButton = actionButton('只看失败', () => {
+    failedOnly = !failedOnly
+    failedButton.setAttribute('aria-pressed', String(failedOnly))
+    offset = 0; previous = ''; void refresh()
+  }, 'small', { 'aria-pressed': 'false' })
   const message = element('p', { role: 'status' })
   const list = element('div', { class: 'writeback-job-list' })
   const page = element('span', {})
@@ -12,6 +18,7 @@ export function createWritebackWorkspace({ element, actionButton, openConfirm, s
   const root = element('section', { class: 'writeback-workspace' },
     element('p', {}, '本机回写队列。同一会话按顺序执行；网络中断会自动重试，连续失败可手动重试或取消。取消不会撤销已经写入的内容。'),
     element('div', { class: 'writeback-toolbar' }, filter, actionButton('筛选', () => { sessionId = filter.value.trim(); offset = 0; previous = ''; void refresh() }, 'small'), actionButton('刷新', () => { void refresh() }, 'ghost small')),
+    element('div', { class: 'writeback-toolbar' }, failedButton),
     message, list, element('div', { class: 'writeback-toolbar' }, previousButton, page, nextButton))
   async function fetchJson(params, method = 'GET', signal) {
     const response = await fetch(`/knowledge-control/v1/writeback-jobs?${params}`, { method, credentials: 'same-origin', headers: { 'x-dsh-knowledge-client': 'management-web' }, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000) })
@@ -53,11 +60,12 @@ export function createWritebackWorkspace({ element, actionButton, openConfirm, s
     const controller = new AbortController()
     request = controller
     try {
-      const data = await fetchJson(new URLSearchParams({ sessionId, offset: String(offset) }), 'GET', controller.signal)
+      const data = await fetchJson(new URLSearchParams({ sessionId, offset: String(offset), ...(failedOnly ? { status: 'failed' } : {}) }), 'GET', controller.signal)
       if (disposed || request !== controller) return
+      if (offset > 0 && offset >= data.total) { offset = Math.max(0, Math.floor((data.total - 1) / 50) * 50); void refresh(preserveMessage); return }
       const fingerprint = JSON.stringify(data)
       if (fingerprint !== previous) {
-        list.replaceChildren(...(data.items.length ? data.items.map(renderJob) : [element('p', {}, '没有回写任务')]))
+        list.replaceChildren(...(data.items.length ? data.items.map(renderJob) : [element('p', {}, failedOnly ? '当前范围没有失败的回写任务' : '没有回写任务')]))
         previous = fingerprint
       }
       page.textContent = `共 ${data.total} 条 · 第 ${Math.floor(offset / 50) + 1} 页`

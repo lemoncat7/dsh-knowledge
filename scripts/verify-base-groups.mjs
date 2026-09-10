@@ -100,8 +100,27 @@ try {
   await page.getByRole('dialog').getByText('家里助手 / 家庭设备', { exact: true }).waitFor()
   await page.getByRole('dialog').getByRole('button', { name: '取消', exact: true }).click()
   await page.getByRole('searchbox', { name: '搜索可挂载知识库' }).fill('')
+  await page.evaluate(() => {
+    const table=document.querySelector('.mount-table'), row=table.firstElementChild
+    for(let i=0;i<30;i++) table.append(row.cloneNode(true))
+  })
   for (const width of [1280, 375]) {
     await page.setViewportSize({ width, height: 850 })
+    await page.evaluate(async () => { await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))); await Promise.all(document.getAnimations().filter(a=>a.effect?.getComputedTiming().iterations !== Infinity).map(a=>a.finished.catch(()=>{}))) })
+    const layout = await page.evaluate(() => {
+      const main=document.querySelector('.main'), page=document.querySelector('.page'), header=document.querySelector('.topbar')
+      const table=document.querySelector('.mount-table')
+      table.scrollTop=100000
+      if (table.scrollTop <= 0) throw new Error('long mount list must remain scrollable')
+      page.scrollTop=100000
+      const trailing = page.getBoundingClientRect().bottom - document.querySelector('.bases-page').getBoundingClientRect().bottom
+      if (page.scrollTop > 0) assertTrailing(trailing)
+      function assertTrailing(value) { if (value > 25) throw new Error(`excess trailing scroll space ${value}; scrollHeight=${page.scrollHeight}, height=${page.clientHeight}`) }
+      return { outerOverflow:main.scrollHeight-main.clientHeight, pageHeight:page.clientHeight, mainHeight:main.clientHeight, overflow:getComputedStyle(page).overflow, flex:getComputedStyle(page).flex, pageTop:page.getBoundingClientRect().top, headerBottom:header.getBoundingClientRect().bottom, padding:parseFloat(getComputedStyle(page).paddingBottom) }
+    })
+    assert.ok(layout.outerOverflow <= 1, `management shell must not scroll: ${width} ${JSON.stringify(layout)}`)
+    assert.ok(layout.pageTop >= layout.headerBottom - 1, 'content scroller must stay below header')
+    assert.ok(layout.padding <= 24, 'no oversized trailing padding')
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false)
     await page.screenshot({ path: join(root, `mount-groups-${width}.png`), fullPage: true })
   }

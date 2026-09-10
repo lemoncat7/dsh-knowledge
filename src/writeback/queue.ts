@@ -119,9 +119,11 @@ export class WritebackQueue {
     return this.status(key)!
   }
 
-  list(sessionId = '', offset = 0, limit = 50) {
-    const where = sessionId ? 'WHERE session_id=?' : ''
+  list(sessionId = '', offset = 0, limit = 50, status?: WritebackStatus['status']) {
     const args = sessionId ? [sessionId] : []
+    const conditions = sessionId ? ['session_id=?'] : []
+    if (status) { conditions.push('status=?'); args.push(status) }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
     const total = (this.db.prepare(`SELECT count(*) AS count FROM queue_jobs ${where}`).get(...args) as { count: number }).count
     const rows = this.db.prepare(`SELECT source_key,session_id,attempts,created_at FROM queue_jobs ${where} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...args, limit, offset) as { source_key: string; session_id: string; attempts: number; created_at: number | null }[]
     return { total, items: rows.map(row => ({ sourceKey: row.source_key, sessionId: row.session_id, attempts: row.attempts, createdAt: row.created_at, ...this.status(row.source_key)! })) }

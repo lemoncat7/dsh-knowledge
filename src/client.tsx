@@ -32,7 +32,6 @@ import {
 
 const PLUGIN_ID = '@lemoncat7/dsh-knowledge'
 const STYLE_ID = `${PLUGIN_ID}/client`
-const COMPACT_KNOWLEDGE_VIEWPORT = '(max-width: 1120px), (hover: none) and (pointer: coarse) and (max-width: 1400px)'
 
 type SidebarActionProps = PropsRuntime<'sidebar.footer.action'>
 type ConversationSlotProps = PropsRuntime<'conversation'>
@@ -413,7 +412,6 @@ function KnowledgeLauncher({ wide, useSessions, workspace, activity }: SidebarAc
   const [open, setOpen] = useState(workspace.isOpen())
   const currentSessionId = useSessions(availableActivitySession)
   const [activityOpen, setActivityOpen] = useState(currentSessionId === undefined ? false : activity.isOpen(currentSessionId))
-  const [compactViewport, setCompactViewport] = useState(() => window.matchMedia(COMPACT_KNOWLEDGE_VIEWPORT).matches)
 
   useEffect(() => workspace.subscribe(() => { setOpen(workspace.isOpen()) }), [workspace])
   useEffect(() => {
@@ -423,33 +421,35 @@ function KnowledgeLauncher({ wide, useSessions, workspace, activity }: SidebarAc
     sync()
     return activity.subscribe(sync)
   }, [activity, currentSessionId])
-  useEffect(() => {
-    const query = window.matchMedia(COMPACT_KNOWLEDGE_VIEWPORT)
-    const sync = (): void => { setCompactViewport(query.matches) }
-    sync()
-    query.addEventListener('change', sync)
-    return () => { query.removeEventListener('change', sync) }
-  }, [])
-
-  const active = open || activityOpen
-  const activate = (): void => {
-    if (open) return workspace.close()
-    if (compactViewport || currentSessionId === undefined) return workspace.open()
-    if (currentSessionId !== undefined) activity.toggle(currentSessionId)
-  }
 
   return (
+    <div className={`dsh-knowledge-launcher${wide ? '' : ' dsh-knowledge-launcher--rail'}`} role="group" aria-label="知识库入口">
     <button
       type="button"
-      className={`dsh-knowledge-trigger${wide ? '' : ' dsh-knowledge-trigger--rail'}${active ? ' is-active' : ''}`}
-      aria-label={active ? '返回对话' : compactViewport || currentSessionId === undefined ? '打开知识库工作区' : '展开会话知识库'}
-      aria-pressed={active}
-      title={wide ? undefined : active ? '返回对话' : '知识库'}
-      onClick={activate}
+      className={`dsh-knowledge-trigger${wide ? '' : ' dsh-knowledge-trigger--rail'}${open ? ' is-active' : ''}`}
+      aria-label={open ? '返回对话' : '打开知识库工作区'}
+      aria-pressed={open}
+      title={open ? '返回对话' : '打开知识库工作区'}
+      onClick={() => workspace.toggle()}
     >
       <IconDataOutline16 size={wide ? 16 : 18} />
       {wide && <span>知识库</span>}
     </button>
+    <button
+      type="button"
+      className={`dsh-knowledge-trigger dsh-knowledge-panel-trigger${activityOpen ? ' is-active' : ''}`}
+      aria-label={activityOpen ? '收起会话知识库' : '展开会话知识库'}
+      aria-expanded={activityOpen}
+      disabled={currentSessionId === undefined}
+      title={currentSessionId === undefined ? '进入会话后可展开知识侧栏' : activityOpen ? '收起会话知识库' : '展开会话知识库'}
+      onClick={() => { if (currentSessionId !== undefined) activity.toggle(currentSessionId) }}
+    >
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+        <rect x="3" y="4" width="18" height="16" rx="3" />
+        <path d="M14 4v16M17 9v6" />
+      </svg>
+    </button>
+    </div>
   )
 }
 
