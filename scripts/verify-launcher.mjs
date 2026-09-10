@@ -48,6 +48,16 @@ try {
         return Math.abs(button.x + button.width / 2 - row.x - row.width / 2)
       })
       assert.ok(center < 1, 'collapsed side button must be centered')
+      const railCenter = await side.evaluate(node => {
+        const footer=node.parentElement.parentElement
+        const rail=document.createElement('div')
+        rail.style.cssText='display:flex;flex-direction:column;align-items:center;width:48px'
+        footer.before(rail);rail.append(footer)
+        footer.style.width='auto'
+        const button=node.getBoundingClientRect(), bounds=rail.getBoundingClientRect()
+        return Math.abs(button.x + button.width / 2 - bounds.x - bounds.width / 2)
+      })
+      assert.ok(railCenter < 1, 'button must align with rail even in auto-width host footer')
       await side.click(); assert.equal(await side.getAttribute('aria-expanded'), 'true')
       await side.focus(); await page.keyboard.press('Enter')
       assert.equal(await side.getAttribute('aria-expanded'), 'false')

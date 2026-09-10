@@ -103,6 +103,9 @@ body[data-ds-dark-theme] :is(
 /* The official footer slot is a horizontal list. Only opt its immediate
    container into wrapping; leave neighboring plugin controls untouched. */
 :has(> .dsh-knowledge-launcher) { flex-wrap: wrap; }
+/* The host's collapsed footer is shrink-to-fit. Bound it to the rail rather
+   than centering our button inside a width determined by neighboring plugins. */
+:has(> .dsh-knowledge-launcher--rail) { width: 100% !important; max-width: 100%; min-width: 0; }
 
 .dsh-knowledge-launcher {
   display: flex;
