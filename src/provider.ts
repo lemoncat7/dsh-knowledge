@@ -60,7 +60,7 @@ export interface KnowledgeProvider {
   get(id: string, signal?: AbortSignal): Promise<KnowledgeEntry | undefined>
   versions(id: string, signal?: AbortSignal): Promise<KnowledgeVersion[]>
   create(draft: KnowledgeDraft, signal?: AbortSignal): Promise<KnowledgeEntry>
-  update(id: string, draft: KnowledgeDraft, signal?: AbortSignal): Promise<KnowledgeEntry>
+  update(id: string, draft: KnowledgeDraft, signal?: AbortSignal, expectedVersion?: number): Promise<KnowledgeEntry>
   finalize(id: string, state: 'resolved' | 'complete', note?: string, signal?: AbortSignal): Promise<KnowledgeEntry>
   reopen(id: string, signal?: AbortSignal): Promise<KnowledgeEntry>
   archive(id: string, signal?: AbortSignal): Promise<KnowledgeEntry>
@@ -73,7 +73,7 @@ export interface KnowledgeProvider {
   restoreNoteVersion(id: string, version: number, expectedVersion?: number, signal?: AbortSignal): Promise<NoteNode>
   createNoteFolder(name: string, parentId?: string | null, signal?: AbortSignal): Promise<NoteNode>
   createNoteDocument(name: string, parentId?: string | null, content?: string, signal?: AbortSignal): Promise<NoteNode>
-  updateNoteContent(id: string, content: Uint8Array, signal?: AbortSignal): Promise<NoteNode>
+  updateNoteContent(id: string, content: Uint8Array, signal?: AbortSignal, expectedVersion?: number): Promise<NoteNode>
   renameNote(id: string, name: string, signal?: AbortSignal): Promise<NoteNode>
   moveNote(id: string, parentId: string | null, signal?: AbortSignal): Promise<NoteNode>
   deleteNote(id: string, signal?: AbortSignal): Promise<void>

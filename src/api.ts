@@ -192,7 +192,8 @@ async function dispatch(
     }
     if (id !== undefined && method === 'PUT' && segments[2] === 'content' && segments.length === 3) {
       requirePermission(actor.permissions, 'write')
-      return sendJson(res, 200, await provider.notes.updateContent(id, await readBinary(req, MAX_NOTE_BODY_BYTES)))
+      const expectedVersion = url.searchParams.has('expectedVersion') ? integerParam(url, 'expectedVersion', 1, 1, Number.MAX_SAFE_INTEGER) : undefined
+      return sendJson(res, 200, await provider.notes.updateContent(id, await readBinary(req, MAX_NOTE_BODY_BYTES), expectedVersion))
     }
     if (id !== undefined && method === 'GET' && segments[2] === 'versions' && segments.length === 3) {
       requirePermission(actor.permissions, 'read')
@@ -230,6 +231,7 @@ async function dispatch(
       const body = await readObject(req)
       let node = provider.notes.get(id)
       if (node === undefined) throw httpError(404, `note node "${id}" was not found`)
+      if (body.expectedName !== undefined && requiredString(body.expectedName, 'expectedName') !== node.name) throw httpError(409, '笔记标题已被修改，请重新查看最新标题后再修改')
       if (Object.hasOwn(body, 'name')) node = provider.notes.rename(id, requiredString(body.name, 'name'))
       if (Object.hasOwn(body, 'parentId')) node = provider.notes.move(id, nullableString(body.parentId, 'parentId'))
       return sendJson(res, 200, node)
@@ -496,6 +498,12 @@ async function dispatch(
       requirePermission(actor.permissions, 'read')
       return sendJson(res, 200, await provider.versions(id))
     }
+    if (id !== undefined && method === 'GET' && segments[2] === 'revision' && segments.length === 3) {
+      requirePermission(actor.permissions, 'read')
+      const entry = await provider.get(id)
+      if (entry === undefined) throw httpError(404, '文档已删除或不可访问')
+      return sendJson(res, 200, { id: entry.id, version: entry.version, updatedAt: entry.updatedAt, status: entry.status, documentState: entry.documentState })
+    }
     if (id !== undefined && method === 'GET' && segments[2] === 'note-references' && segments.length === 3) {
       requirePermission(actor.permissions, 'read')
       return sendJson(res, 200, await provider.listKnowledgeNoteReferences(id))
@@ -520,7 +528,8 @@ async function dispatch(
     if (id !== undefined && method === 'PUT' && segments.length === 2) {
       requirePermission(actor.permissions, 'write')
       const body = await readObject(req)
-      return sendJson(res, 200, await provider.update(id, parseDraft(body.draft)))
+      const expectedVersion = body.expectedVersion === undefined ? undefined : boundedInteger(body.expectedVersion, 'expectedVersion', 1, 1, Number.MAX_SAFE_INTEGER)
+      return sendJson(res, 200, await provider.update(id, parseDraft(body.draft), undefined, expectedVersion))
     }
     if (id !== undefined && method === 'POST' && segments[2] === 'archive' && segments.length === 3) {
       requirePermission(actor.permissions, 'write')

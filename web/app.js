@@ -18,6 +18,7 @@ const { actionButton, badge, createToastPresenter, element, interfaceIcon, paneT
 const { renderMenu: renderDocumentMenu, closeMenus: closeDocumentMenus } = documentActionsModule.createDocumentMenuPresenter(uiModule)
 const readModelCatalog = modelCatalogModule.createModelCatalogLoader()
 const { createWritebackWorkspace } = await import(moduleUrl('writeback-workspace'))
+const { createDocumentSync } = await import(moduleUrl('document-sync'))
 let writebackWorkspace
 const TOKEN_KEY = 'dsh-knowledge.session-token'
 const TYPES = ['preference', 'fact', 'decision', 'procedure', 'lesson']
@@ -352,7 +353,7 @@ function updateLoadingPhase(request, label, progress) {
 }
 
 async function saveBeforeNavigation() {
-  if (state.view === 'notes' && state.notes.dirty) return saveNoteDocument()
+  if (state.view === 'notes' && (state.notes.dirty || state.notes.titleDirty || state.notes.renaming)) return saveNoteDocument()
   return saveBeforeLeavingDocument()
 }
 
@@ -796,6 +797,7 @@ async function saveDocumentEditor(workspace = activeDocumentWorkspace()) {
   if (!workspace) return false
   const editor = workspace.view.editor
   if (!editor || !editor.dirty) return true
+  if (editor.saving) return false
   if (!editor.isNew && editor.documentState !== 'open') {
     showToast('这篇文档已经结束并封存；请先重新打开。', 'error')
     return false
@@ -805,26 +807,32 @@ async function saveDocumentEditor(workspace = activeDocumentWorkspace()) {
     return false
   }
   editor.saveState = '正在保存…'
+  editor.saving = true
   updateEditorSaveState(editor.saveState)
   try {
     const draft = editorDraft(editor)
     const saved = editor.isNew
       ? await api('entries', { method: 'POST', body: { draft } })
-      : await api(`entries/${encodeURIComponent(editor.id)}`, { method: 'PUT', body: { draft } })
+      : await api(`entries/${encodeURIComponent(editor.id)}`, { method: 'PUT', body: { draft, expectedVersion: editor.version } })
     editor.id = saved.id
     editor.isNew = false
-    editor.dirty = false
+    editor.dirty = JSON.stringify(editorDraft(editor)) !== JSON.stringify(draft)
+    editor.version = saved.version
+    editor.documentState = saved.documentState
     editor.updatedAt = saved.updatedAt
-    editor.saveState = '已保存'
+    editor.saveState = editor.dirty ? '未保存' : '已保存'
     workspace.view.documentId = saved.id
     updateEditorSaveState(editor.saveState)
     await reloadDocumentWorkspace(workspace)
-    return true
+    return !editor.dirty
   } catch (error) {
     editor.saveState = '保存失败'
     updateEditorSaveState(editor.saveState)
     showToast(friendlyError(error), 'error')
+    if (error.status === 409) void openDocumentSyncConflict()
     return false
+  } finally {
+    editor.saving = false
   }
 }
 
@@ -1009,6 +1017,7 @@ function renderShell() {
   app.replaceChildren(shell)
   applySidebarVisibility(shell, state.documentView.sidebarHidden)
   restoreScrollPosition(currentScrollState())
+  renderDocumentSyncNotice()
 }
 
 function renderContextPaneToggle() {
@@ -1750,7 +1759,7 @@ function renderNoteEditor(workspace, editor, base) {
   const update = (key, value) => {
     editor[key] = value
     editor.dirty = true
-    editor.saveState = '未保存'
+    editor.saveState = editor.saving ? '正在保存…' : '未保存'
     updateEditorSaveState(editor.saveState)
   }
   const title = element('input', {
@@ -2519,10 +2528,11 @@ function renderEditableNote(node) {
     element('h1', {
       class: 'notes-document-title', contenteditable: 'plaintext-only', spellcheck: 'false',
       'aria-label': `修改 ${node.name} 的标题`, title: '点击修改标题',
+      onInput: () => { state.notes.titleDirty = true },
       onBlur: event => { void saveEditableNoteTitle(event.currentTarget, node) },
       onKeyDown: event => {
         if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur() }
-        if (event.key === 'Escape') { event.preventDefault(); event.currentTarget.textContent = title; event.currentTarget.blur() }
+        if (event.key === 'Escape') { event.preventDefault(); event.currentTarget.textContent = editableNoteTitle(state.notes.selectedNode || node); state.notes.titleDirty = false; event.currentTarget.blur() }
       },
     }, title),
     editor,
@@ -2545,21 +2555,25 @@ function editableNoteTitle(node) {
 }
 
 async function saveEditableNoteTitle(editor, node) {
+  node = state.notes.selectedNode?.id === node.id ? state.notes.selectedNode : node
   const title = readPlainTextEditor(editor).replace(/\s+/g, ' ').trim()
   const name = node.kind === 'document' && title ? `${title.replace(/\.md$/i, '')}.md` : title
   if (!name) {
     editor.textContent = editableNoteTitle(node)
+    state.notes.titleDirty = false
     showToast('标题不能为空。', 'error')
     return
   }
   if (name === node.name) {
     editor.textContent = editableNoteTitle(node)
+    state.notes.titleDirty = false
     return
   }
   editor.setAttribute('contenteditable', 'false')
+  state.notes.renaming = true
   try {
-    const updated = await api(`notes/${encodeURIComponent(node.id)}`, { method: 'PATCH', body: { name } })
-    if (state.notes.selectedNode?.id === node.id) state.notes.selectedNode = updated
+    const updated = await api(`notes/${encodeURIComponent(node.id)}`, { method: 'PATCH', body: { name, expectedName: node.name } })
+    if (state.notes.selectedNode?.id === node.id) { state.notes.selectedNode = updated; state.notes.titleDirty = false }
     editor.textContent = editableNoteTitle(updated)
     const breadcrumb = document.querySelector('.notes-document-toolbar .notes-breadcrumb strong')
     if (breadcrumb) breadcrumb.textContent = updated.name
@@ -2568,9 +2582,10 @@ async function saveEditableNoteTitle(editor, node) {
     if (treeName) treeName.textContent = updated.name
     showToast('标题已更新。')
   } catch (error) {
-    editor.textContent = editableNoteTitle(node)
+    // Keep the user's title available to copy/retry, rather than silently losing it.
     showToast(friendlyError(error), 'error')
   } finally {
+    state.notes.renaming = false
     if (editor.isConnected) editor.setAttribute('contenteditable', 'plaintext-only')
   }
 }
@@ -2694,11 +2709,11 @@ function releaseNoteEditors() {
 function syncNoteEditorChrome() {
   const status = document.querySelector('[data-note-save-state]')
   if (status) {
-    status.textContent = state.notes.dirty ? '未保存' : '已保存'
+    status.textContent = state.notes.saving ? '正在保存…' : state.notes.dirty ? '未保存' : '已保存'
     status.dataset.dirty = String(state.notes.dirty)
   }
   const save = document.querySelector('[data-note-save]')
-  if (save) save.disabled = !state.notes.dirty
+  if (save) save.disabled = state.notes.saving || !state.notes.dirty
 }
 
 function renderNoteDocumentBreadcrumb(node) {
@@ -2800,6 +2815,7 @@ function noteFilePreviewKind(node) {
 }
 
 async function selectNoteNode(node, options = {}) {
+  if (state.notes.titleDirty || state.notes.renaming) return showToast('请先保存标题；若要放弃标题修改，请在标题中按 Escape。', 'error')
   if (state.notes.dirty && !await saveNoteDocument()) return
   const request = ++noteSelectionRequest
   releaseNoteAsset()
@@ -2822,10 +2838,12 @@ async function selectNoteNode(node, options = {}) {
       }
       await loadNoteChildren(node.id)
     } else if (node.editable) {
-      const blob = await binaryRequest(`notes/${encodeURIComponent(node.id)}/content`, { responseType: 'blob', accept: node.mediaType || 'text/plain' })
-      const content = await blob.text()
+      const snapshot = await readNoteSnapshot(node.id)
+      const content = snapshot.content
       if (request !== noteSelectionRequest || state.notes.selectedId !== node.id) return
       state.notes.content = content
+      state.notes.selectedNode = snapshot.node
+      state.notes.contentVersion = snapshot.node.version
       state.notes.draft = content
       state.notes.dirty = false
       state.notes.currentFolderId = node.parentId
@@ -2881,6 +2899,7 @@ function findCachedNote(id) {
 }
 
 async function openNoteRoot() {
+  if (state.notes.titleDirty || state.notes.renaming) return showToast('请先保存标题；若要放弃标题修改，请在标题中按 Escape。', 'error')
   if (state.notes.dirty && !await saveNoteDocument()) return
   noteSelectionRequest += 1
   clearNoteSelection()
@@ -3275,15 +3294,22 @@ function showNoteImportResult(summary) {
 }
 
 async function saveNoteDocument() {
+  if (state.notes.titleDirty || state.notes.renaming) { showToast('请先完成标题修改，或在标题中按 Escape 放弃。', 'error'); return false }
   const node = state.notes.selectedNode
   if (!node || !node.editable || !state.notes.dirty) return true
+  if (state.notes.saving) return false
+  state.notes.saving = true
+  syncNoteEditorChrome()
+  const submitted = state.notes.draft
   try {
-    const updated = await binaryRequest(`notes/${encodeURIComponent(node.id)}/content`, {
-      method: 'PUT', body: new Blob([state.notes.draft], { type: node.mediaType || 'text/plain' }), contentType: node.mediaType || 'text/plain',
+    const updated = await binaryRequest(`notes/${encodeURIComponent(node.id)}/content?expectedVersion=${state.notes.contentVersion ?? node.version}`, {
+      method: 'PUT', body: new Blob([submitted], { type: node.mediaType || 'text/plain' }), contentType: node.mediaType || 'text/plain',
     })
+    if (state.notes.selectedNode?.id !== node.id) return false
     state.notes.selectedNode = updated
-    state.notes.content = state.notes.draft
-    state.notes.dirty = false
+    state.notes.content = submitted
+    state.notes.contentVersion = updated.version
+    state.notes.dirty = state.notes.draft !== submitted
     await loadNoteChildren(node.parentId, true)
     const size = document.querySelector('[data-note-info="size"] > span')
     const updatedAt = document.querySelector('[data-note-info="updated"] > span')
@@ -3291,10 +3317,14 @@ async function saveNoteDocument() {
     if (updatedAt) updatedAt.textContent = formatDate(updated.updatedAt)
     syncNoteEditorChrome()
     showToast('文件已保存。')
-    return true
+    return !state.notes.dirty
   } catch (error) {
     showToast(friendlyError(error), 'error')
+    if (error.status === 409) void openDocumentSyncConflict()
     return false
+  } finally {
+    state.notes.saving = false
+    syncNoteEditorChrome()
   }
 }
 
@@ -3367,12 +3397,12 @@ function renderHistoricalNotePreview(content, markdown) {
   return rendered
 }
 
-function renderNoteHistoryDiff(historical, current) {
+function renderNoteHistoryDiff(historical, current, heading = '历史版本 → 当前版本') {
   const diff = window.DshKnowledgeReview.createLineDiff(historical, current)
   const lines = window.DshKnowledgeReview.compactDiffLines(diff.lines, 3)
   return element('section', { class: 'note-history-diff', 'aria-label': '历史版本与当前版本的逐行差异' },
     element('div', { class: 'note-history-diff-summary' },
-      element('strong', {}, '历史版本 → 当前版本'),
+      element('strong', {}, heading),
       element('div', { class: 'diff-summary', 'aria-label': `新增 ${diff.additions} 行，删除 ${diff.deletions} 行` },
         element('span', { class: 'diff-stat additions' }, `+${diff.additions}`),
         element('span', { class: 'diff-stat deletions' }, `-${diff.deletions}`),
@@ -4474,12 +4504,133 @@ function friendlyError(error) {
   return error.message || '操作失败，请稍后重试。'
 }
 
+let documentSyncState = { key: '', status: '' }
+let syncConflictLoading = false
+
+function currentSyncTarget() {
+  if (state.loading || (AUTH_MODE !== 'same-origin' && !state.token)) return null
+  const focused = () => !!document.activeElement?.closest('.note-editor, .notes-content, [role="dialog"]')
+  if (state.view === 'notes') {
+    const node = state.notes.selectedNode
+    if (!node?.editable || state.notes.loadingNodeId) return null
+    return { key: `note:${node.id}`, id: node.id, kind: 'note', identity: node,
+      version: state.notes.contentVersion ?? node.version, updatedAt: node.updatedAt,
+      busy: () => state.notes.dirty || state.notes.saving || state.notes.titleDirty || state.notes.renaming || focused() }
+  }
+  const workspace = activeDocumentWorkspace()
+  const editor = workspace?.view.editor
+  if (!editor?.id || editor.isNew || workspace.view.editorLoading) return null
+  return { key: `${workspace.kind}:${editor.id}`, id: editor.id, kind: 'knowledge', identity: editor, workspace,
+    version: editor.version, updatedAt: editor.updatedAt,
+    busy: () => editor.dirty || editor.saving || focused() }
+}
+
+async function readNoteSnapshot(id, signal) {
+  const node = await api(`notes/${encodeURIComponent(id)}`, { signal })
+  if (!node.editable) throw new Error('该文件不再支持文本编辑')
+  const blob = await binaryRequest(`notes/${encodeURIComponent(id)}/versions/${node.version}/content`, { responseType: 'blob', signal })
+  return { node, content: await blob.text() }
+}
+
+async function readSyncSnapshot(target, signal) {
+  if (target.kind === 'note') return readNoteSnapshot(target.id, signal)
+  const [entry, noteReferences] = await Promise.all([
+    api(`entries/${encodeURIComponent(target.id)}`, { signal }),
+    api(`entries/${encodeURIComponent(target.id)}/note-references`, { signal }),
+  ])
+  return { entry, noteReferences }
+}
+
+function applySyncSnapshot(target, snapshot, draft) {
+  if (target.kind === 'note') {
+    Object.assign(state.notes, { selectedNode: snapshot.node, content: snapshot.content, contentVersion: snapshot.node.version,
+      draft: draft?.content ?? snapshot.content, dirty: draft !== undefined && draft.content !== snapshot.content })
+    for (const [key, nodes] of state.notes.children) state.notes.children.set(key, nodes.map(node => node.id === target.id ? snapshot.node : node))
+  } else {
+    const entry = snapshot.entry
+    Object.assign(target.identity, entry, { noteReferences: snapshot.noteReferences, tagsText: entry.tags.join(', '), dirty: !!draft,
+      ...(draft ? { title: draft.title, body: draft.content } : {}), saveState: draft ? '未保存' : '已同步' })
+    const items = documentWorkspaceDocuments(target.workspace)
+    setDocumentWorkspaceDocuments(target.workspace, items.map(item => item.id === target.id ? { ...item, title: target.identity.title, version: entry.version, updatedAt: entry.updatedAt } : item))
+  }
+  documentSyncState = { key: target.key, status: draft ? '' : 'synced' }
+  renderShell()
+}
+
+function renderDocumentSyncNotice() {
+  const target = currentSyncTarget()
+  const status = target?.key === documentSyncState.key ? documentSyncState.status : ''
+  const host = document.querySelector('.note-editor-toolbar, .notes-document-toolbar')
+  let notice = host?.querySelector('.document-sync-notice')
+  if (!target || !status) { notice?.remove(); return }
+  const labels = { changed: '文档有新版本，当前内容已保留', missing: '文档已删除或不可访问，草稿仍保留', offline: '同步暂不可用，将自动重试', synced: '已同步最新版本' }
+  if (notice?.dataset.status === status) return
+  if (!notice) { notice = element('div', { class: 'document-sync-notice' }); host?.append(notice) }
+  notice.dataset.status = status
+  notice.replaceChildren(element('span', { role: 'status' }, labels[status] || ''))
+  if (status === 'changed') notice.append(actionButton('查看并处理', () => { void openDocumentSyncConflict() }, 'small'))
+}
+
+async function openDocumentSyncConflict() {
+  const target = currentSyncTarget()
+  if (!target || syncConflictLoading) return
+  if (target.kind === 'note' && (state.notes.titleDirty || state.notes.renaming)) return showToast('标题修改尚未保存，请先复制保留；在标题中按 Escape 可恢复原标题，再处理文档新版本。', 'error')
+  syncConflictLoading = true
+  try {
+    const snapshot = await readSyncSnapshot(target, AbortSignal.timeout(10000))
+    if (currentSyncTarget()?.identity !== target.identity) return
+    const local = target.kind === 'note' ? { title: state.notes.selectedNode.name, content: state.notes.draft }
+      : { title: target.identity.title, content: target.identity.body }
+    const remote = target.kind === 'note' ? { title: snapshot.node.name, content: snapshot.content }
+      : { title: snapshot.entry.title, content: snapshot.entry.body }
+    const { openSyncConflict } = await import(moduleUrl('document-sync-ui'))
+    const stillCurrent = () => {
+      if (currentSyncTarget()?.identity !== target.identity) throw new Error('当前文档已切换，请重新打开差异')
+      if ((target.kind === 'note' ? state.notes.draft : target.identity.body) !== local.content
+        || (target.kind === 'knowledge' && target.identity.title !== local.title)) throw new Error('本地草稿已有新修改，请关闭后重新查看差异')
+    }
+    openSyncConflict({ element, actionButton, openModal, openConfirm, renderDiff: renderNoteHistoryDiff, local, remote,
+      allowTitle: target.kind === 'knowledge',
+      canEdit: target.kind === 'note' || (snapshot.entry.documentState === 'open' && snapshot.entry.status === 'active' && !documentWorkspaceReadOnly(target.workspace)),
+      apply: draft => { stillCurrent(); applySyncSnapshot(target, snapshot, draft) },
+      useRemote: () => { stillCurrent(); applySyncSnapshot(target, snapshot) },
+    })
+  } catch (error) { showToast(friendlyError(error), 'error') }
+  finally { syncConflictLoading = false }
+}
+
+const documentSync = createDocumentSync({
+  current: currentSyncTarget,
+  check: (target, signal) => api(target.kind === 'note' ? `notes/${encodeURIComponent(target.id)}` : `entries/${encodeURIComponent(target.id)}/revision`, { signal }),
+  refresh: async (target, signal, valid) => {
+    const snapshot = await readSyncSnapshot(target, signal)
+    if (valid()) applySyncSnapshot(target, snapshot)
+    else if (currentSyncTarget()?.identity === target.identity) {
+      documentSyncState = { key: target.key, status: 'changed' }
+      renderDocumentSyncNotice()
+    }
+  },
+  notify: (target, status) => {
+    if (status === 'current') {
+      if (documentSyncState.key !== target.key || documentSyncState.status === 'synced') return
+      status = ''
+    }
+    documentSyncState = { key: target.key, status }
+    renderDocumentSyncNotice()
+  },
+})
+document.addEventListener('visibilitychange', () => { if (document.hidden) documentSync.pause(); else documentSync.wake() })
+window.addEventListener('focus', () => documentSync.wake())
+window.addEventListener('online', () => documentSync.wake())
+window.addEventListener('pagehide', () => documentSync.pause())
+window.addEventListener('pageshow', () => documentSync.wake())
+
 window.addEventListener('beforeunload', event => {
   const editor = activeDocumentWorkspace()?.view.editor
-  if (!editor?.dirty && !state.notes.dirty) return
+  if (!editor?.dirty && !state.notes.dirty && !state.notes.titleDirty) return
   event.preventDefault()
   event.returnValue = ''
 })
 
 installDragRecovery()
-void installHostThemeBridge().then(() => boot())
+void installHostThemeBridge().then(() => boot()).then(() => documentSync.wake())

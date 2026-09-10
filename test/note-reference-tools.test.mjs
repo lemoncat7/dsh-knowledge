@@ -105,6 +105,22 @@ test('AI note-reference tools use session handles, mounted write policy, and met
     targetKind: 'project', targetId: '/workspace/demo', knowledgeBaseId: 'default',
     enabled: true, recallEnabled: true, writeMode: 'none', includeTags: [], excludeTags: [], extractionInstructions: '',
   })
+  // Background observation has no direct user message. A live reference is sufficient,
+  // even when the knowledge document itself is mounted read-only.
+  session.events.push({ type: 'turn/start', data: {} })
+  const backgroundList = JSON.parse(await tools.get('knowledge_note_references').execute({ knowledgeHandle, operation: 'list' }, exec))
+  assert.equal(backgroundList.references.length, 1)
+  const backgroundRead = JSON.parse(await tools.get('knowledge_note_read').execute({ knowledgeHandle, noteHandle }, exec))
+  assert.match(backgroundRead.content, /SECRET_NOTE_BODY/)
+  await tools.get('knowledge_note_update').execute({ knowledgeHandle, noteHandle, operation: 'append_content', expectedVersion: backgroundRead.note.version, value: '\n核实后的新进展' }, exec)
+  assert.match(new TextDecoder().decode((await observer.readNote(note.id)).content), /核实后的新进展/)
+  assert.equal((await observer.get(entry.id)).body, '发布服务前先备份数据并检查部署清单。')
+  await assert.rejects(() => tools.get('knowledge_note_update').execute({ noteHandle, operation: 'append_content', value: '无授权' }, exec), /explicit request/)
+  await assert.rejects(() => tools.get('knowledge_note_update').execute({ knowledgeHandle, noteHandle, operation: 'rename', value: '不允许' }, exec), /explicit request/)
+  await assert.rejects(() => tools.get('knowledge_note_read').execute({ knowledgeHandle, noteHandle }, otherExec), /does not belong to this session/)
+  await observer.upsertMount({ targetKind: 'project', targetId: '/workspace/demo', knowledgeBaseId: 'default', enabled: true, recallEnabled: false, writeMode: 'none', includeTags: [], excludeTags: [], extractionInstructions: '' })
+  await assert.rejects(() => tools.get('knowledge_note_update').execute({ knowledgeHandle, noteHandle, operation: 'append_content', value: '挂载失效' }, exec), /mounted recall scope/)
+  await observer.upsertMount({ targetKind: 'project', targetId: '/workspace/demo', knowledgeBaseId: 'default', enabled: true, recallEnabled: true, writeMode: 'none', includeTags: [], excludeTags: [], extractionInstructions: '' })
   directUserTurn(session, 3, '请再把生产部署知识文档关联到部署清单笔记。')
   await assert.rejects(
     () => tools.get('knowledge_note_references').execute({
@@ -123,4 +139,7 @@ test('AI note-reference tools use session handles, mounted write policy, and met
   }, exec))
   assert.equal(removed.changed, 1)
   assert.deepEqual(removed.references, [])
+  session.events.push({ type: 'turn/start', data: {} })
+  await assert.rejects(() => tools.get('knowledge_note_update').execute({ knowledgeHandle, noteHandle, operation: 'append_content', value: '已解除引用' }, exec), /not referenced/)
+  assert.doesNotMatch(new TextDecoder().decode((await observer.readNote(note.id)).content), /已解除引用|挂载失效|无授权/)
 })

@@ -674,10 +674,16 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     return entry
   }
 
-  async update(id: string, draft: KnowledgeDraft): Promise<KnowledgeEntry> {
+  async update(id: string, draft: KnowledgeDraft, _signal?: AbortSignal, expectedVersion?: number): Promise<KnowledgeEntry> {
     this.assertOpen()
     await this.documentsReady
-    const entry = this.transaction(() => this.updateEntry(id, draft, 'update'))
+    const entry = this.transaction(() => {
+      if (expectedVersion !== undefined) {
+        const current = this.entriesByIds([id])[0]
+        if (current === undefined || current.version !== expectedVersion) throw conflict('文档已被修改，请重新读取并合并后保存')
+      }
+      return this.updateEntry(id, draft, 'update')
+    })
     await this.syncKnowledgeEntryQueued(entry.id)
     return entry
   }
@@ -858,7 +864,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   async readNote(id: string): Promise<{ node: NoteNode; content: Uint8Array }> {
     this.assertOpen()
-    return this.notes.read(id)
+    return this.notes.readSnapshot(id)
   }
 
   async listNoteVersions(id: string, limit = 100): Promise<NoteVersion[]> {
@@ -886,9 +892,9 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     return this.notes.createDocument(name, parentId, content)
   }
 
-  async updateNoteContent(id: string, content: Uint8Array): Promise<NoteNode> {
+  async updateNoteContent(id: string, content: Uint8Array, _signal?: AbortSignal, expectedVersion?: number): Promise<NoteNode> {
     this.assertOpen()
-    return this.notes.updateContent(id, content)
+    return this.notes.updateContent(id, content, expectedVersion)
   }
 
   async renameNote(id: string, name: string): Promise<NoteNode> {

@@ -41,7 +41,7 @@ export function registerKnowledgeTools(
   ctx.tools.register(documentLifecycleTool(provider, codec))
   ctx.tools.register(createKnowledgeBaseTool(provider, ctx.llm))
   ctx.tools.register(updateKnowledgeBaseTool(provider, ctx.llm))
-  registerKnowledgeNoteTools(ctx, provider, noteCodec)
+  registerKnowledgeNoteTools(ctx, provider, noteCodec, codec)
   registerKnowledgeNoteReferenceTools(ctx, provider, codec, noteCodec)
 }
 

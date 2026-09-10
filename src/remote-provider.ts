@@ -214,8 +214,8 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     return this.request<KnowledgeEntry>('entries', { method: 'POST', body: { draft }, signal })
   }
 
-  async update(id: string, draft: KnowledgeDraft, signal?: AbortSignal): Promise<KnowledgeEntry> {
-    return this.request<KnowledgeEntry>(`entries/${encodeURIComponent(id)}`, { method: 'PUT', body: { draft }, signal })
+  async update(id: string, draft: KnowledgeDraft, signal?: AbortSignal, expectedVersion?: number): Promise<KnowledgeEntry> {
+    return this.request<KnowledgeEntry>(`entries/${encodeURIComponent(id)}`, { method: 'PUT', body: { draft, expectedVersion }, signal })
   }
 
   async finalize(id: string, state: 'resolved' | 'complete', note?: string, signal?: AbortSignal): Promise<KnowledgeEntry> {
@@ -263,7 +263,7 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
   async readNote(id: string, signal?: AbortSignal): Promise<{ node: NoteNode; content: Uint8Array }> {
     const node = await this.getNote(id, signal)
     if (node === undefined) throw new RemoteProviderError(`note node "${id}" was not found`, 404)
-    const content = await this.requestBytes(`notes/${encodeURIComponent(id)}/content`, { signal })
+    const content = await this.requestBytes(node.editable ? `notes/${encodeURIComponent(id)}/versions/${node.version}/content` : `notes/${encodeURIComponent(id)}/content`, { signal })
     return { node, content }
   }
 
@@ -298,8 +298,9 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     return this.request<NoteNode>('notes/documents', { method: 'POST', body: { name, parentId, content }, signal })
   }
 
-  async updateNoteContent(id: string, content: Uint8Array, signal?: AbortSignal): Promise<NoteNode> {
-    const response = await this.requestBytes(`notes/${encodeURIComponent(id)}/content`, {
+  async updateNoteContent(id: string, content: Uint8Array, signal?: AbortSignal, expectedVersion?: number): Promise<NoteNode> {
+    const query = expectedVersion === undefined ? '' : `?expectedVersion=${expectedVersion}`
+    const response = await this.requestBytes(`notes/${encodeURIComponent(id)}/content${query}`, {
       method: 'PUT', binaryBody: content, signal, accept: 'application/json',
     })
     return safeJson(new TextDecoder().decode(response)) as NoteNode

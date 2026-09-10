@@ -62,7 +62,7 @@ test('AI note tools create, browse, read, update, move, and safely delete sessio
 
   directUserTurn(session, 2, '请给发布计划笔记追加第二阶段，并把笔记改名为正式发布计划。')
   await tools.get('knowledge_note_update').execute({
-    noteHandle: noteResult.note.handle, operation: 'append_content', value: '\n\n第二阶段。',
+    noteHandle: noteResult.note.handle, operation: 'append_content', expectedVersion: initial.note.version, value: '\n\n第二阶段。',
   }, exec)
   const renamed = JSON.parse(await tools.get('knowledge_note_update').execute({
     noteHandle: noteResult.note.handle, operation: 'rename', value: '正式发布计划.md',

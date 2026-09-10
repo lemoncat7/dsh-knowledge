@@ -3,6 +3,7 @@ import type { NoteNode } from './notes/domain.js'
 import { KnowledgeNoteHandleCodec } from './note-reference-handle.js'
 import type { RuntimeContextLike, ToolDefinitionLike, ToolRunContextLike } from './runtime.js'
 import { assertExplicitKnowledgeNoteRequest } from './tool-authorization.js'
+import { readMountedKnowledge, type KnowledgeHandleCodec } from './retrieval.js'
 import { optionalToolInteger, requiredToolString, requireToolAgent, toolRecord } from './tool-input.js'
 
 const MAX_TOOL_NOTE_CONTENT = 200_000
@@ -12,16 +13,17 @@ const textOutput = {
   render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
 } as const
 
-/** AI-facing note workspace operations. Every mutation requires a direct user request and signed session handles. */
+/** Note operations use session handles. Mounted references authorize content access; other mutations require direct user requests. */
 export function registerKnowledgeNoteTools(
   ctx: RuntimeContextLike,
   provider: KnowledgeProvider,
   codec: KnowledgeNoteHandleCodec,
+  knowledgeCodec: KnowledgeHandleCodec,
 ): void {
   ctx.tools.register(listNotesTool(provider, codec))
-  ctx.tools.register(readNoteTool(provider, codec))
+  ctx.tools.register(readNoteTool(provider, codec, knowledgeCodec))
   ctx.tools.register(createNoteTool(provider, codec))
-  ctx.tools.register(updateNoteTool(provider, codec))
+  ctx.tools.register(updateNoteTool(provider, codec, knowledgeCodec))
   ctx.tools.register(moveNoteTool(provider, codec))
   ctx.tools.register(deleteNoteTool(provider, codec))
 }
@@ -65,7 +67,14 @@ function listNotesTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCo
   }
 }
 
-function readNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCodec): ToolDefinitionLike {
+async function authorizeReferencedNote(provider: KnowledgeProvider, codec: KnowledgeHandleCodec, exec: ToolRunContextLike, knowledgeHandle: unknown, noteId: string): Promise<void> {
+  const agent = requireToolAgent(exec, 'knowledge note tools')
+  const { entry } = await readMountedKnowledge(provider, agent, requiredToolString(knowledgeHandle, 'knowledgeHandle', 4096), codec, exec.signal)
+  const references = await provider.listKnowledgeNoteReferences(entry.id, exec.signal)
+  if (!references.some(reference => reference.note.id === noteId)) throw new Error('note is not referenced by this mounted knowledge document')
+}
+
+function readNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCodec, knowledgeCodec: KnowledgeHandleCodec): ToolDefinitionLike {
   return {
     name: 'knowledge_note_read',
     description: 'Read a bounded chunk from an editable text or Markdown note after knowledge_note_list/search returned its exact handle. This never reads folders or binary attachments. Use offset and maxChars to continue long notes.',
@@ -73,6 +82,7 @@ function readNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCod
       type: 'object', additionalProperties: false,
       properties: {
         noteHandle: { type: 'string', description: 'Exact signed note handle returned by knowledge_note_list or knowledge_note_search.' },
+        knowledgeHandle: { type: 'string', description: 'Optional mounted knowledge handle: its current note reference authorizes reading without a new direct user request. Obtain noteHandle from knowledge_note_references list.' },
         offset: { type: 'integer', description: 'Character offset, default 0.' },
         maxChars: { type: 'integer', description: 'Maximum returned characters, default 20000 and maximum 80000.' },
       },
@@ -82,19 +92,20 @@ function readNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCod
     isConcurrencySafe: () => true,
     async execute(raw: unknown, exec: ToolRunContextLike): Promise<string> {
       const agent = requireToolAgent(exec, 'knowledge note tools')
-      assertExplicitKnowledgeNoteRequest(agent, 'inspect')
       const args = toolRecord(raw)
       const handle = requiredToolString(args.noteHandle, 'noteHandle', 4096)
       const offset = optionalToolInteger(args.offset, 'offset', 0, 50_000_000) ?? 0
       const maxChars = optionalToolInteger(args.maxChars, 'maxChars', 1, 80_000) ?? 20_000
       const node = await resolveNoteHandle(provider, codec, agent.session.id, handle, exec.signal)
+      if (args.knowledgeHandle !== undefined) await authorizeReferencedNote(provider, knowledgeCodec, exec, args.knowledgeHandle, node.id)
+      else assertExplicitKnowledgeNoteRequest(agent, 'inspect')
       if (!node.editable || node.kind === 'folder') throw new Error('knowledge_note_read only supports editable text and Markdown notes')
-      const { content } = await provider.readNote(node.id, exec.signal)
+      const { node: snapshot, content } = await provider.readNote(node.id, exec.signal)
       const text = decodeTextNote(content)
       const chunk = text.slice(offset, offset + maxChars)
       return JSON.stringify({
         storage: provider.mode,
-        note: noteView(node, handle),
+        note: noteView(snapshot, handle),
         offset,
         content: chunk,
         nextOffset: offset + chunk.length < text.length ? offset + chunk.length : null,
@@ -136,15 +147,17 @@ function createNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleC
   }
 }
 
-function updateNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCodec): ToolDefinitionLike {
+function updateNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCodec, knowledgeCodec: KnowledgeHandleCodec): ToolDefinitionLike {
   return {
     name: 'knowledge_note_update',
-    description: 'Rename or change one existing note only when the user explicitly asks. Use an exact signed handle. replace_content replaces the complete body; append_content preserves the existing body and appends value exactly; rename changes only the visible name.',
+    description: 'Update an existing note. A current reference from a mounted knowledge document authorizes append_content/replace_content without another user request: pass knowledgeHandle and its referenced noteHandle. This never authorizes editing the knowledge document, renaming, moving or deleting notes. Otherwise an explicit user request is required. Read before writing; append_content preserves the existing body, replace_content replaces the complete body. Do not write unchanged observations.',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
         noteHandle: { type: 'string', description: 'Exact signed handle returned by knowledge_note_list or knowledge_note_search.' },
+        knowledgeHandle: { type: 'string', description: 'Mounted knowledge document referencing this note. Checked against current mounts and references on every call; partner heartbeat uses its dedicated recording tool.' },
         operation: { type: 'string', enum: ['rename', 'replace_content', 'append_content'] },
+        expectedVersion: { type: 'integer', minimum: 1, description: 'For content updates, pass note.version from knowledge_note_read. A stale version is rejected; reread and merge instead of overwriting.' },
         value: { type: 'string', description: 'New name or content, according to operation.' },
       },
       required: ['noteHandle', 'operation', 'value'],
@@ -156,17 +169,21 @@ function updateNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleC
       const handle = requiredToolString(args.noteHandle, 'noteHandle', 4096)
       const operation = updateOperation(args.operation)
       const node = await resolveNoteHandle(provider, codec, agent.session.id, handle, exec.signal)
-      assertExplicitKnowledgeNoteRequest(agent, 'update', node.kind === 'folder' ? 'folder' : 'document')
+      if (args.knowledgeHandle !== undefined && operation !== 'rename') await authorizeReferencedNote(provider, knowledgeCodec, exec, args.knowledgeHandle, node.id)
+      else assertExplicitKnowledgeNoteRequest(agent, 'update', node.kind === 'folder' ? 'folder' : 'document')
       let updated: NoteNode
       if (operation === 'rename') {
         updated = await provider.renameNote(node.id, requiredToolString(args.value, 'value', 255), exec.signal)
       } else {
         if (!node.editable || node.kind === 'folder') throw new Error('only editable text and Markdown notes support content updates')
+        const expectedVersion = optionalToolInteger(args.expectedVersion, 'expectedVersion', 1, Number.MAX_SAFE_INTEGER)
+        if (expectedVersion === undefined) throw new Error('请先用 knowledge_note_read 读取笔记，并提供返回的 note.version 作为 expectedVersion')
+        if (node.version !== expectedVersion) throw new Error('笔记已变化，请重新读取并合并后更新')
         const value = requiredContent(args.value, 'value')
         const content = operation === 'append_content'
           ? `${decodeTextNote((await provider.readNote(node.id, exec.signal)).content)}${value}`
           : value
-        updated = await provider.updateNoteContent(node.id, new TextEncoder().encode(content), exec.signal)
+        updated = await provider.updateNoteContent(node.id, new TextEncoder().encode(content), exec.signal, expectedVersion)
       }
       return mutationResult(provider, 'updated', updated, codec.encode(agent.session.id, updated.id))
     },
@@ -256,6 +273,7 @@ function noteView(node: NoteNode, handle: string): Record<string, unknown> {
     kind: node.kind,
     mediaType: node.mediaType,
     editable: node.editable,
+    version: node.version,
     size: node.size,
     updatedAt: node.updatedAt,
   }

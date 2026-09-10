@@ -132,7 +132,7 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(editableNoteSource, /mountPlainTextNoteEditor/)
   assert.doesNotMatch(editableNoteSource, /class: 'notes-plain-editor', contenteditable/)
   assert.match(editableNoteSource, /saveEditableNoteTitle/)
-  assert.match(editableNoteSource, /body: \{ name \}/)
+  assert.match(editableNoteSource, /body: \{ name, expectedName: node.name \}/)
   assert.match(application, /data-tree-open/)
   assert.match(application, /note-tree-scrim/)
   assert.match(application, /saveDocumentEditor/)

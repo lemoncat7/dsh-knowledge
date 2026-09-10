@@ -32,6 +32,7 @@ import { loadServiceSettings, serviceSettingsPath, storeServiceSettings, type Kn
 import { registerKnowledgeTools } from './tools.js'
 import { createKnowledgeTrackingService, KNOWLEDGE_TRACKING_SERVICE } from './tracking.js'
 import { createKnowledgeMountManagement, KNOWLEDGE_MOUNT_MANAGEMENT_SERVICE } from './mount-management.js'
+import { createNoteRecording } from './note-recording.js'
 import { registerKnowledgeWeb } from './web.js'
 import { WritebackQueue, WritebackDeferred, type WritebackStatus, type WritebackWork } from './writeback/queue.js'
 
@@ -135,6 +136,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   registerKnowledgeTools(runtime, provider, handleCodec, noteHandleCodec)
   runtime.provide?.(KNOWLEDGE_TRACKING_SERVICE, createKnowledgeTrackingService(provider))
   runtime.provide?.(KNOWLEDGE_MOUNT_MANAGEMENT_SERVICE, createKnowledgeMountManagement(provider, () => providerRouter.revision))
+  runtime.provide?.('dshKnowledgeNoteRecording', createNoteRecording(provider))
 
   let refreshManagementApi = (): void => {}
   let switching: Promise<unknown> = Promise.resolve()

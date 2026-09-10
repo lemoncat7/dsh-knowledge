@@ -219,8 +219,18 @@ export class NoteStore {
     }
   }
 
-  async updateContent(id: string, content: Uint8Array): Promise<NoteNode> {
-    return this.enqueueContentMutation(id, () => this.updateContentNow(id, Buffer.from(content)))
+  async readSnapshot(id: string): Promise<{ node: NoteNode; content: Buffer }> {
+    return this.enqueueContentMutation(id, () => this.read(id))
+  }
+
+  async updateContent(id: string, content: Uint8Array, expectedVersion?: number): Promise<NoteNode> {
+    const bytes = Buffer.from(content)
+    return this.enqueueContentMutation(id, () => {
+      if (expectedVersion !== undefined && this.requireNode(id).version !== normalizeVersion(expectedVersion)) {
+        throw conflict('笔记已被修改，请重新读取并合并后保存')
+      }
+      return this.updateContentNow(id, bytes)
+    })
   }
 
   listVersions(id: string, limit = 100): NoteVersion[] {

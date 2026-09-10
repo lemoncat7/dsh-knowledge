@@ -57,7 +57,7 @@ function manageNoteReferencesTool(
 ): ToolDefinitionLike {
   return {
     name: 'knowledge_note_references',
-    description: 'Inspect, add, or remove the structured note references of one knowledge document only when the current user explicitly asks. The knowledge handle must come from knowledge_search and note handles from knowledge_note_search or this tool. References are metadata relationships and never modify the Markdown body. Add/remove requires a currently writable mounted knowledge base and an open document.',
+    description: 'List structured note references of a mounted knowledge document. Each referenced note may be read and its content updated by passing knowledgeHandle plus the returned note handle to knowledge_note_read/update, in ordinary agent conversations; no extra authorization switch is needed. Partner heartbeat uses its explicitly selected recording target instead. Adding/removing references still requires an explicit current user request and a writable mounted knowledge base. Never modify the knowledge body through note tools.',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
@@ -73,7 +73,7 @@ function manageNoteReferencesTool(
       const agent = requireToolAgent(exec, 'knowledge note tools')
       const args = toolRecord(raw)
       const operation = parseOperation(args.operation)
-      assertExplicitKnowledgeNoteReferenceRequest(agent, operation === 'list' ? 'inspect' : operation)
+      if (operation !== 'list') assertExplicitKnowledgeNoteReferenceRequest(agent, operation)
       const knowledgeHandle = requiredToolString(args.knowledgeHandle, 'knowledgeHandle', 4096)
       const { entry, mount } = await readMountedKnowledge(provider, agent, knowledgeHandle, knowledgeCodec, exec.signal)
       if (operation !== 'list' && mount.writeMode === 'none') {
