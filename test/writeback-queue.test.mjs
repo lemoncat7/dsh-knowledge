@@ -21,7 +21,7 @@ test('management lists newest first and preserves original creation time on dupl
   assert.ok(createdAt >= before && createdAt <= Date.now())
 })
 
-test('cancel failed head unblocks successors and survives restart without replay', async t => {
+test('exhausted head releases successors and can still be cancelled without replay', async t => {
   const path = await fixture(t)
   const queue = new WritebackQueue(path, async input => {
     if (input.snapshot.turn === 1) throw new Error('configuration unavailable')
@@ -29,8 +29,12 @@ test('cancel failed head unblocks successors and survives restart without replay
   })
   t.after(() => queue.close())
   queue.enqueue(work()); queue.enqueue(work('a', 2))
+  const disk = new DatabaseSync(path)
+  disk.exec("UPDATE queue_jobs SET attempts=4 WHERE source_key='a:1'")
+  disk.close()
   await waitFor(() => queue.status('a:1').status === 'failed')
-  assert.equal(queue.status('a:2').blockedBy, 'a:1')
+  await waitFor(() => queue.status('a:2').status === 'completed')
+  assert.equal(queue.status('a:2').blockedBy, undefined)
   assert.equal(queue.list('a').total, 2)
   assert.equal(queue.list('a').items[0].payload, undefined)
   assert.equal(queue.cancel('a:1').status, 'cancelled')
@@ -111,7 +115,7 @@ test('enqueue durably captures a turn without waiting for work or retaining muta
   await waitFor(() => queue.status('a:1').status === 'completed')
 })
 
-test('failed session head blocks its successors, not other sessions; duplicate retries run once', async t => {
+test('exhausted head does not block any session; duplicate manual retries run once', async t => {
   const path = await fixture(t)
   const calls = []
   let fail = true
@@ -122,13 +126,16 @@ test('failed session head blocks its successors, not other sessions; duplicate r
   })
   t.after(() => queue.close())
   queue.enqueue(work()); queue.enqueue(work('a', 2)); queue.enqueue(work('b'))
+  const disk = new DatabaseSync(path)
+  disk.exec("UPDATE queue_jobs SET attempts=4 WHERE source_key='a:1'")
+  disk.close()
   await waitFor(() => queue.status('b:1')?.status === 'completed')
-  assert.deepEqual(calls, ['a:1', 'b:1'])
-  assert.match(queue.status('a:2').summary, /前一轮/)
+  assert.deepEqual(calls, ['a:1', 'a:2', 'b:1'])
+  assert.equal(queue.status('a:2').blockedBy, undefined)
   fail = false
   queue.retry('a:1'); queue.retry('a:1'); queue.enqueue(work())
-  await waitFor(() => queue.status('a:2').status === 'completed')
-  assert.deepEqual(calls, ['a:1', 'b:1', 'a:1', 'a:2'])
+  await waitFor(() => queue.status('a:1').status === 'completed')
+  assert.deepEqual(calls, ['a:1', 'a:2', 'b:1', 'a:1'])
   queue.retry('a:1')
   assert.equal(calls.length, 4)
 })
@@ -206,4 +213,89 @@ test('queue capacity fails explicitly without dropping pending records or claimi
   assert.equal(disk.prepare('SELECT count(*) AS n FROM queue_jobs').get().n, 1000)
   assert.equal(queue.status('a:1'), undefined)
   disk.close()
+})
+
+test('generic model failures retry with backoff and the same plan, then release successors', async t => {
+  const path = await fixture(t)
+  const calls = []
+  const plan = [{ delivery: 'audit', proposal: { reason: 'preserve exact plan' } }]
+  const queue = new WritebackQueue(path, async (input, checkpoint) => {
+    calls.push(input.snapshot.sourceKey)
+    if (input.snapshot.sourceKey !== 'a:1') return done
+    if (!checkpoint.load()) checkpoint.save(plan)
+    else assert.deepEqual(checkpoint.load(), plan)
+    throw new Error('model execution failed: error')
+  })
+  t.after(() => queue.close())
+  queue.enqueue(work()); queue.enqueue(work('a', 2)); queue.enqueue(work('b'))
+  queue.start()
+  const disk = new DatabaseSync(path)
+  t.after(() => disk.close())
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    await waitFor(() => {
+      const row = disk.prepare("SELECT attempts,status FROM queue_jobs WHERE source_key='a:1'").get()
+      return row.attempts === attempt && row.status !== 'running'
+    })
+    if (attempt < 5) {
+      const status = queue.status('a:1')
+      assert.equal(status.status, 'queued')
+      assert.ok(status.nextAttemptAt > Date.now())
+      assert.ok(status.nextAttemptAt <= Date.now() + [5000, 15000, 60000, 180000][attempt - 1])
+      assert.equal(queue.status('a:2').blockedBy, 'a:1')
+      assert.equal(queue.status('b:1').status, 'completed')
+      // Advance only the durable due date, keeping real worker scheduling/leases.
+      disk.exec("UPDATE queue_jobs SET next_at=0 WHERE source_key='a:1'")
+    }
+  }
+  await waitFor(() => queue.status('a:2').status === 'completed')
+  assert.equal(calls.filter(key => key === 'a:1').length, 5)
+  assert.equal(queue.status('a:1').status, 'failed')
+  assert.equal(queue.status('a:1').retryable, true)
+  assert.equal(queue.status('a:2').blockedBy, undefined)
+  const retained = disk.prepare("SELECT payload,plan FROM queue_jobs WHERE source_key='a:1'").get()
+  assert.deepEqual(JSON.parse(retained.payload), work())
+  assert.deepEqual(JSON.parse(retained.plan), plan)
+})
+
+test('generic failure recovery preserves retry budget and plan across restart', async t => {
+  const path = await fixture(t)
+  const plan = [{ delivery: 'audit', proposal: { reason: 'already generated' } }]
+  const first = new WritebackQueue(path, async (_input, checkpoint) => {
+    checkpoint.save(plan)
+    throw new Error('empty model response')
+  })
+  t.after(() => first.close())
+  first.enqueue(work())
+  await waitFor(() => first.status('a:1').nextAttemptAt > Date.now())
+  await first.close()
+  let calls = 0
+  const second = new WritebackQueue(path, async (_input, checkpoint) => {
+    calls++
+    assert.deepEqual(checkpoint.load(), plan)
+    return done
+  })
+  t.after(() => second.close())
+  assert.equal(second.list().items[0].attempts, 1)
+  const disk = new DatabaseSync(path)
+  disk.exec("UPDATE queue_jobs SET next_at=0 WHERE source_key='a:1'")
+  disk.close()
+  second.start()
+  await waitFor(() => second.status('a:1').status === 'completed')
+  assert.equal(second.list().items[0].attempts, 2)
+  assert.equal(calls, 1)
+})
+
+test('old failed records no longer block queued work after upgrading', async t => {
+  const path = await fixture(t)
+  const calls = []
+  const queue = new WritebackQueue(path, async input => { calls.push(input.snapshot.sourceKey); return done })
+  t.after(() => queue.close())
+  queue.enqueue(work()); queue.enqueue(work('a', 2))
+  const disk = new DatabaseSync(path)
+  disk.prepare("UPDATE queue_jobs SET status='failed',view=? WHERE source_key='a:1'").run(JSON.stringify({ status: 'failed', summary: '旧版失败', retryable: true }))
+  disk.close()
+  assert.equal(queue.status('a:2').blockedBy, undefined)
+  await waitFor(() => queue.status('a:2').status === 'completed')
+  assert.deepEqual(calls, ['a:2'])
+  assert.equal(queue.status('a:1').status, 'failed')
 })

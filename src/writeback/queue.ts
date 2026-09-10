@@ -21,6 +21,7 @@ export interface WritebackWork {
 }
 interface Row { id: number; source_key: string; session_id: string; payload: string | null; plan: string | null; status: WritebackStatus['status']; attempts: number; next_at: number; view: string }
 const LEASE_MS = 60_000
+const MAX_ATTEMPTS = 5
 const retryDelay = (attempt: number): number => [5_000, 15_000, 60_000, 180_000][Math.min(3, Math.max(0, attempt - 1))]!
 export class WritebackDeferred extends Error {}
 
@@ -99,9 +100,9 @@ export class WritebackQueue {
     const row = this.db.prepare('SELECT id,session_id,status,view FROM queue_jobs WHERE source_key=?').get(key) as Pick<Row, 'id' | 'session_id' | 'status' | 'view'> | undefined
     if (!row) return undefined
     const view = JSON.parse(row.view) as WritebackStatus
-    const blocker = row.status === 'queued' ? this.db.prepare("SELECT source_key FROM queue_jobs WHERE session_id=? AND id<? AND status NOT IN ('completed','cancelled') ORDER BY id LIMIT 1").get(row.session_id, row.id) as { source_key: string } | undefined : undefined
+    const blocker = row.status === 'queued' ? this.db.prepare("SELECT source_key FROM queue_jobs WHERE session_id=? AND id<? AND status IN ('queued','running') ORDER BY id LIMIT 1").get(row.session_id, row.id) as { source_key: string } | undefined : undefined
     if (blocker) {
-      return { ...view, blockedBy: blocker.source_key, summary: '知识库回写 · 等待本会话前一轮回写完成；可在回写任务中重试或取消阻塞项' }
+      return { ...view, blockedBy: blocker.source_key, summary: '知识库回写 · 等待本会话前一轮处理或自动重试；重试耗尽后自动继续' }
     }
     return view
   }
@@ -177,7 +178,7 @@ export class WritebackQueue {
       this.db.prepare("UPDATE queue_jobs SET status='queued',next_at=0,view=? WHERE status='running'")
         .run(JSON.stringify({ status: 'queued', summary: '知识库回写 · 中断后等待恢复', retryable: false }))
       const row = this.db.prepare(`SELECT j.* FROM queue_jobs j WHERE j.status='queued' AND j.next_at<=?
-        AND NOT EXISTS(SELECT 1 FROM queue_jobs p WHERE p.session_id=j.session_id AND p.id<j.id AND p.status NOT IN ('completed','cancelled'))
+        AND NOT EXISTS(SELECT 1 FROM queue_jobs p WHERE p.session_id=j.session_id AND p.id<j.id AND p.status IN ('queued','running'))
         ORDER BY j.id LIMIT 1`).get(now) as unknown as Row | undefined
       if (!row) { this.db.exec('COMMIT'); return undefined }
       this.db.prepare('UPDATE queue_lease SET owner=?,expires=? WHERE id=1').run(this.owner, now + LEASE_MS)
@@ -227,12 +228,14 @@ export class WritebackQueue {
         }
         const message = error instanceof Error ? error.message : String(error)
         const waiting = error instanceof WritebackDeferred
-        const transient = /network|fetch failed|EOF|ECONN|ETIMEDOUT|EAI_AGAIN|SQLITE_BUSY|timeout|timed out|\b(?:429|500|502|503|504)\b|invalid JSON|网络|超时|租约已失效/i.test(message)
-        const retry = this.closed || waiting || (transient && row.attempts < 5)
+        // Provider/model errors have no stable wording. Bound retries by attempts,
+        // not a message allowlist; the saved plan and write idempotency are retained.
+        // Exhausted jobs remain recoverable, but are no longer ordering barriers.
+        const retry = this.closed || waiting || row.attempts < MAX_ATTEMPTS
         const next = this.closed ? 0 : Date.now() + (waiting ? 30_000 : retryDelay(row.attempts))
         const view: WritebackStatus = retry
-          ? { status: 'queued', summary: this.closed ? '知识库回写 · 中断后等待恢复' : '知识库回写 · 等待自动重试', error: message, retryable: false, nextAttemptAt: next }
-          : { status: 'failed', summary: '知识库回写 · 回写失败', error: message, retryable: true }
+          ? { status: 'queued', summary: this.closed ? '知识库回写 · 中断后等待恢复' : waiting ? '知识库回写 · 等待执行条件恢复' : `知识库回写 · 等待自动重试（已尝试 ${row.attempts}/${MAX_ATTEMPTS} 次）`, error: message, retryable: false, nextAttemptAt: next }
+          : { status: 'failed', summary: `知识库回写 · 已尝试 ${MAX_ATTEMPTS} 次仍失败；已保留，可手动重试，不阻塞后续`, error: message, retryable: true }
         this.db.prepare('UPDATE queue_jobs SET status=?,next_at=?,view=?,attempts=? WHERE id=?').run(view.status, next, JSON.stringify(view), waiting || this.closed ? row.attempts - 1 : row.attempts, row.id)
       } finally {
         clearInterval(renewal)

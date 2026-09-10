@@ -4,6 +4,7 @@ import { createServer } from 'node:http'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { apply, LocalKnowledgeProvider } from '../lib/index.js'
 
 async function runtime(path, stream) {
@@ -15,7 +16,7 @@ async function runtime(path, stream) {
     effect(factory) { disposers.push(factory()) }, get() { return undefined },
     webServer: { register(route) { routes.set(route.path, route); return () => routes.delete(route.path) } },
   }
-  apply(ctx, { backend: 'local', databasePath: path, exposeApi: false, exposeWeb: false, extractionEnabled: true, extractionTimeoutMs: 5000, extractionMaxTokens: 1000, extractionMaxInputChars: 10000 })
+  apply(ctx, { backend: 'local', databasePath: path, writebackQueuePath: `${path}.outbox`, exposeApi: false, exposeWeb: false, extractionEnabled: true, extractionTimeoutMs: 5000, extractionMaxTokens: 1000, extractionMaxInputChars: 10000 })
   const server = createServer((req, res) => {
     const route = [...routes.values()].find(route => req.url.split('?')[0] === route.path)
     if (route) void route.handler(req, res); else res.writeHead(404).end()
@@ -57,6 +58,10 @@ test('turn-stop and HTTP retry return before extraction; failed snapshot survive
     { type: 'assistant/message', data: { turn: 1, message: { role: 'assistant', source: { kind: 'model', provider: 'mock', model: 'mock' }, content: [{ type: 'text', text: 'original answer' }] } } },
   ], snapshotEvents() { return this.events } }
   assert.equal(first.enqueue(session), undefined, 'turn-stopping must not return a model promise')
+  // Exercise exhausted-budget manual recovery; normal failures now auto-retry.
+  const disk = new DatabaseSync(`${path}.outbox`)
+  disk.exec('UPDATE queue_jobs SET attempts=4')
+  disk.close()
   session.events = []
   await waitFor(() => calls === 1)
   assert.equal((await first.status()).status, 'running')
