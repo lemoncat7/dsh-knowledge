@@ -424,7 +424,7 @@ function KnowledgeLauncher({ wide, useSessions, workspace, activity }: SidebarAc
 
   return (
     <div className={`dsh-knowledge-launcher${wide ? '' : ' dsh-knowledge-launcher--rail'}`} role="group" aria-label="知识库入口">
-    <button
+    {wide && <button
       type="button"
       className={`dsh-knowledge-trigger${wide ? '' : ' dsh-knowledge-trigger--rail'}${open ? ' is-active' : ''}`}
       aria-label={open ? '返回对话' : '打开知识库工作区'}
@@ -434,7 +434,7 @@ function KnowledgeLauncher({ wide, useSessions, workspace, activity }: SidebarAc
     >
       <IconDataOutline16 size={wide ? 16 : 18} />
       {wide && <span>知识库</span>}
-    </button>
+    </button>}
     <button
       type="button"
       className={`dsh-knowledge-trigger dsh-knowledge-panel-trigger${activityOpen ? ' is-active' : ''}`}

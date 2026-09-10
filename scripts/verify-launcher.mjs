@@ -40,6 +40,18 @@ try {
   for(const wide of [true,false]){
     await page.evaluate(wide=>window.renderLauncher(wide),wide)
     await page.waitForTimeout(50)
+    assert.equal(await page.locator('.dsh-knowledge-launcher button').count(), wide ? 2 : 1)
+    if (!wide) {
+      assert.equal(await main.count(), 0)
+      const center = await side.evaluate(node => {
+        const button=node.getBoundingClientRect(), row=node.parentElement.getBoundingClientRect()
+        return Math.abs(button.x + button.width / 2 - row.x - row.width / 2)
+      })
+      assert.ok(center < 1, 'collapsed side button must be centered')
+      await side.click(); assert.equal(await side.getAttribute('aria-expanded'), 'true')
+      await side.focus(); await page.keyboard.press('Enter')
+      assert.equal(await side.getAttribute('aria-expanded'), 'false')
+    }
     const bounds=await page.evaluate(()=>{
       const row=document.querySelector('.dsh-knowledge-launcher').getBoundingClientRect();
       const others=[...document.querySelectorAll('.neighbor')].map(n=>n.getBoundingClientRect());
