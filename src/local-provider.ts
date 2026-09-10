@@ -10,6 +10,7 @@ import {
   newId,
   normalizeDraft,
   normalizeKnowledgeBaseDraft,
+  normalizeKnowledgeBaseGroup,
   normalizeKnowledgeMountDraft,
   normalizeKnowledgeSettings,
   nowIso,
@@ -165,11 +166,11 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     const base: KnowledgeBase = { ...draft, id: newId(), status: 'active', createdAt: timestamp, updatedAt: timestamp }
     this.db.prepare(`
       INSERT INTO knowledge_bases(
-        id,name,description,default_tags_json,extraction_instructions,writeback_policy,writeback_provider,writeback_model,status,created_at,updated_at
-      ) VALUES(?,?,?,?,?,?,?,?,'active',?,?)
+        id,name,description,default_tags_json,extraction_instructions,writeback_policy,writeback_provider,writeback_model,status,created_at,updated_at,group_name
+      ) VALUES(?,?,?,?,?,?,?,?,'active',?,?,?)
     `).run(
       base.id, base.name, base.description, JSON.stringify(base.defaultTags), base.extractionInstructions,
-      base.writebackPolicy, base.writebackProvider ?? null, base.writebackModel ?? null, timestamp, timestamp,
+      base.writebackPolicy, base.writebackProvider ?? null, base.writebackModel ?? null, timestamp, timestamp, base.group ?? '',
     )
     await this.syncKnowledgeBaseManifestQueued(base.id)
     return base
@@ -180,7 +181,8 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     await this.documentsReady
     const current = await this.getKnowledgeBase(id)
     if (current === undefined) throw notFound('knowledge base', id)
-    const draft = normalizeKnowledgeBaseDraft(input)
+    // Older clients omit grouping from their full editor payload; preserve it.
+    const draft = normalizeKnowledgeBaseDraft({ ...input, group: input.group ?? current.group ?? '' })
     const updated: KnowledgeBase = {
       id: current.id,
       status: current.status,
@@ -190,11 +192,11 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     }
     this.db.prepare(`
       UPDATE knowledge_bases SET
-        name=?,description=?,default_tags_json=?,extraction_instructions=?,writeback_policy=?,writeback_provider=?,writeback_model=?,updated_at=?
+        name=?,description=?,default_tags_json=?,extraction_instructions=?,writeback_policy=?,writeback_provider=?,writeback_model=?,updated_at=?,group_name=?
       WHERE id=?
     `).run(
       updated.name, updated.description, JSON.stringify(updated.defaultTags), updated.extractionInstructions,
-      updated.writebackPolicy, updated.writebackProvider ?? null, updated.writebackModel ?? null, updated.updatedAt, id,
+      updated.writebackPolicy, updated.writebackProvider ?? null, updated.writebackModel ?? null, updated.updatedAt, updated.group ?? '', id,
     )
     await this.syncKnowledgeBaseManifestQueued(id)
     return updated
@@ -209,12 +211,33 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     const model = typeof patch.writebackModel === 'string' ? patch.writebackModel : current.writebackModel
     return this.updateKnowledgeBase(id, {
       name: patch.name ?? current.name,
+      group: patch.group === null ? '' : patch.group ?? current.group ?? '',
       description: patch.description ?? current.description,
       defaultTags: patch.defaultTags ?? current.defaultTags,
       extractionInstructions: patch.extractionInstructions ?? current.extractionInstructions,
       writebackPolicy: patch.writebackPolicy ?? current.writebackPolicy,
       ...clearRoute || provider === undefined || model === undefined ? {} : { writebackProvider: provider, writebackModel: model },
     })
+  }
+
+  async assignKnowledgeBaseGroup(ids: string[], value: string): Promise<KnowledgeBase[]> {
+    this.assertOpen()
+    await this.documentsReady
+    const group = normalizeKnowledgeBaseGroup(value)
+    const unique = [...new Set(ids)]
+    if (!unique.length || unique.length > 1000) throw new Error('select 1-1000 knowledge bases')
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const id of unique) {
+        if (!this.db.prepare('SELECT id FROM knowledge_bases WHERE id=?').get(id)) throw notFound('knowledge base', id)
+      }
+      const update = this.db.prepare('UPDATE knowledge_bases SET group_name=?,updated_at=? WHERE id=?')
+      const timestamp = nowIso()
+      for (const id of unique) update.run(group, timestamp, id)
+      this.db.exec('COMMIT')
+    } catch (error) { this.db.exec('ROLLBACK'); throw error }
+    for (const id of unique) await this.syncKnowledgeBaseManifestQueued(id)
+    return (await this.listKnowledgeBases()).filter(base => unique.includes(base.id))
   }
 
   async archiveKnowledgeBase(id: string): Promise<KnowledgeBase> {
@@ -1960,6 +1983,7 @@ function rowToKnowledgeBase(row: SqlRow): KnowledgeBase {
   return {
     id: String(row.id),
     name: String(row.name),
+    ...(row.group_name ? { group: String(row.group_name) } : {}),
     description: String(row.description),
     defaultTags: JSON.parse(String(row.default_tags_json)) as string[],
     extractionInstructions: String(row.extraction_instructions),

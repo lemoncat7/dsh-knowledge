@@ -19,6 +19,8 @@ const { renderMenu: renderDocumentMenu, closeMenus: closeDocumentMenus } = docum
 const readModelCatalog = modelCatalogModule.createModelCatalogLoader()
 const { createWritebackWorkspace } = await import(moduleUrl('writeback-workspace'))
 const { createDocumentSync } = await import(moduleUrl('document-sync'))
+const { createBaseGroups, knowledgeBasePathLabel, sortKnowledgeBasesByGroup } = await import(moduleUrl('base-groups'))
+let baseGroups
 let writebackWorkspace
 const TOKEN_KEY = 'dsh-knowledge.session-token'
 const TYPES = ['preference', 'fact', 'decision', 'procedure', 'lesson']
@@ -1257,12 +1259,15 @@ function renderOverview() {
 }
 
 function renderKnowledgeBases() {
+  baseGroups ??= createBaseGroups({ element, actionButton, interfaceIcon, openSheet, formField, api,
+    getBases: () => state.knowledgeBases, refresh: () => navigate('bases'), showToast,
+    storageKey: `dsh-knowledge.base-groups:${API_BASE}` })
   const activeBases = state.knowledgeBases.filter(base => base.status === 'active')
   const archivedBases = state.knowledgeBases.filter(base => base.status === 'archived')
   if (state.knowledgeBaseView === 'detail') return renderKnowledgeBaseDetail()
   const contextAvailable = Boolean(state.mountContext.projectId || state.mountContext.sessionId)
   const query = state.knowledgeBaseQuery.trim().toLocaleLowerCase()
-  const matchesQuery = base => !query || [base.name, base.description, base.defaultTags.join(' ')]
+  const matchesQuery = base => !query || [base.name, base.group, base.description, base.defaultTags.join(' ')]
     .some(value => String(value || '').toLocaleLowerCase().includes(query))
   const visibleActiveBases = activeBases.filter(matchesQuery)
   const visibleArchivedBases = archivedBases.filter(matchesQuery)
@@ -1286,12 +1291,14 @@ function renderKnowledgeBases() {
     state.knowledgeBaseView === 'libraries' ? element('section', { class: 'library-management', 'aria-labelledby': 'bases-heading' },
       element('div', { class: 'section-heading' },
         element('div', {}, element('h2', { id: 'bases-heading' }, '我的知识库'), element('p', {}, '名称和描述帮助 AI 判断知识应该写到哪里。')),
-        actionButton('+ 创建知识库', () => openKnowledgeBaseEditor(), 'primary'),
+        element('div', { class: 'base-heading-actions' },
+          actionButton('新建分组', () => baseGroups.edit(), 'ghost', { disabled: !state.knowledgeBases.length }),
+          actionButton('+ 创建知识库', () => openKnowledgeBaseEditor(), 'primary')),
       ),
       element('div', { class: 'knowledge-base-toolbar' },
         element('div', { class: 'search-box base-search' }, interfaceIcon('search', 'search-symbol'), element('input', {
           class: 'input', type: 'search', value: state.knowledgeBaseQuery,
-          placeholder: '搜索名称、描述或标签', 'aria-label': '搜索知识库',
+          placeholder: '搜索名称、分组、描述或标签', 'aria-label': '搜索知识库',
           onInput: event => {
             state.knowledgeBaseQuery = event.target.value
             renderShell()
@@ -1303,13 +1310,13 @@ function renderKnowledgeBases() {
           : `${activeBases.length} 个可用 · ${archivedBases.length} 个已归档`),
       ),
       visibleActiveBases.length
-        ? element('div', { class: 'base-grid' }, visibleActiveBases.map(renderKnowledgeBaseCard))
+        ? baseGroups.render(visibleActiveBases, renderKnowledgeBaseCard, Boolean(query))
         : query && visibleArchivedBases.length === 0
           ? emptyState('没有匹配的知识库', '尝试搜索名称、描述或标签。')
           : !query ? emptyState('还没有可用知识库', '使用右上角按钮创建第一个知识库。') : null,
       visibleArchivedBases.length ? element('details', { class: 'archived-bases', open: Boolean(query) },
         element('summary', {}, element('span', {}, '已归档知识库'), element('span', { class: 'summary-count' }, visibleArchivedBases.length)),
-        element('div', { class: 'base-grid' }, visibleArchivedBases.map(renderKnowledgeBaseCard)),
+        baseGroups.render(visibleArchivedBases, renderKnowledgeBaseCard, Boolean(query), 'archived'),
       ) : null,
     ) : element('section', { class: 'mount-section', 'aria-labelledby': 'mounts-heading' },
       element('div', { class: 'section-heading' }, element('div', {},
@@ -1516,17 +1523,17 @@ function renderMountManager(activeBases) {
   if (!availableKinds.some(([kind]) => kind === manager.targetKind)) manager.targetKind = availableKinds[0][0]
   const targetId = manager.targetKind === 'project' ? state.mountContext.projectId : state.mountContext.sessionId
   const query = manager.query.trim().toLowerCase()
-  const rows = activeBases.map(base => ({ base, view: mountView(base, manager.targetKind, targetId) }))
+  const rows = sortKnowledgeBasesByGroup(activeBases).map(base => ({ base, view: mountView(base, manager.targetKind, targetId) }))
   const visibleRows = rows.filter(({ base, view }) => {
-    const searchable = `${base.name} ${base.description} ${base.defaultTags.join(' ')}`.toLowerCase()
+    const searchable = `${knowledgeBasePathLabel(base)} ${base.description} ${base.defaultTags.join(' ')}`.toLowerCase()
     return (!query || searchable.includes(query)) && (manager.filter === 'all' || manager.filter === view.statusKey)
   })
   const visibleIds = visibleRows.map(({ base }) => base.id)
   const selectedCount = manager.selectedIds.size
   const searchInput = element('input', {
     class: 'input', type: 'search', value: manager.query,
-    placeholder: '搜索名称、描述或标签', 'aria-label': '搜索可挂载知识库',
-    onInput: (event) => { manager.query = event.target.value; renderShell() },
+    placeholder: '搜索分类、名称、描述或标签', 'aria-label': '搜索可挂载知识库',
+    onInput: (event) => { manager.query = event.target.value; renderShell(); document.querySelector('.mount-search input')?.focus() },
   })
   const filter = selectControl('筛选挂载状态', [
     { value: 'all', label: '全部状态' },
@@ -1572,7 +1579,7 @@ function renderMountManager(activeBases) {
 function renderMountListRow(base, view, targetKind, targetId) {
   const selected = state.mountManager.selectedIds.has(base.id)
   const checkbox = element('input', {
-    type: 'checkbox', checked: selected, 'aria-label': `选择 ${base.name}`,
+    type: 'checkbox', checked: selected, 'aria-label': `选择 ${knowledgeBasePathLabel(base)}`,
     onChange: (event) => {
       if (event.target.checked) state.mountManager.selectedIds.add(base.id)
       else state.mountManager.selectedIds.delete(base.id)
@@ -1584,9 +1591,9 @@ function renderMountListRow(base, view, targetKind, targetId) {
     class: `mount-list-row${selected ? ' is-selected' : ''}`,
     role: 'listitem',
   },
-    element('label', { class: 'mount-select' }, checkbox, element('span', { class: 'visually-hidden' }, `选择 ${base.name}`)),
+    element('label', { class: 'mount-select' }, checkbox, element('span', { class: 'visually-hidden' }, `选择 ${knowledgeBasePathLabel(base)}`)),
     element('div', { class: 'mount-list-main' },
-      element('div', { class: 'mount-list-title' }, element('strong', {}, base.name), badge(view.statusLabel, view.statusVariant), badge(modelLabel)),
+      element('div', { class: 'mount-list-title' }, element('strong', { class: 'mount-base-path', title: knowledgeBasePathLabel(base) }, knowledgeBasePathLabel(base)), badge(view.statusLabel, view.statusVariant), badge(modelLabel)),
       element('p', {}, base.description || '通用知识库'),
       element('div', { class: 'mount-list-meta' }, view.detail,
         view.source?.includeTags.length ? element('span', {}, ` · 包含 #${view.source.includeTags.join(' #')}`) : null,
@@ -3898,6 +3905,10 @@ async function openKnowledgeBaseEditor(base) {
   const source = base || { name: '', description: '', defaultTags: [], extractionInstructions: '', writebackPolicy: 'conservative' }
   const form = element('form', { class: 'form-grid' })
   const name = formField('名称', 'input', source.name, { required: true, maxlength: 100, placeholder: '例如：项目规范' })
+  const group = formField('所属分组', 'input', source.group || '', { id: 'knowledge-base-group', maxlength: 64, placeholder: '留空为未分组，也可输入新分组名称', list: 'knowledge-base-group-options' })
+  group.wrapper.querySelector('label').htmlFor = group.input.id
+  const groupOptions = element('datalist', { id: 'knowledge-base-group-options' },
+    [...new Set(state.knowledgeBases.map(item => item.group).filter(Boolean))].sort().map(value => element('option', { value })))
   const description = formField('回写匹配描述', 'textarea', source.description, { maxlength: 2000, placeholder: '描述什么样的对话才属于这个库。例如：只记录 dsh-knowledge 项目的架构决策和部署规范' })
   const tags = formField('默认标签', 'input', source.defaultTags.join(', '), { placeholder: 'project-rule, backend' })
   const instructions = formField('提取要求', 'textarea', source.extractionInstructions, { maxlength: 4000, placeholder: '例如：只收录已确认、可跨会话复用的项目约定' })
@@ -3923,7 +3934,7 @@ async function openKnowledgeBaseEditor(base) {
   syncRouteAvailability()
   for (const field of [name, description, tags, instructions]) field.wrapper.classList.add('span-2')
   form.append(
-    name.wrapper, description.wrapper, tags.wrapper, instructions.wrapper, policy.wrapper,
+    name.wrapper, group.wrapper, groupOptions, description.wrapper, tags.wrapper, instructions.wrapper, policy.wrapper,
     routeToggle, route.provider.wrapper, route.model.wrapper,
   )
   openSheet({
@@ -3935,6 +3946,7 @@ async function openKnowledgeBaseEditor(base) {
       if (!form.reportValidity()) return false
       const draft = {
         name: name.input.value.trim(),
+        group: group.input.value.trim(),
         description: description.input.value.trim(),
         defaultTags: parseTags(tags.input.value),
         extractionInstructions: instructions.input.value.trim(),
@@ -3957,7 +3969,7 @@ async function openKnowledgeBaseEditor(base) {
 function openBulkMountEditor() {
   const manager = state.mountManager
   const targetId = manager.targetKind === 'project' ? state.mountContext.projectId : state.mountContext.sessionId
-  const bases = state.knowledgeBases.filter(base => base.status === 'active' && manager.selectedIds.has(base.id))
+  const bases = sortKnowledgeBasesByGroup(state.knowledgeBases.filter(base => base.status === 'active' && manager.selectedIds.has(base.id)))
   if (!targetId || bases.length === 0) return
   const recall = element('input', { type: 'checkbox', checked: true })
   const writeMode = selectField('写入方式', [
@@ -3970,7 +3982,7 @@ function openBulkMountEditor() {
   const form = element('form', { class: 'form-grid' },
     element('div', { class: 'selection-summary span-2' },
       element('strong', {}, `将挂载 ${bases.length} 个知识库`),
-      element('p', {}, bases.slice(0, 8).map(base => base.name).join('、'), bases.length > 8 ? ` 等 ${bases.length} 个` : ''),
+      element('p', {}, bases.slice(0, 8).map(knowledgeBasePathLabel).join('、'), bases.length > 8 ? ` 等 ${bases.length} 个` : ''),
     ),
     element('label', { class: 'check-option' }, recall, element('span', {}, element('strong', {}, '开启召回'), element('small', {}, '回答前检索所选知识库。'))),
     writeMode.wrapper,
@@ -4077,7 +4089,7 @@ function openMountEditor(base, targetKind, targetId, explicit, inherited) {
   enabled.addEventListener('change', updateAvailability)
   updateAvailability()
   openSheet({
-    title: `${targetKind === 'project' ? '项目' : '会话'}挂载 · ${base.name}`,
+    title: `${targetKind === 'project' ? '项目' : '会话'}挂载 · ${knowledgeBasePathLabel(base)}`,
     description: targetId,
     body: form,
     primaryLabel: '保存挂载',

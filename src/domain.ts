@@ -52,6 +52,8 @@ export interface KnowledgeSettingsPatch {
 
 export interface KnowledgeBaseDraft {
   name: string
+  /** Display-only organization; never changes recall or write permissions. */
+  group?: string
   description: string
   defaultTags: string[]
   extractionInstructions: string
@@ -63,6 +65,7 @@ export interface KnowledgeBaseDraft {
 
 export interface KnowledgeBasePatch {
   name?: string
+  group?: string | null
   description?: string
   defaultTags?: string[]
   extractionInstructions?: string
@@ -395,7 +398,16 @@ export function contentHash(draft: KnowledgeDraft): string {
   })).digest('hex')
 }
 
+export function normalizeKnowledgeBaseGroup(value: unknown): string {
+  if (value == null) return ''
+  if (typeof value !== 'string') throw new Error('knowledge base group must be a string')
+  const group = value.trim()
+  if (group.length > 64 || /[\u0000-\u001f\u007f]/u.test(group)) throw new Error('knowledge base group must contain at most 64 characters without control characters')
+  return group
+}
+
 export function normalizeKnowledgeBaseDraft(input: KnowledgeBaseDraft): KnowledgeBaseDraft {
+  const group = normalizeKnowledgeBaseGroup(input.group)
   const name = input.name.trim()
   const description = input.description.trim()
   const extractionInstructions = input.extractionInstructions.trim()
@@ -419,6 +431,7 @@ export function normalizeKnowledgeBaseDraft(input: KnowledgeBaseDraft): Knowledg
   }
   return {
     name,
+    ...(group ? { group } : {}),
     description,
     defaultTags: normalizeTags(input.defaultTags),
     extractionInstructions,

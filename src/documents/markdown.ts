@@ -96,6 +96,7 @@ export function renderKnowledgeMarkdown(input: {
 export function renderKnowledgeBaseManifest(input: {
   id: string
   name: string
+  group?: string
   description: string
   defaultTags: string[]
   extractionInstructions: string
@@ -103,6 +104,7 @@ export function renderKnowledgeBaseManifest(input: {
   return stringifyYaml({
     id: input.id,
     name: input.name,
+    ...(input.group ? { group: input.group } : {}),
     description: input.description,
     defaultTags: normalizeTags(input.defaultTags),
     extractionInstructions: input.extractionInstructions,

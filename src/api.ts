@@ -64,7 +64,7 @@ async function dispatch(
   const method = req.method ?? 'GET'
 
   if (method === 'GET' && segments[0] === 'health') {
-    return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 13 })
+    return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 14 })
   }
 
   if (segments[0] === 'shared') {
@@ -350,6 +350,13 @@ async function dispatch(
   }
 
   if (segments[0] === 'knowledge-bases') {
+    if (method === 'POST' && segments[1] === 'group' && segments.length === 2) {
+      requirePermission(actor.permissions, 'write')
+      const body = await readObject(req)
+      if (!Array.isArray(body.ids) || !body.ids.length || body.ids.length > 1000 || body.ids.some(id => typeof id !== 'string' || !id)) throw httpError(400, 'select 1-1000 knowledge bases')
+      if (typeof body.group !== 'string' || body.group.trim().length > 64 || /[\u0000-\u001f\u007f]/u.test(body.group)) throw httpError(400, 'invalid knowledge base group')
+      return sendJson(res, 200, await provider.assignKnowledgeBaseGroup(body.ids as string[], body.group))
+    }
     if (method === 'GET' && segments.length === 1) {
       requirePermission(actor.permissions, 'read')
       return sendJson(res, 200, await provider.listKnowledgeBases())
@@ -677,7 +684,9 @@ function parseKnowledgeBaseDraft(value: unknown): KnowledgeBaseDraft {
   try {
     const writebackProvider = optionalNullableStringProperty(value, 'writebackProvider')
     const writebackModel = optionalNullableStringProperty(value, 'writebackModel')
-    return normalizeKnowledgeBaseDraft({
+    const group = optionalNullableStringProperty(value, 'group')
+    const draft = normalizeKnowledgeBaseDraft({
+      ...(group == null ? {} : { group }),
       name: typeof value.name === 'string' ? value.name : '',
       description: typeof value.description === 'string' ? value.description : '',
       defaultTags: Array.isArray(value.defaultTags) ? value.defaultTags.filter((tag): tag is string => typeof tag === 'string') : [],
@@ -686,6 +695,7 @@ function parseKnowledgeBaseDraft(value: unknown): KnowledgeBaseDraft {
       ...writebackProvider === undefined || writebackProvider === null ? {} : { writebackProvider },
       ...writebackModel === undefined || writebackModel === null ? {} : { writebackModel },
     })
+    return { ...draft, ...(group === undefined ? {} : { group: group?.trim() ?? '' }) }
   } catch (error) {
     throw httpError(400, error instanceof Error ? error.message : 'knowledge base draft is invalid')
   }
@@ -694,6 +704,7 @@ function parseKnowledgeBaseDraft(value: unknown): KnowledgeBaseDraft {
 function parseKnowledgeBasePatch(value: unknown): KnowledgeBasePatch {
   if (!isRecord(value)) throw httpError(400, 'knowledge base patch is invalid')
   const patch: KnowledgeBasePatch = {}
+  if (Object.hasOwn(value, 'group')) patch.group = optionalNullableStringProperty(value, 'group') as string | null
   if (Object.hasOwn(value, 'name')) {
     if (typeof value.name !== 'string') throw httpError(400, 'knowledge base patch name must be a string')
     patch.name = value.name

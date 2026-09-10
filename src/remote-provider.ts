@@ -93,6 +93,10 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     return this.request<KnowledgeBase>(`knowledge-bases/${encodeURIComponent(id)}`, { method: 'PATCH', body: { patch }, signal })
   }
 
+  async assignKnowledgeBaseGroup(ids: string[], group: string, signal?: AbortSignal): Promise<KnowledgeBase[]> {
+    return this.request<KnowledgeBase[]>('knowledge-bases/group', { method: 'POST', body: { ids, group }, signal })
+  }
+
   async archiveKnowledgeBase(id: string, signal?: AbortSignal): Promise<KnowledgeBase> {
     return this.request<KnowledgeBase>(`knowledge-bases/${encodeURIComponent(id)}/archive`, { method: 'POST', signal })
   }

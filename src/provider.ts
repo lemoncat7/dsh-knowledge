@@ -42,6 +42,7 @@ export interface KnowledgeProvider {
   createKnowledgeBase(draft: KnowledgeBaseDraft, signal?: AbortSignal): Promise<KnowledgeBase>
   updateKnowledgeBase(id: string, draft: KnowledgeBaseDraft, signal?: AbortSignal): Promise<KnowledgeBase>
   patchKnowledgeBase(id: string, patch: KnowledgeBasePatch, signal?: AbortSignal): Promise<KnowledgeBase>
+  assignKnowledgeBaseGroup(ids: string[], group: string, signal?: AbortSignal): Promise<KnowledgeBase[]>
   archiveKnowledgeBase(id: string, signal?: AbortSignal): Promise<KnowledgeBase>
   restoreKnowledgeBase(id: string, signal?: AbortSignal): Promise<KnowledgeBase>
   deleteKnowledgeBase(id: string, signal?: AbortSignal): Promise<void>

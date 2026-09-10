@@ -6,7 +6,7 @@ type SqlRow = Record<string, unknown>
 /** Versioned upgrades preserve the provider's database and transaction boundaries. */
 export function migrateKnowledgeDatabase(db: DatabaseSync, notes: NoteStore): void {
   let version = Number((db.prepare('PRAGMA user_version').get() as SqlRow).user_version ?? 0)
-  if (version > 13) throw new Error(`knowledge database schema ${version} is newer than this plugin supports`)
+  if (version > 14) throw new Error(`knowledge database schema ${version} is newer than this plugin supports`)
   if (version === 0) db.exec(`
     BEGIN IMMEDIATE;
     CREATE TABLE knowledge_entries (
@@ -276,6 +276,15 @@ export function migrateKnowledgeDatabase(db: DatabaseSync, notes: NoteStore): vo
       db.exec('ROLLBACK')
       throw error
     }
+  }
+  if (version <= 12) version = 13
+  if (version === 13) {
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      const columns = db.prepare('PRAGMA table_info(knowledge_bases)').all() as SqlRow[]
+      if (!columns.some(column => column.name === 'group_name')) db.exec("ALTER TABLE knowledge_bases ADD COLUMN group_name TEXT NOT NULL DEFAULT ''")
+      db.exec('PRAGMA user_version = 14; COMMIT')
+    } catch (error) { db.exec('ROLLBACK'); throw error }
   }
   // Alpha v2 used a migration note as the default base's routing description.
   // Clear only that exact placeholder so existing user-authored descriptions stay untouched.
