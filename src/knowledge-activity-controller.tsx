@@ -3,6 +3,7 @@ import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import { KnowledgeActivityPanel } from './knowledge-activity-panel.js'
 import { KnowledgeActivityPresentation } from './knowledge-activity-presentation.js'
 import type { KnowledgeDocumentTarget } from './client.js'
+import { createDockedPanel, supportsDockedPanels } from './docked-panel-compat.js'
 
 export type { KnowledgeActivitySelection } from './knowledge-activity-state.js'
 import { mergeActivitySelection, type KnowledgeActivitySelection } from './knowledge-activity-state.js'
@@ -26,6 +27,7 @@ export function createKnowledgeActivityController(
     openWorkspace(target?: KnowledgeDocumentTarget): void
   },
 ): KnowledgeActivityController {
+  if (supportsDockedPanels(ctx)) return createDockedKnowledgeController(ctx, options)
   const runtime = ctx as unknown as { sessions: ISessions }
   const listeners = new Set<() => void>()
   const states = new Map<string, KnowledgeActivitySelection & { open: boolean }>()
@@ -151,4 +153,36 @@ export function createKnowledgeActivityController(
 
 function normalizeSessionId(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+/** New hosts persist right-hand tabs per session; do not remount a global details slot. */
+function createDockedKnowledgeController(
+  ctx: ClientContext,
+  options: { beforeOpen(): void; openWorkspace(target?: KnowledgeDocumentTarget): void },
+): KnowledgeActivityController {
+  const selections = new Map<string, KnowledgeActivitySelection>()
+  const listeners = new Set<() => void>()
+  const notify = (): void => { for (const listener of listeners) listener() }
+  const current = (): string | undefined => normalizeSessionId((ctx.sessions as unknown as ISessions).list.getSnapshot().current)
+  const panel = createDockedPanel(ctx, '@lemoncat7/dsh-knowledge/activity', '知识库',
+    props => <KnowledgeActivityPanel {...props} controller={controller} />, notify)
+  const controller: KnowledgeActivityController = {
+    open(sessionId, selection) {
+      if (selection !== undefined) controller.select(sessionId, selection)
+      options.beforeOpen()
+      panel.open(sessionId)
+    },
+    toggle(sessionId) { if (panel.isOpen(sessionId)) controller.close(sessionId); else controller.open(sessionId) },
+    close(sessionId) { const target = sessionId ?? current(); if (target !== undefined) panel.close(target) },
+    isOpen: panel.isOpen,
+    selection: sessionId => selections.get(sessionId) ?? {},
+    select(sessionId, selection) {
+      selections.set(sessionId, mergeActivitySelection(selections.get(sessionId) ?? {}, selection))
+      notify()
+    },
+    openWorkspace(target) { controller.close(); options.openWorkspace(target) },
+    subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },
+    dispose() { panel.dispose(); selections.clear(); listeners.clear() },
+  }
+  return controller
 }

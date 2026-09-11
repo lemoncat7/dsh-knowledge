@@ -11,6 +11,8 @@ test('blank or not-yet-loaded sessions use the workspace instead of a zero-width
   assert.equal(availableActivitySession({ current: 's', byId: {} }), undefined)
   assert.equal(availableActivitySession({ current: 's', byId: { s: { blank: true } } }), undefined)
   assert.equal(availableActivitySession({ current: 's', byId: { s: { blank: false } } }), 's')
+  assert.equal(availableActivitySession({ current: 's', byId: { s: { blank: true } } }, true), 's')
+  assert.equal(availableActivitySession({ current: 's', byId: {} }, true), undefined)
 })
 
 test('activity base changes clear stale documents without losing independent notes state', () => {

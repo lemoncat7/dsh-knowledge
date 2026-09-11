@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
-test('browser bundle switches the official conversation slot to the knowledge workspace', async () => {
+test('browser bundle supports legacy conversation and new keyed main workspaces', async () => {
   const source = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8')
   assert.match(source, /window\.__ModuleLoader__\.load/)
   assert.match(source, /sidebar\.footer\.action/)
@@ -19,7 +19,9 @@ test('browser bundle switches the official conversation slot to the knowledge wo
   assert.match(source, /documentId/)
   assert.doesNotMatch(source, /return query\.length === 0 \? "\/knowledge"/)
   assert.match(source, /name:\s*"conversation"/)
-  assert.match(source, /priority:\s*-1/)
+  assert.match(source, /registerMainPanel\(client, PLUGIN_ID, -1/)
+  assert.match(source, /name:\s*"main"/)
+  assert.match(source, /sidebar\.right\.pane\.tab/)
   assert.match(source, /knowledge-workspace/)
   assert.match(source, /name:\s*"details"/)
   assert.match(source, /knowledge-activity-panel/)

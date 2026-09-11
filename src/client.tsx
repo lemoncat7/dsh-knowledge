@@ -19,7 +19,9 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { knowledgeDesignCss } from './design-tokens.js'
 import { availableActivitySession } from './knowledge-activity-state.js'
+import { supportsDockedPanels } from './docked-panel-compat.js'
 import cssText from './client.css'
+import { registerMainPanel } from './main-panel-compat.js'
 import activityCss from './knowledge-activity.css'
 import { createKnowledgeActivityController, type KnowledgeActivityController } from './knowledge-activity-controller.js'
 import { KNOWLEDGE_SETTINGS_NAMESPACE } from './constants.js'
@@ -72,19 +74,20 @@ export const inject = ['slots', 'theme', 'layout', 'sessions']
 /** Register the knowledge launcher in the sidebar's official extension slot. */
 export function apply(ctx: ClientContext): void {
   ctx.effect(installStyles, 'dsh-knowledge: client styles')
+  const docked = supportsDockedPanels(ctx)
   let activity: KnowledgeActivityController | undefined
-  const workspace = createKnowledgeWorkspaceController(ctx, () => activity?.close(undefined, true))
+  const workspace = createKnowledgeWorkspaceController(ctx, () => { if (!docked) activity?.close(undefined, true) })
   activity = createKnowledgeActivityController(ctx, {
-    beforeOpen: () => { workspace.close(); activatePluginWorkspace(PLUGIN_ID) },
+    beforeOpen: () => { workspace.close(); if (!docked) activatePluginWorkspace(PLUGIN_ID) },
     openWorkspace: target => { if (target === undefined) workspace.open(); else workspace.openDocument(target) },
   })
-  ctx.effect(() => observePluginWorkspace(PLUGIN_ID, () => { workspace.close(); activity?.close(undefined, true) }), 'dsh-knowledge: exclusive workspace')
+  ctx.effect(() => observePluginWorkspace(PLUGIN_ID, () => { workspace.close(); if (!docked) activity?.close(undefined, true) }), 'dsh-knowledge: exclusive workspace')
   ctx.effect(() => () => { workspace.close(); activity?.dispose() }, 'dsh-knowledge: workspace lifecycle')
   ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
     name: 'sidebar.footer.action',
     id: 'knowledge',
     order: -10,
-  }, props => <KnowledgeLauncher {...props} workspace={workspace} activity={activity!} />))
+  }, props => <KnowledgeLauncher {...props} workspace={workspace} activity={activity!} docked={supportsDockedPanels(ctx)} />))
 
   ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
     name: 'settings.plugin.item',
@@ -188,9 +191,9 @@ function createKnowledgeWorkspaceController(client: ClientContext, beforeOpen: (
     if (disposeWorkspace !== undefined) return
     beforeOpen()
     activatePluginWorkspace(PLUGIN_ID)
-    disposeWorkspace = client.slots.register({ name: 'conversation', priority: -1 }, props => (
+    disposeWorkspace = registerMainPanel(client, PLUGIN_ID, -1, props => (
       <KnowledgeWorkspace {...props} client={client} workspace={controller} />
-    ))
+    ), close)
   }
   controller = {
     isOpen: () => disposeWorkspace !== undefined,
@@ -408,9 +411,9 @@ function isManagementPath(value: unknown): value is string {
   return typeof value === 'string' && value.startsWith('/') && !value.startsWith('//')
 }
 
-function KnowledgeLauncher({ wide, useSessions, workspace, activity }: SidebarActionProps & { workspace: KnowledgeWorkspaceController; activity: KnowledgeActivityController }) {
+function KnowledgeLauncher({ wide, useSessions, workspace, activity, docked }: SidebarActionProps & { workspace: KnowledgeWorkspaceController; activity: KnowledgeActivityController; docked: boolean }) {
   const [open, setOpen] = useState(workspace.isOpen())
-  const currentSessionId = useSessions(availableActivitySession)
+  const currentSessionId = useSessions((state: SessionListState) => availableActivitySession(state, docked))
   const [activityOpen, setActivityOpen] = useState(currentSessionId === undefined ? false : activity.isOpen(currentSessionId))
 
   useEffect(() => workspace.subscribe(() => { setOpen(workspace.isOpen()) }), [workspace])
@@ -454,7 +457,7 @@ function KnowledgeLauncher({ wide, useSessions, workspace, activity }: SidebarAc
 }
 
 function KnowledgeWorkspace({
-  sessionId,
+  sessionId: scopedSessionId,
   useSessions,
   client,
   workspace,
@@ -464,6 +467,8 @@ function KnowledgeWorkspace({
   const [managementPath, setManagementPath] = useState<string | undefined>(cachedManagementPath)
   const [panelError, setPanelError] = useState('')
   const [target, setTarget] = useState<KnowledgeDocumentTarget | undefined>(workspace.currentTarget())
+  const selectedSessionId = useSessions((state: SessionListState) => state.current)
+  const sessionId = scopedSessionId ?? selectedSessionId
   const projectId = useSessions((state: SessionListState) => sessionId === undefined ? undefined : state.byId[sessionId]?.cwd)
   const knowledgeUrl = managementPath === undefined ? undefined : knowledgePanelUrl(managementPath, sessionId, projectId, target)
   const frame = useRef<HTMLIFrameElement | null>(null)

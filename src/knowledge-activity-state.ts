@@ -1,9 +1,10 @@
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
 
-/** DSH reserves the details column only for a loaded, non-blank session. */
-export function availableActivitySession(state: Pick<SessionListState, 'current' | 'byId'>): string | undefined {
+/** Legacy details requires content; new docked tabs support a loaded blank session. */
+export function availableActivitySession(state: Pick<SessionListState, 'current' | 'byId'>, docked = false): string | undefined {
   const current = state.current
-  return current !== undefined && state.byId[current]?.blank === false ? String(current) : undefined
+  if (current === undefined || state.byId[current] === undefined) return undefined
+  return docked || state.byId[current]?.blank === false ? String(current) : undefined
 }
 
 export interface KnowledgeActivitySelection {
