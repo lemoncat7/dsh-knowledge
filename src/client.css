@@ -103,21 +103,22 @@ body[data-ds-dark-theme] :is(
 /* The official footer slot is a horizontal list. Only opt its immediate
    container into wrapping; leave neighboring plugin controls untouched. */
 :has(> .dsh-knowledge-launcher) { flex-wrap: wrap; }
-/* The host's collapsed footer is shrink-to-fit. Bound it to the rail rather
-   than centering our button inside a width determined by neighboring plugins. */
-:has(> .dsh-knowledge-launcher--rail) { width: 100% !important; max-width: 100%; min-width: 0; }
+/* In rail mode the host centers a 36px settings row. Use that same row
+   geometry, rather than forcing a percentage-width footer. */
+:has(> .dsh-knowledge-launcher--rail) { flex-direction: column; align-items: center; }
 
 .dsh-knowledge-launcher {
   display: flex;
-  flex: 0 0 100%;
+  flex: 0 0 calc(100% + 4px);
   order: -1;
   min-width: 0;
   gap: 4px;
-  padding-block: 4px;
+  width: calc(100% + 4px);
+  margin: 4px -2px;
   box-sizing: border-box;
 }
 
-.dsh-knowledge-launcher--rail { flex-direction: column; align-items: center; }
+.dsh-knowledge-launcher--rail { flex: none; width: 36px; margin: 8px 0 10px; flex-direction: column; align-items: center; }
 
 .dsh-knowledge-trigger {
   position: relative;
@@ -129,7 +130,7 @@ body[data-ds-dark-theme] :is(
   width: auto;
   height: 36px;
   margin: 0;
-  padding: 6px 10px;
+  padding: 0 10px 0 8px;
   box-sizing: border-box;
   border: 0;
   border-radius: 12px;

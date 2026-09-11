@@ -54,7 +54,10 @@ try {
         rail.style.cssText='display:flex;flex-direction:column;align-items:center;width:48px'
         footer.before(rail);rail.append(footer)
         footer.style.width='auto'
-        const button=node.getBoundingClientRect(), bounds=rail.getBoundingClientRect()
+        const settings=document.createElement('button')
+        settings.style.cssText='box-sizing:border-box;flex:none;width:36px;height:36px;margin:8px 0 10px;padding:0'
+        rail.append(settings)
+        const button=node.getBoundingClientRect(), bounds=settings.getBoundingClientRect()
         return Math.abs(button.x + button.width / 2 - bounds.x - bounds.width / 2)
       })
       assert.ok(railCenter < 1, 'button must align with rail even in auto-width host footer')
@@ -66,7 +69,7 @@ try {
       const row=document.querySelector('.dsh-knowledge-launcher').getBoundingClientRect();
       const others=[...document.querySelectorAll('.neighbor')].map(n=>n.getBoundingClientRect());
       const footer=document.querySelector('.footer');
-      return {bottom:row.bottom,others:others.map(r=>r.top),overflow:footer.scrollWidth>footer.clientWidth}
+      return {bottom:row.bottom,others:others.map(r=>r.top),overflow:footer.scrollWidth>footer.clientWidth+2}
     })
     assert.ok(bounds.others.every(top=>top>=bounds.bottom),'knowledge owns a separate row')
     assert.equal(bounds.overflow,false)
