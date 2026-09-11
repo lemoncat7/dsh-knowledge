@@ -15,7 +15,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { activatePluginWorkspace, observePluginWorkspace } from './workspace-ownership.js'
 import {
-  IconChevronLeftOutline14, IconDataOutline16,
+  IconChevronLeftOutline14, IconDataOutline16, IconPanelLeftOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { knowledgeDesignCss } from './design-tokens.js'
 import { availableActivitySession } from './knowledge-activity-state.js'
@@ -447,10 +447,7 @@ function KnowledgeLauncher({ wide, useSessions, workspace, activity, docked }: S
       title={currentSessionId === undefined ? '进入会话后可展开知识侧栏' : activityOpen ? '收起会话知识库' : '展开会话知识库'}
       onClick={() => { if (currentSessionId !== undefined) activity.toggle(currentSessionId) }}
     >
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
-        <rect x="3" y="4" width="18" height="16" rx="3" />
-        <path d="M14 4v16M17 9v6" />
-      </svg>
+      <IconPanelLeftOutline16 size={16} className="dsh-knowledge-panel-right-icon" />
     </button>
     </div>
   )

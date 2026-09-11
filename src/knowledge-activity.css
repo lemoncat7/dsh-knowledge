@@ -142,9 +142,16 @@
   color: var(--knowledge-text-tertiary);
   background: var(--knowledge-embedded-control);
 }
-.dsh-knowledge-activity-search:focus-within { border-color: color-mix(in srgb, var(--knowledge-accent) 50%, var(--knowledge-border)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--knowledge-accent) 10%, transparent); }
+.dsh-knowledge-activity-search:focus-within { border-color: var(--knowledge-border); box-shadow: none; background: color-mix(in srgb, var(--knowledge-text) 5%, var(--knowledge-embedded-control)); }
 .dsh-knowledge-activity-search input { min-width: 0; height: 38px; flex: 1; padding: 0; border: 0; outline: 0 !important; color: var(--knowledge-text); background: transparent; box-shadow: none; }
 .dsh-knowledge-activity-search input::placeholder { color: var(--knowledge-text-tertiary); opacity: 1; }
+/* Host themes can force a focus outline with #root and !important. */
+#root .dsh-knowledge-activity-search input:is(:focus, :focus-visible) {
+  outline: none !important;
+  outline-offset: 0 !important;
+  border: 0;
+  box-shadow: none !important;
+}
 .dsh-knowledge-activity-search > button { display: grid; width: 28px; height: 28px; place-items: center; padding: 0; border: 0; border-radius: 8px; color: var(--knowledge-text-tertiary); background: transparent; cursor: pointer; }
 .dsh-knowledge-activity-search > button:hover { color: var(--knowledge-text); background: var(--knowledge-hover); }
 

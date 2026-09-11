@@ -645,3 +645,6 @@ body[data-ds-dark-theme] :is(
   color: var(--knowledge-danger);
   overflow-wrap: anywhere;
 }
+.dsh-knowledge-panel-right-icon {
+  transform: rotate(180deg);
+}
