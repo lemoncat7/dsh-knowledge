@@ -100,12 +100,15 @@ body[data-ds-dark-theme] :is(
   margin: 0;
 }
 
-/* The official footer slot is a horizontal list. Only opt its immediate
-   container into wrapping; leave neighboring plugin controls untouched. */
-:has(> .dsh-knowledge-launcher) { flex-wrap: wrap; }
+/* The slot may add a display:contents boundary between its children and the
+   actual flex row. Cover both host structures: wrapping the boundary alone
+   does nothing and a full-width launcher pushes other plugins offscreen. */
+:has(> .dsh-knowledge-launcher),
+:has(> div > .dsh-knowledge-launcher) { flex-wrap: wrap; }
 /* In rail mode the host centers a 36px settings row. Use that same row
    geometry, rather than forcing a percentage-width footer. */
-:has(> .dsh-knowledge-launcher--rail) { flex-direction: column; align-items: center; }
+:has(> .dsh-knowledge-launcher--rail),
+:has(> div > .dsh-knowledge-launcher--rail) { flex-direction: column; align-items: center; }
 
 .dsh-knowledge-launcher {
   display: flex;

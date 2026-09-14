@@ -24,6 +24,8 @@ test('browser integration is type-checked against the official DSH client contra
   assert.match(css, /\.dsh-knowledge-workspace-header \[data-knowledge-workspace-close\]/)
   assert.match(css, /\.dsh-knowledge-frame \{[\s\S]*?width: 100%;[\s\S]*?border: 0;[\s\S]*?background: transparent;[\s\S]*?box-shadow: none;/)
   assert.match(css, /\.dsh-knowledge-launcher \{[\s\S]*?flex: 0 0 calc\(100% \+ 4px\);/)
+  assert.match(css, /:has\(> \.dsh-knowledge-launcher\),\s*:has\(> div > \.dsh-knowledge-launcher\) \{ flex-wrap: wrap; \}/)
+  assert.match(css, /:has\(> \.dsh-knowledge-launcher--rail\),\s*:has\(> div > \.dsh-knowledge-launcher--rail\) \{ flex-direction: column; align-items: center; \}/)
   assert.match(css, /\.dsh-knowledge-trigger \{[\s\S]*?width: auto;[\s\S]*?height: 36px;[\s\S]*?margin: 0;/)
   assert.match(css, /\.dsh-knowledge-trigger--rail \{[\s\S]*?width: 36px;[\s\S]*?height: 36px;[\s\S]*?margin: 8px 0 10px;[\s\S]*?justify-content: center;/)
   assert.doesNotMatch(css, /\.dsh-knowledge-trigger::before/)
