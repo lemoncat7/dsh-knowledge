@@ -10,6 +10,7 @@ interface NoteEditorChromeOptions {
   outlineHost: HTMLElement
   findButton?: HTMLButtonElement | null
   outlineButton?: HTMLButtonElement | null
+  onExcerpt?(text: string): void
 }
 
 export interface NoteEditorChrome {
@@ -40,6 +41,7 @@ export function createNoteEditorChrome(options: NoteEditorChromeOptions): NoteEd
     frame: options.frame,
     scrollHost: options.scrollHost,
     findIsOpen: find.isOpen,
+    ...(options.onExcerpt ? { onExcerpt: options.onExcerpt } : {}),
   })
 
   options.findButton?.setAttribute('aria-pressed', 'false')

@@ -19,6 +19,7 @@ const STATIC_ASSETS = new Map<string, Asset>([
   ['markdown-preview.js', loadAsset('../web/markdown-preview.js', 'text/javascript; charset=utf-8')],
   ['note-editor.js', loadAsset('../web/note-editor.js', 'text/javascript; charset=utf-8')],
   ['note-history.js', loadAsset('../web/note-history.js', 'text/javascript; charset=utf-8')],
+  ['note-excerpt.js', loadAsset('../web/note-excerpt.js', 'text/javascript; charset=utf-8')],
   ['ui-primitives.js', loadAsset('../web/ui-primitives.js', 'text/javascript; charset=utf-8')],
   ['design-tokens.css', loadAsset('../web/design-tokens.css', 'text/css; charset=utf-8')],
   ['styles.css', loadAsset('../web/styles.css', 'text/css; charset=utf-8')],

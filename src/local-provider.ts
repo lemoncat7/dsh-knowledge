@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
 import { migrateKnowledgeDatabase } from './storage/migrations.js'
+import { noteExcerptMarkdown, type NoteExcerptRequest } from './note-excerpt.js'
 import {
   contentHash,
   DEFAULT_KNOWLEDGE_BASE_ID,
@@ -106,6 +107,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     this.db = new DatabaseSync(path)
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
     migrateKnowledgeDatabase(this.db, this.notes)
+    this.db.exec('CREATE TABLE IF NOT EXISTS note_excerpt_receipts (request_id TEXT PRIMARY KEY, input_hash TEXT NOT NULL, knowledge_id TEXT NOT NULL);')
     this.db.exec('CREATE TABLE IF NOT EXISTS writeback_receipts (source_key TEXT NOT NULL, proposal_hash TEXT NOT NULL, result_json TEXT NOT NULL, PRIMARY KEY(source_key, proposal_hash));')
     this.documentsReady = this.enqueueDocumentSync(() => this.syncAllDocuments())
   }
@@ -667,6 +669,44 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     this.assertOpen()
     await this.documentsReady
     const entry = this.transaction(() => this.insertEntry(draft))
+    await this.syncKnowledgeEntryQueued(entry.id)
+    return entry
+  }
+
+  /** Content, reference, and retry receipt share one SQLite transaction. */
+  async excerptNote(input: NoteExcerptRequest): Promise<KnowledgeEntry> {
+    this.assertOpen()
+    await this.documentsReady
+    if (!/^[a-zA-Z0-9_-]{16,100}$/.test(input.requestId)) throw inputError('无效的摘录请求标识')
+    if (!/^note_[a-f0-9]{32}$/.test(input.noteId)) throw inputError('无效的来源笔记')
+    if (!input.text.trim() || input.text.length > 50_000) throw inputError('请选择 1 到 50000 字的笔记内容')
+    const body = noteExcerptMarkdown(input.noteId, input.text)
+    const hash = createHash('sha256').update(JSON.stringify(input)).digest('hex')
+    const entry = this.transaction(() => {
+      const receipt = this.db.prepare('SELECT input_hash,knowledge_id FROM note_excerpt_receipts WHERE request_id=?').get(input.requestId) as SqlRow | undefined
+      if (receipt) {
+        if (receipt.input_hash !== hash) throw conflict('本次摘录请求已提交，请重新打开摘录窗口')
+        const previous = this.entriesByIds([String(receipt.knowledge_id)])[0]
+        if (!previous) throw conflict('已摘录的知识文档已删除，不会重复创建')
+        return previous
+      }
+      const note = this.notes.get(input.noteId)
+      if (!note || note.kind === 'folder') throw inputError('来源笔记已删除或不可用')
+      let result: KnowledgeEntry
+      if (input.documentId) {
+        const current = this.entriesByIds([input.documentId])[0]
+        if (!current || current.knowledgeBaseId !== input.knowledgeBaseId) throw conflict('目标知识文档不存在或已移动')
+        if (current.status !== 'active' || current.documentState !== 'open') throw conflict('目标文档已归档或定稿，请选择可编辑的文档')
+        if (current.version !== input.expectedVersion) throw conflict('目标文档已更新，请重新选择后确认摘录')
+        if (!this.db.prepare("SELECT id FROM knowledge_bases WHERE id=? AND status='active'").get(current.knowledgeBaseId)) throw conflict('目标知识库已归档')
+        result = this.updateEntry(current.id, { ...current, body: `${current.body.trimEnd()}\n\n${body}`.trim() }, 'update')
+      } else {
+        result = this.insertEntry({ knowledgeBaseId: input.knowledgeBaseId, title: input.title?.trim() || note.name.replace(/\.md$/i, ''), body, type: 'fact', tags: [], scope: { kind: 'global' }, confidence: 0.8 })
+      }
+      this.db.prepare('INSERT OR IGNORE INTO knowledge_note_references(knowledge_id,note_id,source,source_session_id,created_at) VALUES(?,?,?,NULL,?)').run(result.id, note.id, 'user', nowIso())
+      this.db.prepare('INSERT INTO note_excerpt_receipts(request_id,input_hash,knowledge_id) VALUES(?,?,?)').run(input.requestId, hash, result.id)
+      return result
+    })
     await this.syncKnowledgeEntryQueued(entry.id)
     return entry
   }

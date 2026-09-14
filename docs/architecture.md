@@ -1,5 +1,11 @@
 # Architecture
 
+## Explicit note excerpts
+
+The Markdown note selection menu captures plain text and delegates to `web/note-excerpt.js` for target selection. It uses the shared dialog, paginated document index, and a fresh target version. Unsaved source notes must save successfully first. `POST note-excerpts` requires read and write permissions, and is forwarded unchanged by the remote management proxy (the remote server must support this endpoint).
+
+`LocalKnowledgeProvider.excerptNote` creates or appends a knowledge document, establishes its stable note-ID reference, and records an idempotency receipt in one transaction. Markdown projection follows the commit and is retryable through the same request ID. Archived/finalized targets and stale versions reject without partial writes. `src/note-excerpt.ts` escapes selected text into source hyperlinks; the editor and read-only renderer preserve and open these links without authorizing arbitrary URI schemes. The source note is retained; there is no automatic content synchronization or AI extraction.
+
 ## Design goals
 
 The plugin is a modular monolith inside one DSH process. It keeps deployment simple while preserving explicit boundaries that can later become separate packages without changing the knowledge contract.

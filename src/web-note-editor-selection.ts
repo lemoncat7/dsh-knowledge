@@ -5,6 +5,7 @@ interface NoteSelectionMenuOptions {
   frame: HTMLElement
   scrollHost: HTMLElement
   findIsOpen(): boolean
+  onExcerpt?(text: string): void
 }
 
 export interface NoteSelectionMenuController {
@@ -92,6 +93,15 @@ export function createNoteSelectionMenu(options: NoteSelectionMenuOptions): Note
     void navigator.clipboard?.writeText(text).catch(() => {})
   })
   primary.append(blockToggle, ...markButtons, linkToggle, copyButton)
+  if (options.onExcerpt) {
+    const excerpt = control('摘录到知识库', '摘录所选文字到知识库', () => {
+      const { from, to } = editor.state.selection
+      const text = editor.state.doc.textBetween(from, to, '\n')
+      if (text.trim()) { hide(); options.onExcerpt?.(text) }
+    })
+    excerpt.classList.add('notes-selection-excerpt')
+    primary.append(excerpt)
+  }
 
   const blockMenu = document.createElement('div')
   blockMenu.className = 'notes-selection-block-menu'
@@ -154,6 +164,7 @@ export function createNoteSelectionMenu(options: NoteSelectionMenuOptions): Note
   let activeSelectionPointerId: number | undefined
   let gestureCancelled = false
   let destroyed = false
+  let lastState: typeof editor.state | undefined
 
   function currentBlockLabel(): string {
     if (editor.isActive('heading', { level: 1 })) return '标题 1'
@@ -191,6 +202,7 @@ export function createNoteSelectionMenu(options: NoteSelectionMenuOptions): Note
     if (destroyed || editor.isDestroyed || options.findIsOpen()) return false
     const { from, to, empty } = editor.state.selection
     if (empty || !editor.isFocused) return false
+    if (lastState === editor.state) return true
     return Boolean(editor.state.doc.textBetween(from, to, ' ').trim())
   }
 
@@ -240,7 +252,12 @@ export function createNoteSelectionMenu(options: NoteSelectionMenuOptions): Note
       return
     }
     menu.hidden = false
-    refreshActiveStates()
+    // selectionUpdate and transaction can fire for the same state. Avoid
+    // repeatedly traversing a large selection for every formatting control.
+    if (lastState !== editor.state) {
+      refreshActiveStates()
+      lastState = editor.state
+    }
     schedulePosition()
   }
 

@@ -467,6 +467,9 @@ test('management console serves a secured same-origin application', async (t) =>
   assert.match(noteEditorSource, /pointercancel/)
 
   const noteHistory = await fetch(`${base}/knowledge/note-history.js`)
+  const excerptModule = await fetch(`${base}/knowledge/note-excerpt.js`)
+  assert.equal(excerptModule.status, 200)
+  assert.match(await excerptModule.text(), /export async function openNoteExcerpt/)
   assert.equal(noteHistory.status, 200)
   assert.match(noteHistory.headers.get('content-type'), /text\/javascript/)
   assert.equal(noteHistory.headers.get('cache-control'), 'public, max-age=31536000, immutable')

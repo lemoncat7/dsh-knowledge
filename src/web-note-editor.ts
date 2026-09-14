@@ -35,6 +35,8 @@ export interface MarkdownEditorOptions {
   label: string
   onChange(markdown: string): void
   onSave(): void
+  onExcerpt?(text: string): void
+  onOpenNote?(id: string): void
 }
 
 export interface MarkdownEditorHandle {
@@ -77,6 +79,8 @@ export function createMarkdownEditor(options: MarkdownEditorOptions): MarkdownEd
         link: {
           autolink: true,
           openOnClick: false,
+          protocols: ['note'],
+          isAllowedUri: (url, context) => /^note:\/\/note_[a-f0-9]{32}$/.test(url) || (!/^note:/i.test(url) && context.defaultValidate(url)),
           HTMLAttributes: { rel: 'noopener noreferrer' },
         },
       }),
@@ -89,6 +93,14 @@ export function createMarkdownEditor(options: MarkdownEditorOptions): MarkdownEd
       TaskItem.configure({ nested: true }),
     ],
     editorProps: {
+      handleClick: (_view, _pos, event) => {
+        const link = event.target instanceof Element ? event.target.closest('a[href]') : null
+        const id = /^note:\/\/(note_[a-f0-9]{32})$/.exec(link?.getAttribute('href') ?? '')?.[1]
+        if (!id || !options.onOpenNote) return false
+        event.preventDefault()
+        options.onOpenNote(id)
+        return true
+      },
       handleDOMEvents: bodyEditorEvents,
       attributes: {
         class: 'notes-live-editor-surface',
@@ -122,6 +134,7 @@ export function createMarkdownEditor(options: MarkdownEditorOptions): MarkdownEd
       frame: options.frame,
       scrollHost: options.scrollHost,
       outlineHost: options.outlineHost,
+      ...(options.onExcerpt ? { onExcerpt: options.onExcerpt } : {}),
       ...(options.findButton !== undefined ? { findButton: options.findButton } : {}),
       ...(options.outlineButton !== undefined ? { outlineButton: options.outlineButton } : {}),
     })

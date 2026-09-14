@@ -19,6 +19,7 @@ const { renderMenu: renderDocumentMenu, closeMenus: closeDocumentMenus } = docum
 const readModelCatalog = modelCatalogModule.createModelCatalogLoader()
 const { createWritebackWorkspace } = await import(moduleUrl('writeback-workspace'))
 const { createDocumentSync } = await import(moduleUrl('document-sync'))
+const { openNoteExcerpt } = await import(moduleUrl('note-excerpt'))
 const { createBaseGroups, knowledgeBasePathLabel, sortKnowledgeBasesByGroup } = await import(moduleUrl('base-groups'))
 let baseGroups
 let writebackWorkspace
@@ -2622,6 +2623,7 @@ function mountMarkdownNoteEditor(host, node, frame, scrollHost, outlineHost) {
     isCurrent: () => state.notes.selectedNode?.id === node.id,
     onChange: updateNoteDraft,
     onSave: () => { void saveNoteDocument() },
+    onExcerpt: text => { void excerptSelectedNote(node, text) },
   })
 }
 
@@ -2673,6 +2675,8 @@ function mountMarkdownEditor(host, options) {
         label: options.label,
         onChange: options.onChange,
         onSave: options.onSave,
+        onExcerpt: options.onExcerpt,
+        onOpenNote: id => { void openNoteReference(id) },
       })
     } catch (error) {
       if (!host.isConnected || request !== markdownEditorMountRequest) return
@@ -2682,6 +2686,15 @@ function mountMarkdownEditor(host, options) {
         actionButton('重试', () => { noteEditorLoader = null; host.replaceChildren(); mountMarkdownEditor(host, options) }, 'small')))
     }
   })
+}
+
+async function excerptSelectedNote(node, text) {
+  try {
+    if (state.notes.selectedNode?.id !== node.id) return
+    if (!await saveNoteDocument()) return
+    if (state.notes.selectedNode?.id !== node.id) return
+    await openNoteExcerpt({ node, text, api, element, openSheet, showToast, friendlyError, formField, selectField, knowledgeBasePathLabel })
+  } catch (error) { showToast(friendlyError(error), 'error') }
 }
 
 function loadMarkdownNoteEditor() {

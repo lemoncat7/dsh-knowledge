@@ -434,6 +434,21 @@ async function dispatch(
     }
   }
 
+  if (segments[0] === 'note-excerpts' && segments.length === 1 && method === 'POST') {
+    requirePermission(actor.permissions, 'read')
+    requirePermission(actor.permissions, 'write')
+    const body = await readObject(req)
+    const documentId = optionalString(body.documentId)
+    return sendJson(res, 200, await provider.excerptNote({
+      requestId: requiredString(body.requestId, 'requestId'),
+      noteId: requiredString(body.noteId, 'noteId'),
+      text: requiredString(body.text, 'text'),
+      knowledgeBaseId: requiredString(body.knowledgeBaseId, 'knowledgeBaseId'),
+      ...(documentId ? { documentId, expectedVersion: boundedInteger(body.expectedVersion, 'expectedVersion', 0, 1, Number.MAX_SAFE_INTEGER) } : {}),
+      ...(typeof body.title === 'string' ? { title: body.title } : {}),
+    }))
+  }
+
   if (segments[0] === 'documents') {
     if (method === 'GET' && segments.length === 1) {
       requirePermission(actor.permissions, 'read')
