@@ -12,6 +12,7 @@ import {
 const FRONT_MATTER_BOUNDARY = '---'
 
 export interface MarkdownDocumentMetadata {
+  group?: string
   id: string
   type: KnowledgeType
   tags: string[]
@@ -63,6 +64,7 @@ export function parseKnowledgeMarkdown(markdown: string): ParsedMarkdownDocument
   return {
     metadata: {
       id, type: raw.type, tags, scope, confidence, status, documentState,
+      ...(typeof raw.group === 'string' ? { group: raw.group } : {}),
       ...finalizedAt === undefined ? {} : { finalizedAt },
       ...finalizationNote === undefined ? {} : { finalizationNote },
     },
@@ -83,6 +85,7 @@ export function renderKnowledgeMarkdown(input: {
     id: input.metadata.id,
     type: input.metadata.type,
     tags: normalizeTags(input.metadata.tags),
+    ...(input.metadata.group ? { group: input.metadata.group } : {}),
     scope: input.metadata.scope,
     confidence: Number(input.metadata.confidence.toFixed(3)),
     status: input.metadata.status,

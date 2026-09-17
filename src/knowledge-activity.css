@@ -360,3 +360,9 @@
   .dsh-knowledge-activity-state > span,
   .dsh-knowledge-activity-scope-trigger > svg { animation: none; transition: none; }
 }
+.dsh-knowledge-activity-group-toggle { display: flex; align-items: center; gap: 7px; width: 100%; padding: 10px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--knowledge-text-secondary); font: inherit; cursor: pointer; text-align: left; }
+.dsh-knowledge-activity-group-toggle:hover { background: var(--knowledge-hover); }
+.dsh-knowledge-activity-group-toggle:focus-visible { outline: 2px solid var(--knowledge-text-secondary); outline-offset: -2px; }
+.dsh-knowledge-activity-group-toggle strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.dsh-knowledge-activity-group-toggle small { font-size: 11px; color: var(--knowledge-text-tertiary); }
+.dsh-knowledge-activity-group-toggle[aria-expanded="false"] svg { transform: rotate(-90deg); }

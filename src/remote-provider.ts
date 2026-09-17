@@ -116,6 +116,14 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     return this.request<KnowledgeDocument[]>(`documents?${params}`, { signal })
   }
 
+  async listDocumentGroups(knowledgeBaseId: string, signal?: AbortSignal): Promise<import('./document-groups.js').KnowledgeDocumentGroup[]> {
+    return this.request(`document-groups?${new URLSearchParams({ knowledgeBaseId })}`, { signal })
+  }
+
+  async assignDocumentGroup(knowledgeBaseId: string, ids: string[], group: string, signal?: AbortSignal): Promise<KnowledgeEntry[]> {
+    return this.request('document-groups', { method: 'POST', body: { knowledgeBaseId, ids, group }, signal })
+  }
+
   async listDocumentIndex(request: KnowledgeDocumentIndexRequest, signal?: AbortSignal): Promise<KnowledgeDocumentIndexResult> {
     const params = new URLSearchParams({ limit: String(request.limit) })
     for (const id of request.knowledgeBaseIds ?? []) params.append('knowledgeBaseId', id)

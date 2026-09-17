@@ -271,12 +271,7 @@ export function KnowledgeActivityPanel(
                   {listState === 'loading' && documents.length === 0 ? <ActivityState label="正在读取文档…" />
                     : listState === 'error' ? <ActivityError message={error} onRetry={() => { void loadIndex() }} />
                       : documents.length === 0 ? <ActivityEmpty title={query ? '没有找到相关文档' : '这里还没有知识文档'} description={query ? '换个关键词，或清除搜索后浏览目录。' : '审核通过或直接回写的知识会出现在这里。'} />
-                        : <>{documents.map(document => <DocumentRow
-                          key={document.id}
-                          document={document}
-                          baseName={query ? mounts.find(item => item.knowledgeBaseId === document.knowledgeBaseId)?.base.name : undefined}
-                          onClick={() => selectDocument(document)}
-                        />)}
+                        : <><GroupedDocuments documents={documents} mounts={mounts} searching={Boolean(query)} onSelect={selectDocument} />
                         {nextCursor && <button type="button" className="dsh-knowledge-activity-load-more" disabled={listState === 'loading'} onClick={() => { void loadIndex(nextCursor, true) }}>{listState === 'loading' ? '正在加载…' : '加载更多'}</button>}</>}
                 </div>
               </>}
@@ -289,6 +284,21 @@ export function KnowledgeActivityPanel(
         onRetry={() => setDocumentRefresh(value => value + 1)}
       />}
   </section>
+}
+
+function GroupedDocuments({ documents, mounts, searching, onSelect }: { documents: KnowledgeDocumentSummary[]; mounts: ResolvedKnowledgeMount[]; searching: boolean; onSelect(value: KnowledgeDocumentSummary): void }): JSX.Element {
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
+  const groups = useMemo(() => {
+    const result = new Map<string, KnowledgeDocumentSummary[]>()
+    for (const doc of documents) { const key = JSON.stringify([doc.knowledgeBaseId, doc.group || '']); const list = result.get(key) ?? []; list.push(doc); result.set(key, list) }
+    return [...result].sort((a, b) => (a[1][0]?.group || '\uffff').localeCompare(b[1][0]?.group || '\uffff', 'zh-CN'))
+  }, [documents])
+  return <>{groups.map(([key, members]) => {
+    const first = members[0]!
+    const name = first.group || '未分组'
+    const expanded = searching || !collapsed.has(key)
+    return <section key={key} className="dsh-knowledge-activity-document-group"><button type="button" className="dsh-knowledge-activity-group-toggle" aria-expanded={expanded} onClick={() => setCollapsed(previous => { const next = new Set(previous); if (expanded) next.add(key); else next.delete(key); return next })}><IconChevronDownOutline14 size={14} /><strong>{name}</strong><small>{members.length}</small></button>{expanded && members.map(document => <DocumentRow key={document.id} document={document} baseName={searching ? mounts.find(item => item.knowledgeBaseId === document.knowledgeBaseId)?.base.name : undefined} onClick={() => onSelect(document)} />)}</section>
+  })}</>
 }
 
 function DocumentRow({ document, baseName, onClick }: { document: KnowledgeDocumentSummary; baseName: string | undefined; onClick(): void }): JSX.Element {

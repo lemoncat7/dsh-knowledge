@@ -35,13 +35,13 @@ test('remote provider interoperates with the authenticated local API', async (t)
   })
 
   const health = await fetch(`http://127.0.0.1:${address.port}/knowledge-api/v1/health`).then(response => response.json())
-  assert.deepEqual(health, { ok: true, service: 'dsh-knowledge', schemaVersion: 14 })
+  assert.deepEqual(health, { ok: true, service: 'dsh-knowledge', schemaVersion: 15 })
   assert.deepEqual(await remote.writebackProtocol(), { idempotentDirectWrites: true })
 
   assert.equal((await remote.getSettings()).writebackPolicy, 'conservative')
   assert.equal((await remote.updateSettings({ writebackPolicy: 'proactive' })).writebackPolicy, 'proactive')
 
-  const entry = await remote.create({
+  const entry = await remote.create({ group: '测试分组',
     knowledgeBaseId: 'default',
     title: 'Central knowledge service',
     body: 'Other clients connect to the central knowledge API over HTTPS.',
@@ -51,6 +51,9 @@ test('remote provider interoperates with the authenticated local API', async (t)
     confidence: 0.9,
   })
   assert.equal((await remote.get(entry.id))?.title, 'Central knowledge service')
+  assert.deepEqual(await remote.listDocumentGroups('default'), [{ name: '测试分组', count: 1 }])
+  await remote.assignDocumentGroup('default', [entry.id], '远端服务')
+  assert.equal((await remote.get(entry.id))?.group, '远端服务')
   assert.equal((await remote.search({ text: 'central knowledge', limit: 5 })).length, 1)
   assert.equal((await remote.stats()).entries.active, 1)
   const folder = await remote.createNoteFolder('Central references')
@@ -132,14 +135,14 @@ test('remote provider interoperates with the authenticated local API', async (t)
   }, 'remote-session:1')
   assert.equal(candidate.draft.source?.evidence, 'verified')
   await remote.review(candidate.id, { decision: 'approve' })
-  assert.equal((await remote.get(entry.id))?.version, 2)
+  assert.equal((await remote.get(entry.id))?.version, 3)
   assert.equal((await remote.get(entry.id))?.source?.evidence, 'verified')
   assert.match((await remote.get(entry.id))?.body || '', /over HTTPS/)
   assert.match((await remote.get(entry.id))?.body || '', /authenticated HTTPS/)
   for (let index = 0; index < 3; index += 1) {
     await remote.propose({
       action: 'create',
-      draft: {
+      draft: { group: '测试分组',
         knowledgeBaseId: 'default', title: `Remote batch ${index}`, body: `Remote batch body ${index}.`,
         type: 'fact', tags: ['remote-batch'], scope: { kind: 'global' }, confidence: 0.91,
       },
@@ -159,7 +162,7 @@ test('remote provider interoperates with the authenticated local API', async (t)
   assert.equal((await remote.list({ knowledgeBaseId: 'default', status: 'active', limit: 10 })).items.length, 1)
   const direct = await remote.writeDirect({
     action: 'create',
-    draft: {
+    draft: { group: '测试分组',
       knowledgeBaseId: 'default', title: 'Central knowledge service',
       body: 'Other clients connect to the central knowledge API over authenticated HTTPS. Keep client tokens private.',
       type: 'decision', tags: ['remote', 'security'], scope: { kind: 'global' }, confidence: 0.96,
@@ -203,4 +206,13 @@ test('remote provider interoperates with the authenticated local API', async (t)
   await remote.archiveKnowledgeBase(base.id)
   await remote.deleteKnowledgeBase(base.id)
   assert.equal(await remote.getKnowledgeBase(base.id), undefined)
+  const current = await remote.get(entry.id)
+  const proposal = { action: 'update', targetId: current.id, draft: { ...current, group: '远端归类' }, reason: 'Group metadata only', change: { kind: 'group', baseVersion: current.version, group: '远端归类' } }
+  const grouping = await remote.propose(proposal, 'remote-group:1')
+  await remote.review(grouping.id, { decision: 'approve' })
+  assert.equal((await remote.get(entry.id)).group, '远端归类')
+  assert.equal((await remote.get(entry.id)).body, current.body)
+  const grouped = await remote.get(entry.id)
+  const applied = await remote.writeDirect({ ...proposal, draft: { ...grouped, group: '直接归类' }, change: { kind: 'group', baseVersion: grouped.version, group: '直接归类' } }, 'remote-group:2')
+  assert.equal(applied.entry.group, '直接归类')
 })

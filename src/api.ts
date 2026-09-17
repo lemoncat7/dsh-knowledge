@@ -6,6 +6,7 @@ import {
 } from './domain.js'
 import { LocalKnowledgeProvider } from './local-provider.js'
 import { normalizeFinalizationChange } from './document-lifecycle.js'
+import { normalizeDocumentGroup } from './document-groups.js'
 import type { RuntimeContextLike } from './runtime.js'
 import { isNoteId, type NoteReference } from './notes/domain.js'
 import { renderNoteSharePage } from './notes/share-page.js'
@@ -64,7 +65,7 @@ async function dispatch(
   const method = req.method ?? 'GET'
 
   if (method === 'GET' && segments[0] === 'health') {
-    return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 14 })
+    return sendJson(res, 200, { ok: true, service: 'dsh-knowledge', schemaVersion: 15 })
   }
 
   if (segments[0] === 'shared') {
@@ -446,7 +447,21 @@ async function dispatch(
       knowledgeBaseId: requiredString(body.knowledgeBaseId, 'knowledgeBaseId'),
       ...(documentId ? { documentId, expectedVersion: boundedInteger(body.expectedVersion, 'expectedVersion', 0, 1, Number.MAX_SAFE_INTEGER) } : {}),
       ...(typeof body.title === 'string' ? { title: body.title } : {}),
+      ...(typeof body.group === 'string' ? { group: body.group } : {}),
     }))
+  }
+
+  if (segments[0] === 'document-groups' && segments.length === 1) {
+    if (method === 'GET') {
+      requirePermission(actor.permissions, 'read')
+      return sendJson(res, 200, await provider.listDocumentGroups(requiredString(url.searchParams.get('knowledgeBaseId'), 'knowledgeBaseId')))
+    }
+    if (method === 'POST') {
+      requirePermission(actor.permissions, 'write')
+      const body = await readObject(req)
+      if (!Array.isArray(body.ids) || body.ids.some(id => typeof id !== 'string') || typeof body.group !== 'string') throw httpError(400, '文档分组参数无效')
+      return sendJson(res, 200, await provider.assignDocumentGroup(requiredString(body.knowledgeBaseId, 'knowledgeBaseId'), body.ids as string[], body.group))
+    }
   }
 
   if (segments[0] === 'documents') {
@@ -888,6 +903,7 @@ function parseDraft(value: unknown): KnowledgeDraft {
     const source = isRecord(value.source) ? parseSource(value.source) : undefined
     return normalizeDraft({
       knowledgeBaseId: optionalString(value.knowledgeBaseId) ?? DEFAULT_KNOWLEDGE_BASE_ID,
+      ...(value.group === undefined ? {} : { group: value.group as string }),
       title: typeof value.title === 'string' ? value.title : '',
       body: typeof value.body === 'string' ? value.body : '',
       type: value.type,
@@ -937,6 +953,10 @@ function parseReview(value: Record<string, unknown>): ReviewDecision {
 function parseCandidateChange(value: unknown): CandidateChange {
   if (!isRecord(value)) throw httpError(400, 'proposal change is invalid')
   if (value.kind === 'append') return { kind: 'append' }
+  if (value.kind === 'group') {
+    if (!Number.isSafeInteger(value.baseVersion) || Number(value.baseVersion) < 1) throw httpError(400, '分组 baseVersion 必须为正整数')
+    return { kind: 'group', baseVersion: Number(value.baseVersion), group: normalizeDocumentGroup(value.group, true) }
+  }
   if (value.kind === 'finalize') return normalizeFinalizationChange(value)
   if (value.kind !== 'revise' || !Array.isArray(value.edits)) throw httpError(400, 'proposal change is invalid')
   const baseVersion = Number(value.baseVersion)

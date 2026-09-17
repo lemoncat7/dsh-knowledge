@@ -27,7 +27,7 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
     llm: {
       async *stream(request) {
         extractionRequests.push(request)
-        const candidates = [{
+        const candidates = [{ group: '测试分组',
           action: 'create',
           knowledgeBaseId: 'default',
           title: 'DSH plugin installation command',
@@ -38,12 +38,12 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
           confidence: 0.93,
           retention: { durable: true, evidence: 'explicit' },
           reason: 'Reusable DSH operation.',
-        }, ...Array.from({ length: 5 }, (_, index) => ({
+        }, ...Array.from({ length: 5 }, (_, index) => ({ group: '测试分组',
           action: 'create', knowledgeBaseId: 'default', title: `Confirmed installation detail ${index + 1}`,
           body: `Confirmed reusable installation detail number ${index + 1}.`, type: 'procedure', tags: ['dsh'],
           scope: { kind: 'project', id: '/workspace/demo' }, confidence: 0.91,
           retention: { durable: true, evidence: 'verified' }, reason: 'Verified reusable detail.',
-        })), {
+        })), { group: '测试分组',
           action: 'create', knowledgeBaseId: 'default', title: 'Unverified suggestion',
           body: 'This model-generated suggestion must not pass conservative mode.', type: 'fact', tags: [],
           scope: { kind: 'project', id: '/workspace/demo' }, confidence: 0.99,
@@ -190,6 +190,8 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
     'knowledge_base_create',
     'knowledge_base_search',
     'knowledge_base_update',
+    'knowledge_document_group_assign',
+    'knowledge_document_groups',
     'knowledge_document_status',
     'knowledge_note_create',
     'knowledge_note_delete',
@@ -307,20 +309,20 @@ test('conservative write-back accepts durable source-backed GitHub research with
       async *stream(request) {
         extractionRequest = request
         yield { type: 'text-delta', text: JSON.stringify({ candidates: [
-          {
+          { group: '测试分组',
             action: 'create', knowledgeBaseId: 'default', documentTitle: 'lemoncat7/dsh-remote-settings-compat',
             sectionTitle: '仓库与用途',
             body: '仓库：https://github.com/lemoncat7/dsh-remote-settings-compat\n\n用于解决 DSH 远程浏览器设置访问兼容问题。',
             type: 'fact', tags: ['github', 'dsh'], scope: { kind: 'global' }, confidence: .92,
             retention: { durable: true, evidence: 'inferred' }, reason: '带来源的仓库用途。',
           },
-          {
+          { group: '测试分组',
             action: 'create', knowledgeBaseId: 'default', documentTitle: 'lemoncat7/dsh-remote-settings-compat',
             sectionTitle: 'License 与维护状态', body: '采用 MIT License，最近仍有维护。',
             type: 'fact', tags: ['license', '维护状态'], scope: { kind: 'global' }, confidence: .93,
             retention: { durable: true, evidence: 'verified' }, reason: '补充授权和维护状态。',
           },
-          {
+          { group: '测试分组',
             action: 'create', knowledgeBaseId: 'default', documentTitle: 'lemoncat7/dsh-remote-settings-compat',
             sectionTitle: '风险与结论', body: '适合解决受信任反向代理下的远程设置兼容问题，部署前仍应限制可信来源。',
             type: 'fact', tags: ['风险', '结论'], scope: { kind: 'global' }, confidence: .91,
@@ -410,7 +412,7 @@ test('content write-back is not exposed to the main agent tool surface', async (
 
   assert.equal(tools.has('knowledge_write'), false)
   assert.deepEqual([...tools.keys()].sort(), [
-    'knowledge_base_create', 'knowledge_base_search', 'knowledge_base_update', 'knowledge_document_status', 'knowledge_note_create',
+    'knowledge_base_create', 'knowledge_base_search', 'knowledge_base_update', 'knowledge_document_group_assign', 'knowledge_document_groups', 'knowledge_document_status', 'knowledge_note_create',
     'knowledge_note_delete', 'knowledge_note_list', 'knowledge_note_move', 'knowledge_note_read',
     'knowledge_note_references', 'knowledge_note_search', 'knowledge_note_update', 'knowledge_read', 'knowledge_search',
   ])
@@ -448,31 +450,31 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
           return
         }
         yield { type: 'text-delta', text: JSON.stringify({ candidates: [
-          {
+          { group: '测试分组',
             action: 'create', knowledgeBaseId: 'default', title: 'Confirmed high confidence',
             body: 'This durable fact can be written immediately.', type: 'fact', tags: ['policy'],
             scope: { kind: 'global' }, confidence: 0.94,
             retention: { durable: true, evidence: 'explicit' }, reason: 'Explicitly confirmed.',
           },
-          {
+          { group: '测试分组',
             action: 'create', knowledgeBaseId: 'default', title: 'Uncertain detail',
             body: 'This may be correct but still needs review.', type: 'fact', tags: ['policy'],
             scope: { kind: 'global' }, confidence: 0.74,
             retention: { durable: true, evidence: 'inferred' }, reason: 'Inferred reusable detail.',
           },
-          {
+          { group: '测试分组',
             action: 'create', knowledgeBaseId: 'default', title: 'Credential-bearing setup',
             body: 'Use Authorization: Bearer abcdefghijklmnopqrstuvwxyz for the service.', type: 'procedure', tags: ['policy'],
             scope: { kind: 'global' }, confidence: 0.99,
             retention: { durable: true, evidence: 'explicit' }, reason: 'Explicitly supplied setup.',
           },
-          {
+          { group: '测试分组',
             action: 'conflict', knowledgeBaseId: 'default', targetId, title: 'Conflicting policy',
             body: 'This contradicts the existing policy.', type: 'decision', tags: ['policy'],
             scope: { kind: 'global' }, confidence: 0.99,
             retention: { durable: true, evidence: 'explicit' }, reason: 'Contradiction detected.',
           },
-          {
+          { group: '测试分组',
             action: 'update', knowledgeBaseId: 'default', targetId, title: 'Existing policy',
             change: {
               kind: 'revise',
@@ -529,7 +531,7 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
 
   const observer = new LocalKnowledgeProvider(databasePath)
   t.after(() => observer.close())
-  const existing = await observer.create({
+  const existing = await observer.create({ group: '测试分组',
     knowledgeBaseId: 'default', title: 'Existing policy', body: 'Keep the existing behavior.',
     type: 'decision', tags: ['policy'], scope: { kind: 'global' }, confidence: 1,
   })

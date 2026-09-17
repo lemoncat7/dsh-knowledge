@@ -1,4 +1,7 @@
 import type {
+  KnowledgeDocumentGroup,
+} from './document-groups.js'
+import type {
   CandidateProposal,
   CandidateBatchReviewResult,
   ExtractionJobCompletion,
@@ -47,6 +50,8 @@ export interface KnowledgeProvider {
   restoreKnowledgeBase(id: string, signal?: AbortSignal): Promise<KnowledgeBase>
   deleteKnowledgeBase(id: string, signal?: AbortSignal): Promise<void>
   listDocuments(knowledgeBaseId?: string, query?: string, signal?: AbortSignal): Promise<KnowledgeDocument[]>
+  listDocumentGroups(knowledgeBaseId: string, signal?: AbortSignal): Promise<KnowledgeDocumentGroup[]>
+  assignDocumentGroup(knowledgeBaseId: string, ids: string[], group: string, signal?: AbortSignal): Promise<KnowledgeEntry[]>
   listDocumentIndex(request: KnowledgeDocumentIndexRequest, signal?: AbortSignal): Promise<KnowledgeDocumentIndexResult>
   getDocument(id: string, signal?: AbortSignal): Promise<KnowledgeDocument | undefined>
   moveDocument(id: string, knowledgeBaseId: string, signal?: AbortSignal): Promise<KnowledgeEntry>

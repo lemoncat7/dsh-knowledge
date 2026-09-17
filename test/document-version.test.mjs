@@ -31,7 +31,7 @@ test('concurrent note writes compare their version inside the mutation queue', a
   await assert.rejects(bridge.update(note.id, 'recording edit', baseline.revision), e => e.status === 409)
   assert.equal((await p.readNote(note.id)).content.toString(), 'human edit')
 
-  const draft = { knowledgeBaseId: 'default', title: 'Version test', body: 'original', type: 'fact', tags: [], scope: { kind: 'global' }, confidence: 0.8 }
+  const draft = { group: '测试分组',  knowledgeBaseId: 'default', title: 'Version test', body: 'original', type: 'fact', tags: [], scope: { kind: 'global' }, confidence: 0.8 }
   const entry = await p.create(draft)
   const saved = await p.update(entry.id, { ...draft, body: 'first edit' }, undefined, entry.version)
   await assert.rejects(p.update(entry.id, { ...draft, body: 'stale edit' }, undefined, entry.version), e => e.code === 'CONFLICT')

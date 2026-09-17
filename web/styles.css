@@ -2117,3 +2117,27 @@ html,
 .writeback-job p { margin: 8px 0; overflow-wrap: anywhere; }
 .writeback-job-key { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 8px; }
 .writeback-job pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Document groups reuse the existing tree/editor material; no extra surface. */
+.document-tree-group { min-width: 0; }
+.document-group-heading { display: flex; align-items: center; gap: 2px; }
+.document-group-toggle { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0; padding: 9px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.document-group-toggle:hover { background: var(--surface-hover); }
+.document-group-toggle[aria-expanded="true"] .tree-disclosure { transform: rotate(45deg) translate(-1px, -1px); }
+.document-group-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
+.document-group-toggle small { color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
+.document-group-body { padding-left: 12px; }
+.document-group-body[hidden], .document-group-field input[hidden] { display: none; }
+.document-group-add { min-width: 30px; min-height: 30px; padding: 0; }
+.document-group-field { display: grid; gap: 10px; min-width: 0; }
+.document-group-field label { font-size: 13px; font-weight: 600; }
+.document-group-field input, .document-group-field select { width: 100%; min-width: 0; }
+.document-group-control { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.document-groups-manage { margin: 0 12px 8px; align-self: flex-start; }
+.document-group-selection { max-height: 40vh; overflow: auto; display: grid; gap: 4px; }
+.document-group-choice { display: flex; align-items: center; gap: 10px; padding: 9px 6px; cursor: pointer; border-radius: 8px; }
+.document-group-choice:hover { background: var(--surface-hover); }
+.document-group-choice input { width: 16px; height: 16px; flex: 0 0 16px; }
+.document-group-choice span { display: grid; gap: 3px; min-width: 0; }
+.document-group-choice strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.document-group-choice small { color: var(--text-tertiary); font-weight: 400; }
+@media (max-width: 760px) { .document-group-toggle { min-height: 40px; } .document-group-control { max-width: 150px; } }

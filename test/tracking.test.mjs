@@ -45,10 +45,10 @@ test('lists only recallable documents mounted for the partner session', async (t
   const hidden = await provider.createKnowledgeBase({
     name: '未挂载资料', description: '', defaultTags: [], extractionInstructions: '', writebackPolicy: 'conservative',
   })
-  await provider.create({
+  await provider.create({ group: '测试分组',
     knowledgeBaseId: 'default', title: '路线图', body: '后续计划', type: 'fact', tags: [], scope: { kind: 'global' }, confidence: 1,
   })
-  await provider.create({
+  await provider.create({ group: '测试分组',
     knowledgeBaseId: hidden.id, title: '隐藏文档', body: '不可见', type: 'fact', tags: [], scope: { kind: 'global' }, confidence: 1,
   })
   await provider.upsertMount({

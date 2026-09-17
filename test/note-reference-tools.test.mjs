@@ -29,7 +29,7 @@ test('AI note-reference tools use session handles, mounted write policy, and met
   const root = await mkdtemp(join(tmpdir(), 'dsh-knowledge-note-tools-'))
   const databasePath = join(root, 'knowledge.sqlite')
   const seed = new LocalKnowledgeProvider(databasePath)
-  const entry = await seed.create({
+  const entry = await seed.create({ group: '测试分组',
     knowledgeBaseId: 'default', title: '生产部署流程', body: '发布服务前先备份数据并检查部署清单。',
     type: 'procedure', tags: ['deployment'], scope: { kind: 'global' }, confidence: .95,
   })

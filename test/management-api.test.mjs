@@ -155,7 +155,7 @@ test('same-origin management API controls public access and deletes revoked toke
 
   const entry = await (await fetch(`${base}/entries`, {
     method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
-    body: JSON.stringify({ draft: {
+    body: JSON.stringify({ draft: { group: '测试分组',
       knowledgeBaseId: 'default', title: '笔记引用测试',
       body: '依据独立关联的原始部署资料。',
       type: 'fact', tags: ['note'], scope: { kind: 'global' }, confidence: 0.9,

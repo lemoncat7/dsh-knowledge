@@ -36,7 +36,7 @@ async function fixture(t) {
 
 function markdown(body = '服务使用 Docker Compose 部署。') {
   return renderKnowledgeMarkdown({
-    metadata: {
+    metadata: { group: '测试分组',
       id: 'doc-deploy',
       type: 'procedure',
       tags: ['Docker', 'DSH'],

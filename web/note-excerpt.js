@@ -1,4 +1,5 @@
 /** Selection is captured before opening the dialog; no editor ownership here. */
+import { createDocumentGroupField } from './document-groups.js'
 export async function openNoteExcerpt({ node, text, api, element, openSheet, showToast, friendlyError, formField, selectField, knowledgeBasePathLabel }) {
   if (!text.trim() || text.length > 50000) throw new Error('每次请选择 1 到 50000 字的笔记内容。')
   const bases = (await api('knowledge-bases')).filter(base => base.status === 'active')
@@ -13,9 +14,15 @@ export async function openNoteExcerpt({ node, text, api, element, openSheet, sho
     field.wrapper.classList.add('span-2')
   }
   title.wrapper.hidden = true
+  const groupSlot = element('div', { class: 'span-2', hidden: true })
+  let groupField
+  const loadGroup = () => {
+    groupField = createDocumentGroupField({ element, api, baseId: base.input.value, required: true, onChange: () => { requestId = crypto.randomUUID(); sync() } })
+    groupSlot.replaceChildren(groupField.wrapper)
+  }
   const results = element('div', { class: 'note-picker-results span-2', 'aria-live': 'polite' })
   const status = element('p', { class: 'muted span-2', role: 'status' }, '请选择目标文档')
-  const fields = element('fieldset', { class: 'form-grid note-excerpt-fields' }, base.wrapper, mode.wrapper, title.wrapper, search.wrapper, results, status)
+  const fields = element('fieldset', { class: 'form-grid note-excerpt-fields' }, base.wrapper, mode.wrapper, title.wrapper, groupSlot, search.wrapper, results, status)
   // Only bound the visual preview; submission always retains the entire selection.
   const preview = text.length > 1200 ? `${text.slice(0, 1200)}\n…（预览已省略，完整选文仍会添加）` : text
   const form = element('form', {}, fields, element('blockquote', { class: 'note-excerpt-preview' }, preview))
@@ -29,12 +36,13 @@ export async function openNoteExcerpt({ node, text, api, element, openSheet, sho
     onPrimary: async () => {
       if (mode.input.value === 'existing' && !selected) throw new Error('请先选择一个可编辑的知识文档。')
       if (mode.input.value === 'new' && !title.input.value.trim()) throw new Error('请填写新文档标题。')
+      if (mode.input.value === 'new') { await groupField?.ready; groupField?.validate(); if (!groupField?.value() || groupField.value() === '未分组') throw new Error('请为新文档选择分组。') }
       pending = true
       fields.disabled = true
       try {
         const entry = await api('note-excerpts', { method: 'POST', body: {
           requestId, noteId: node.id, text, knowledgeBaseId: base.input.value,
-          ...(mode.input.value === 'existing' ? { documentId: selected.id, expectedVersion: selected.version } : { title: title.input.value.trim() }),
+          ...(mode.input.value === 'existing' ? { documentId: selected.id, expectedVersion: selected.version } : { title: title.input.value.trim(), group: groupField.value() }),
         } })
         showToast(`已添加到「${entry.title}」，并关联来源笔记。`)
         return true
@@ -99,10 +107,12 @@ export async function openNoteExcerpt({ node, text, api, element, openSheet, sho
       }
     }
   }
-  base.input.addEventListener('change', () => { requestId = crypto.randomUUID(); if (mode.input.value === 'existing') void load(); else sync() })
+  base.input.addEventListener('change', () => { requestId = crypto.randomUUID(); if (mode.input.value === 'existing') void load(); else { loadGroup(); sync() } })
   mode.input.addEventListener('change', () => {
     clearTimeout(timer); sequence++; requestId = crypto.randomUUID(); selected = undefined
     const creating = mode.input.value === 'new'
+    groupSlot.hidden = !creating
+    if (creating) loadGroup()
     title.wrapper.hidden = !creating; search.wrapper.hidden = creating; results.hidden = creating
     status.textContent = creating ? '将新建文档并自动引用来源笔记。' : '请选择目标文档'
     sync(); if (!creating) void load()

@@ -7,7 +7,7 @@ import { LocalKnowledgeProvider } from '../lib/local-provider.js'
 import { ExtractionCoordinator } from '../lib/extraction.js'
 import { contentHash } from '../lib/domain.js'
 
-const draft = { knowledgeBaseId: 'default', title: 'Deployment policy', body: 'Keep the persistent volume.', type: 'procedure', tags: [], scope: { kind: 'global' }, confidence: .99, source: { evidence: 'verified' } }
+const draft = { group: '测试分组',  knowledgeBaseId: 'default', title: 'Deployment policy', body: 'Keep the persistent volume.', type: 'procedure', tags: [], scope: { kind: 'global' }, confidence: .99, source: { evidence: 'verified' } }
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'knowledge-receipt-'))
   const path = join(root, 'knowledge.sqlite')
@@ -79,6 +79,25 @@ test('partial execution retains the full plan and delivery mode, without rerunni
   assert.equal(result.destinations.length, 1)
   assert.equal(modelCalls, 1)
   assert.equal((await provider.listCandidates('approved', 10)).length, 1)
+})
+
+test('pre-grouping checkpoints resume without rerunning the model or duplicating documents', async t => {
+  const { provider } = await fixture(t)
+  await provider.upsertMount({ targetKind: 'session', targetId: 'legacy', knowledgeBaseId: 'default', enabled: true, recallEnabled: true, writeMode: 'direct', includeTags: [], excludeTags: [], extractionInstructions: '' })
+  const { group, ...oldDraft } = draft
+  const plan = [{ delivery: 'direct', proposal: { action: 'create', draft: oldDraft, reason: 'Previously planned write' } }]
+  const checkpoint = { load: () => structuredClone(plan), save: () => assert.fail('do not recreate old plans') }
+  const coordinator = new ExtractionCoordinator({ logger: { debug() {} } }, provider, {})
+  t.after(() => coordinator.close())
+  const snapshot = { sourceKey: 'legacy:1', sessionId: 'legacy', turn: 1, userText: 'remember', assistantText: draft.body, route: { provider: 'unused', model: 'unused' } }
+  const result = await coordinator.runSnapshot(snapshot, new AbortController().signal, checkpoint)
+  assert.equal(result.directCount, 1)
+  const entries = await provider.list({ status: 'active', limit: 10 })
+  assert.equal(entries.items.length, 1)
+  assert.equal(entries.items[0].group, '历史回写')
+  const replay = await provider.writeDirect(plan[0].proposal, 'legacy:1')
+  assert.equal(replay.entry.id, entries.items[0].id)
+  assert.equal(replay.entry.version, 1)
 })
 
 test('old remote protocol and revoked direct permission cannot silently write or change frozen plans', async t => {

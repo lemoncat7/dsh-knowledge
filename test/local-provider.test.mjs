@@ -18,7 +18,7 @@ async function fixture(t) {
   return provider
 }
 
-const globalDraft = {
+const globalDraft = { group: '测试分组',
   knowledgeBaseId: 'default',
   title: 'Production deployment policy',
   body: 'Deploy the web service with Docker Compose and retain its persistent volume.',
@@ -44,7 +44,7 @@ test('local provider preserves versions and searches approved scoped knowledge',
   assert.equal(projectHits[0]?.entry.id, project.id)
   const globalHits = await provider.search({ text: 'persistent volume', limit: 10 })
   assert.deepEqual(globalHits.map(hit => hit.entry.id), [global.id])
-  const chinese = await provider.create({
+  const chinese = await provider.create({ group: '测试分组',
     title: '插件安装方式',
     body: '通过配置文件安装知识库插件，并使用 Docker 重新启动服务。',
     type: 'procedure',
@@ -250,13 +250,13 @@ test('batch approval drains safe candidates in bounded order and preserves manua
 
 test('direct writes merge compatible knowledge, skip duplicates, and hold conflicts for review', async (t) => {
   const provider = await fixture(t)
-  const existing = await provider.create({
+  const existing = await provider.create({ group: '测试分组',
     knowledgeBaseId: 'default', title: 'Service port policy', body: 'Use port 8080 for the service.',
     type: 'procedure', tags: ['service'], scope: { kind: 'global' }, confidence: 0.92,
   })
   const merged = await provider.writeDirect({
     action: 'create',
-    draft: {
+    draft: { group: '测试分组',
       knowledgeBaseId: 'default', title: 'Service port policy',
       body: 'Use port 8080 for the service. Keep the port documented in Docker Compose.',
       type: 'procedure', tags: ['docker'], scope: { kind: 'global' }, confidence: 0.96,
@@ -277,7 +277,7 @@ test('direct writes merge compatible knowledge, skip duplicates, and hold confli
 
   const conflict = await provider.writeDirect({
     action: 'create',
-    draft: {
+    draft: { group: '测试分组',
       knowledgeBaseId: 'default', title: 'Service port policy', body: 'Use port 9090 for the service.',
       type: 'procedure', tags: ['service'], scope: { kind: 'global' }, confidence: 0.98,
     },
@@ -291,7 +291,7 @@ test('direct writes merge compatible knowledge, skip duplicates, and hold confli
   await assert.rejects(
     () => provider.writeDirect({
       action: 'update', targetId: existing.id,
-      draft: {
+      draft: { group: '测试分组',
         knowledgeBaseId: 'another-base', title: 'Service port policy',
         body: 'Move this entry to another knowledge base.', type: 'procedure', tags: ['service'],
         scope: { kind: 'global' }, confidence: 0.99,
@@ -305,7 +305,7 @@ test('direct writes merge compatible knowledge, skip duplicates, and hold confli
 
   const created = await provider.writeDirect({
     action: 'create',
-    draft: {
+    draft: { group: '测试分组',
       knowledgeBaseId: 'default', title: 'Backup policy', body: 'Back up the volume before deployment.',
       type: 'procedure', tags: ['backup'], scope: { kind: 'global' }, confidence: 0.95,
     },
@@ -318,7 +318,7 @@ test('direct writes merge compatible knowledge, skip duplicates, and hold confli
 
 test('explicit revisions replace obsolete knowledge instead of appending contradictory text', async (t) => {
   const provider = await fixture(t)
-  const existing = await provider.create({
+  const existing = await provider.create({ group: '测试分组',
     knowledgeBaseId: 'default', title: 'Release policy',
     body: '## Current version\n\nThe supported release is 1.2.\n\n## Installation\n\nUse the stable channel.',
     type: 'procedure', tags: ['release'], scope: { kind: 'global' }, confidence: .94,
@@ -347,7 +347,7 @@ test('explicit revisions replace obsolete knowledge instead of appending contrad
 
 test('revisions rebase over unrelated additions and surface overlapping edits as real conflicts', async (t) => {
   const provider = await fixture(t)
-  const existing = await provider.create({
+  const existing = await provider.create({ group: '测试分组',
     knowledgeBaseId: 'default', title: 'Runtime status',
     body: '## Version\n\nCurrent version: 1.0.\n\n## Platform\n\nRuns on macOS.',
     type: 'fact', tags: ['runtime'], scope: { kind: 'global' }, confidence: .93,
@@ -411,14 +411,14 @@ test('revisions rebase over unrelated additions and surface overlapping edits as
 
 test('document type drift does not turn a compatible append into a conflict', async (t) => {
   const provider = await fixture(t)
-  const existing = await provider.create({
+  const existing = await provider.create({ group: '测试分组',
     knowledgeBaseId: 'default', title: '安卓代理客户端偏好',
     body: '## 偏好\n\n单一 SOCKS5 节点优先选择配置简单的客户端。',
     type: 'preference', tags: ['安卓', '代理'], scope: { kind: 'global' }, confidence: 0.91,
   })
   const result = await provider.writeDirect({
     action: 'update', targetId: existing.id,
-    draft: {
+    draft: { group: '测试分组',
       knowledgeBaseId: 'default', title: '安卓代理客户端偏好',
       body: '## 排障\n\n手机不能使用 127.0.0.1 连接电脑上的代理服务。',
       type: 'lesson', tags: ['排障'], scope: { kind: 'global' }, confidence: 0.92,
@@ -436,14 +436,14 @@ test('document type drift does not turn a compatible append into a conflict', as
 
 test('direct writes merge the same GitHub repository despite different document titles', async (t) => {
   const provider = await fixture(t)
-  const existing = await provider.create({
+  const existing = await provider.create({ group: '测试分组',
     knowledgeBaseId: 'default', title: 'example/repository 项目资料',
     body: '## 仓库\n\nhttps://github.com/example/repository',
     type: 'fact', tags: ['github'], scope: { kind: 'global' }, confidence: .92,
   })
   const result = await provider.writeDirect({
     action: 'create',
-    draft: {
+    draft: { group: '测试分组',
       knowledgeBaseId: 'default', title: 'example/repository 维护状态',
       body: '## 维护状态\n\nhttps://github.com/example/repository/ 最近仍有提交和稳定发布。',
       type: 'fact', tags: ['维护状态'], scope: { kind: 'global' }, confidence: .95,
@@ -460,14 +460,14 @@ test('direct writes merge the same GitHub repository despite different document 
 
 test('audit approval merges a same-topic candidate into its document', async (t) => {
   const provider = await fixture(t)
-  const existing = await provider.create({
+  const existing = await provider.create({ group: '测试分组',
     knowledgeBaseId: 'default', title: 'example/repository',
     body: '## 仓库\n\nhttps://github.com/example/repository',
     type: 'fact', tags: ['github'], scope: { kind: 'global' }, confidence: 0.91,
   })
   const candidate = await provider.propose({
     action: 'create',
-    draft: {
+    draft: { group: '测试分组',
       knowledgeBaseId: 'default', title: 'example/repository',
       body: '## 维护状态\n\n最近仍有稳定发布。',
       type: 'fact', tags: ['维护状态'], scope: { kind: 'global' }, confidence: 0.94,
@@ -487,7 +487,7 @@ test('audit approval merges a same-topic candidate into its document', async (t)
 
   const conflictCandidate = await provider.propose({
     action: 'conflict', targetId: existing.id,
-    draft: {
+    draft: { group: '测试分组',
       knowledgeBaseId: 'default', title: 'example/repository',
       body: '## 兼容性风险\n\n新版需要重新验证旧版配置。',
       type: 'fact', tags: ['风险'], scope: { kind: 'global' }, confidence: 0.97,
@@ -531,13 +531,13 @@ test('audit approval merges a same-topic candidate into its document', async (t)
 
 test('concurrent review treats distinct document sections as compatible additions', async (t) => {
   const provider = await fixture(t)
-  const existing = await provider.create({
+  const existing = await provider.create({ group: '测试分组',
     knowledgeBaseId: 'default', title: '项目排查记录', body: '## 基础信息\n\n当前服务使用版本 1.0。',
     type: 'fact', tags: ['项目'], scope: { kind: 'global' }, confidence: .9,
   })
   const first = await provider.propose({
     action: 'update', targetId: existing.id,
-    draft: {
+    draft: { group: '测试分组',
       knowledgeBaseId: 'default', title: '项目排查记录', body: '## 变更记录\n\n提交 123 增加了配置同步。',
       type: 'fact', tags: ['变更'], scope: { kind: 'global' }, confidence: .94,
     },
@@ -545,7 +545,7 @@ test('concurrent review treats distinct document sections as compatible addition
   }, 'concurrent-section:1')
   const second = await provider.propose({
     action: 'update', targetId: existing.id,
-    draft: {
+    draft: { group: '测试分组',
       knowledgeBaseId: 'default', title: '项目排查记录', body: '## 排查结论\n\n测试 8 项均已通过。',
       type: 'fact', tags: ['结论'], scope: { kind: 'global' }, confidence: .95,
     },
@@ -563,12 +563,12 @@ test('concurrent review treats distinct document sections as compatible addition
 
 test('search scores exact topic matches above incidental term matches', async (t) => {
   const provider = await fixture(t)
-  const exact = await provider.create({
+  const exact = await provider.create({ group: '测试分组',
     knowledgeBaseId: 'default', title: 'DSH 插件安装',
     body: '使用 dsh plugin add 安装插件，并在完成后重启对应 profile。',
     type: 'procedure', tags: ['dsh', '插件'], scope: { kind: 'global' }, confidence: .95,
   })
-  await provider.create({
+  await provider.create({ group: '测试分组',
     knowledgeBaseId: 'default', title: '常规开发检查',
     body: '提交之前运行测试，插件项目也遵循相同要求。',
     type: 'procedure', tags: ['测试'], scope: { kind: 'global' }, confidence: .9,
@@ -649,7 +649,7 @@ test('knowledge documents move between bases without losing identity, finalizati
 
 test('finalized documents remain recallable but reject every content mutation until reopened', async (t) => {
   const provider = await fixture(t)
-  const entry = await provider.create({
+  const entry = await provider.create({ group: '测试分组',
     ...globalDraft,
     title: 'Closed incident investigation',
     body: 'The incident root cause was confirmed and the production fix was verified.',
@@ -771,6 +771,7 @@ test('only archived non-default knowledge bases can be permanently deleted', asy
   })
   const entry = await provider.create({
     knowledgeBaseId: base.id, title: 'Disposable knowledge', body: 'Delete this with its knowledge base.',
+    group: '测试分组',
     type: 'fact', tags: ['disposable'], scope: { kind: 'global' }, confidence: 0.9,
   })
   await provider.upsertMount({

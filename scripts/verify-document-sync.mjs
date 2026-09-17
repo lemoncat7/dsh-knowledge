@@ -24,7 +24,7 @@ const server = createServer((req, res) => {
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
 const base = `http://127.0.0.1:${server.address().port}/knowledge/`
 const note = await provider.createNoteDocument('同步测试', null, '# 初始笔记\n\n原始正文')
-const draft = { knowledgeBaseId: 'default', title: '知识同步测试', body: '原始知识正文', type: 'fact', tags: [], scope: { kind: 'global' }, confidence: 0.8 }
+const draft = { group: '测试分组',  knowledgeBaseId: 'default', title: '知识同步测试', body: '原始知识正文', type: 'fact', tags: [], scope: { kind: 'global' }, confidence: 0.8 }
 const entry = await provider.create(draft)
 const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] })
 try {

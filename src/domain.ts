@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { normalizeDocumentGroup } from './document-groups.js'
 
 export const KNOWLEDGE_TYPES = ['preference', 'fact', 'decision', 'procedure', 'lesson'] as const
 export type KnowledgeType = typeof KNOWLEDGE_TYPES[number]
@@ -28,6 +29,7 @@ export interface KnowledgeTextEdit {
 
 export type CandidateChange =
   | { kind: 'append' }
+  | { kind: 'group'; baseVersion: number; group: string }
   | { kind: 'finalize'; baseVersion: number; baseHash: string; state: 'resolved' | 'complete'; note: string; confirmation: string }
   | {
     kind: 'revise'
@@ -83,6 +85,7 @@ export interface KnowledgeBase extends KnowledgeBaseDraft {
 
 /** User-facing Markdown projection of approved knowledge entries. */
 export interface KnowledgeDocument {
+  group?: string
   id: string
   knowledgeBaseId: string
   relPath: string
@@ -155,6 +158,7 @@ export interface KnowledgeSource {
 }
 
 export interface KnowledgeDraft {
+  group?: string
   knowledgeBaseId: string
   title: string
   body: string
@@ -378,6 +382,7 @@ export function normalizeDraft(input: KnowledgeDraft): KnowledgeDraft {
     body,
     type: input.type,
     tags: normalizeTags(input.tags),
+    ...(input.group === undefined ? {} : { group: normalizeDocumentGroup(input.group) }),
     scope: input.scope.kind === 'global'
       ? { kind: 'global' }
       : { kind: 'project', id: input.scope.id.trim() },

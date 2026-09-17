@@ -15,7 +15,7 @@ import { ExtractionCoordinator } from '../lib/extraction.js'
 
 const confirmation = '异常上报问题已经解决了'
 const request = { state: 'resolved', confirmation, note: '验证通过，不再等待修复', wholeDocument: true }
-const draft = { knowledgeBaseId: 'default', title: '异常上报问题', body: '# 异常上报\n\n问题待修复。\n\n## 其他说明\n保持现有部署方式。', type: 'procedure', tags: ['report'], scope: { kind: 'global' }, confidence: .95 }
+const draft = { group: '测试分组',  knowledgeBaseId: 'default', title: '异常上报问题', body: '# 异常上报\n\n问题待修复。\n\n## 其他说明\n保持现有部署方式。', type: 'procedure', tags: ['report'], scope: { kind: 'global' }, confidence: .95 }
 const signal = new AbortController().signal
 
 async function fixture(t, mode = 'audit') {

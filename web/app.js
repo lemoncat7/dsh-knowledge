@@ -3,6 +3,7 @@ const AUTH_MODE = document.querySelector('meta[name="dsh-knowledge-auth-mode"]')
 const WEB_PATH = document.querySelector('meta[name="dsh-knowledge-web"]')?.content || '/knowledge'
 const ASSET_VERSION = document.querySelector('meta[name="dsh-knowledge-asset-version"]')?.content || ''
 const moduleUrl = name => `./${name}.js${ASSET_VERSION ? `?v=${encodeURIComponent(ASSET_VERSION)}` : ''}`
+const { createDocumentGroupField, renderDocumentGroups, openDocumentGroupOrganizer } = await import(moduleUrl('document-groups'))
 const [apiModule, themeModule, uiModule, modelCatalogModule, dialogModule, selectModule, documentActionsModule] = await Promise.all([
   import(moduleUrl('api-client')),
   import(moduleUrl('host-theme')),
@@ -55,6 +56,7 @@ function createDocumentViewState(overrides = {}) {
   return {
     knowledgeBaseId: '', documentId: '', query: '', mode: 'preview', treeOpen: false,
     expandedBases: new Set(), documentPages: new Map(),
+    collapsedGroups: new Set(),
     searchResults: [], searchNextCursor: '', searchTotal: 0, searchLoading: false, searchError: '', searchRequest: 0,
     editor: null, editorLoading: false, loadingDocumentId: '', ...overrides,
   }
@@ -736,7 +738,7 @@ async function loadDocumentEditor(workspace, id, signal) {
   return true
 }
 
-function createBlankDocument(workspace, baseId) {
+function createBlankDocument(workspace, baseId, group) {
   const base = state.knowledgeBases.find(item => item.id === baseId && item.status === 'active')
   if (!base) return showToast('请先选择一个可用知识库。', 'error')
   const view = workspace.view
@@ -747,17 +749,28 @@ function createBlankDocument(workspace, baseId) {
   view.expandedBases.add(base.id)
   view.editor = {
     id: '', knowledgeBaseId: base.id, title: '', body: '', type: 'fact', tags: [], tagsText: '',
+    group,
     scope: { kind: 'global' }, confidence: .8, noteReferences: [], dirty: true, isNew: true, saveState: '新文档',
   }
   renderShell()
   document.querySelector('.note-title-input')?.focus()
 }
 
-async function startBlankDocument(workspace, baseId) {
+async function startBlankDocument(workspace, baseId, group) {
   const editor = workspace.view.editor
   const emptyDraft = editor?.isNew && !editor.title.trim() && !editor.body.trim()
   if (editor?.dirty && !emptyDraft && !await saveDocumentEditor(workspace)) return
-  createBlankDocument(workspace, baseId)
+  if (!baseId) return showToast('请先选择知识库。', 'error')
+  if (group) return createBlankDocument(workspace, baseId, group)
+  const field = createDocumentGroupField({ element, api, baseId, required: true })
+  openSheet({ title: '新建知识文档', description: '先选择文档分组，优先复用已有分组。', body: field.wrapper, primaryLabel: '开始编写', onPrimary: async () => {
+    await field.ready
+    let name
+    try { name = field.validate() } catch { return false }
+    if (!name || name === '未分组') throw new Error('请选择已有分组，或填写新分组名称。')
+    createBlankDocument(workspace, baseId, name)
+    return true
+  } })
 }
 
 async function selectDocument(workspace, id) {
@@ -786,6 +799,7 @@ async function selectDocument(workspace, id) {
 function editorDraft(editor) {
   return {
     knowledgeBaseId: editor.knowledgeBaseId,
+    ...(editor.group === undefined ? {} : { group: editor.group }),
     title: editor.title.trim(),
     body: editor.body.trim(),
     type: editor.type,
@@ -807,6 +821,10 @@ async function saveDocumentEditor(workspace = activeDocumentWorkspace()) {
   }
   if (!editor.title.trim() || !editor.body.trim()) {
     showToast('标题和正文填写完整后才能保存。', 'error')
+    return false
+  }
+  if (editor.isNew && (!editor.group?.trim() || editor.group === '未分组')) {
+    showToast('新建知识文档必须指定分组。', 'error')
     return false
   }
   editor.saveState = '正在保存…'
@@ -1635,13 +1653,45 @@ function renderEntries() {
   return renderDocumentWorkspace(sessionDocumentWorkspace(), { heading: '知识目录' })
 }
 
+async function applyDocumentGroup(workspace, baseId, ids, group) {
+  if (workspace.view.editor?.dirty && !await saveDocumentEditor(workspace)) throw new Error('请先保存当前文档，再调整分组。')
+  await api('document-groups', { method: 'POST', body: { knowledgeBaseId: baseId, ids, group } })
+  await reloadDocumentWorkspace(workspace)
+  if (workspace.view.documentId) await loadDocumentEditor(workspace, workspace.view.documentId)
+  workspace.view.collapsedGroups.delete(JSON.stringify([baseId, group]))
+  renderShell()
+  showToast('文档分组已更新。')
+}
+
+async function dropDocumentIntoGroup(event, workspace, baseId, group) {
+  event.preventDefault()
+  const drag = knowledgeDocumentDrag
+  clearKnowledgeDocumentDragState()
+  if (!drag || drag.sourceBaseId !== baseId) return showToast('分组内拖动仅用于同一知识库；跨库请拖到知识库名称。', 'error')
+  try { await applyDocumentGroup(workspace, baseId, [drag.documentId], group) }
+  catch (error) { showToast(friendlyError(error), 'error') }
+}
+
+function openDocumentGroupEditor(workspace, editor) {
+  const field = createDocumentGroupField({ element, api, baseId: editor.knowledgeBaseId, value: editor.group || '', required: editor.isNew })
+  openSheet({ title: '文档分组', description: '修改分组不会移动文件或更改文档引用。', body: field.wrapper, primaryLabel: '保存分组', onPrimary: async () => {
+    await field.ready
+    field.validate()
+    if (editor.isNew) {
+      if (!field.value() || field.value() === '未分组') throw new Error('新文档必须选择有效分组。')
+      editor.group = field.value(); editor.dirty = true; renderShell()
+    } else await applyDocumentGroup(workspace, editor.knowledgeBaseId, [editor.id], field.value())
+    return true
+  } })
+}
+
 function renderDocumentWorkspace(workspace, options = {}) {
   const view = workspace.view
   const query = view.query.trim().toLocaleLowerCase()
   const activeBases = documentWorkspaceBases(workspace)
   const workspaceDocuments = documentWorkspaceDocuments(workspace)
   const readOnly = documentWorkspaceReadOnly(workspace)
-  const canOrganize = !readOnly && activeBases.length > 1
+  const canOrganize = !readOnly
   const selectedBase = activeBases.find(base => base.id === view.knowledgeBaseId)
   const search = element('input', {
     class: 'note-tree-search', type: 'search', value: view.query, placeholder: '搜索文档', 'aria-label': '搜索知识库文档',
@@ -1687,11 +1737,11 @@ function renderDocumentWorkspace(workspace, options = {}) {
         !query && page.error ? element('div', { class: 'note-tree-status is-error' },
           element('span', {}, page.error),
           actionButton('重试', () => { void loadDocumentPage(workspace, base.id, { reset: true }).then(renderShell) }, 'ghost small')) : null,
-        documents.map(document => element('button', {
+        renderDocumentGroups({ element, documents, baseId: base.id, collapsed: view.collapsedGroups, searching: Boolean(query), onNew: readOnly ? undefined : group => { void startBlankDocument(workspace, base.id, group) }, onDrop: readOnly ? undefined : (event, group) => { void dropDocumentIntoGroup(event, workspace, base.id, group) }, renderRow: document => element('button', {
           type: 'button', class: 'note-tree-document', 'aria-current': document.id === view.documentId ? 'page' : undefined,
           draggable: canOrganize && movingDocumentId !== document.id ? 'true' : undefined,
           'aria-busy': movingDocumentId === document.id ? 'true' : undefined,
-          title: canOrganize ? `${document.title} · 拖到其他知识库以移动` : document.title,
+          title: canOrganize ? `${document.title} · 可拖到分组或其他知识库` : document.title,
           'data-document-id': document.id,
           onDragStart: event => {
             knowledgeDocumentDrag = { documentId: document.id, sourceBaseId: base.id, workspaceKind: workspace.kind }
@@ -1703,7 +1753,7 @@ function renderDocumentWorkspace(workspace, options = {}) {
           onClick: () => { view.knowledgeBaseId = base.id; void selectDocument(workspace, document.id) },
         }, element('span', { class: 'tree-document-icon', 'aria-hidden': 'true' }), element('span', { class: 'tree-document-copy' },
           element('strong', { title: document.title }, document.title), element('small', { title: document.relPath }, document.relPath)),
-        document.documentState !== 'open' ? badge(DOCUMENT_STATE_LABELS[document.documentState] || '已结束', 'success') : null)),
+        document.documentState !== 'open' ? badge(DOCUMENT_STATE_LABELS[document.documentState] || '已结束', 'success') : null) }),
         !query && page.nextCursor ? element('button', {
           type: 'button', class: 'note-tree-more', disabled: page.loading,
           onClick: () => { void loadDocumentPage(workspace, base.id, { append: true }).then(renderShell) },
@@ -1735,7 +1785,8 @@ function renderDocumentWorkspace(workspace, options = {}) {
         element('div', {}, element('h2', { id: `${workspace.kind}-documents-heading` }, options.heading || '知识目录'), element('span', {}, query ? `${view.searchTotal} 条搜索结果` : `${workspaceDocuments.length} 篇已加载`)),
         !readOnly ? actionButton('+', () => { void startBlankDocument(workspace, view.knowledgeBaseId || activeBases[0]?.id) }, 'ghost note-add-button', { 'aria-label': '新建文档', title: '新建文档' }) : null,
       ),
-      element('div', { class: 'note-tree-search-wrap' }, interfaceIcon('search', 'search-symbol'), search),
+      element('div', {}, element('div', { class: 'note-tree-search-wrap' }, interfaceIcon('search', 'search-symbol'), search),
+        !readOnly && view.knowledgeBaseId ? actionButton('整理分组', () => { const baseId = view.knowledgeBaseId; void openDocumentGroupOrganizer({ element, api, openSheet, baseId, onApply: (ids, group) => applyDocumentGroup(workspace, baseId, ids, group) }) }, 'ghost small document-groups-manage') : null),
       element('nav', { class: 'note-tree', 'data-scroll-key': `${workspace.kind}-note-tree` }, treeContent),
       workspace.kind === 'session' ? element('footer', { class: 'note-tree-footer' }, actionButton('新建知识库', () => openKnowledgeBaseEditor(), 'ghost small')) : null,
     ),
@@ -1826,6 +1877,7 @@ function renderNoteEditor(workspace, editor, base) {
     ),
     renderDocumentReferenceBar(workspace, editor, editable),
     element('footer', { class: 'note-inspector' },
+      readOnly ? element('span', { class: 'note-format-hint' }, `分组：${editor.group || '未分组'}`) : actionButton(`分组：${editor.group || '未分组'}`, () => openDocumentGroupEditor(workspace, editor), 'ghost small document-group-control', { title: editor.group || '未分组', 'aria-label': '调整文档分组' }),
       finalized || readOnly ? element('span', { class: 'note-format-hint' }, readOnly ? '知识库已归档 · 只读' : '只读封存 · 重新打开后才能编辑') : element('label', {}, element('span', {}, '类型'), element('select', {
         class: 'note-meta-select', onChange: event => update('type', event.target.value),
       }, TYPES.map(type => element('option', { value: type, selected: type === editor.type }, TYPE_LABELS[type])))),
@@ -3677,8 +3729,9 @@ function renderCandidates() {
 function renderCandidateCard(candidate) {
   const pending = candidate.status === 'pending'
   const target = candidate.targetId ? state.candidateTargets.get(candidate.targetId) : null
-  const targetAvailable = candidate.action === 'create' || Boolean(target && (candidate.change?.kind !== 'finalize'
-    || target.documentState === 'open' && target.version === candidate.change.baseVersion))
+  const targetAvailable = candidate.action === 'create' || Boolean(target && (candidate.change?.kind === 'group'
+    ? target.version === candidate.change.baseVersion
+    : candidate.change?.kind !== 'finalize' || target.documentState === 'open' && target.version === candidate.change.baseVersion))
   const action = candidatePrimaryAction(candidate)
   return element('article', { class: 'candidate' },
     element('div', { class: 'candidate-header' },
@@ -3700,7 +3753,7 @@ function renderCandidateCard(candidate) {
           element('strong', {}, '写入位置'),
           element('span', { class: 'candidate-target' }, candidate.action === 'create'
             ? `创建“${candidate.draft.title}”`
-            : target ? `${candidate.change?.kind === 'finalize' ? '结束整篇' : candidate.change?.kind === 'revise' ? '修订' : '补充到'}“${target.title}”` : `目标 ${candidate.targetId || '不可用'}`),
+            : target ? `${candidate.change?.kind === 'group' ? '调整分组：' : candidate.change?.kind === 'finalize' ? '结束整篇' : candidate.change?.kind === 'revise' ? '修订' : '补充到'}“${target.title}”` : `目标 ${candidate.targetId || '不可用'}`),
         ),
         renderCandidateMetadataChanges(candidate, target),
         element('section', {},
@@ -3717,7 +3770,7 @@ function renderCandidateCard(candidate) {
       element('small', {}, `${scopeLabel(candidate.draft.scope)} · 置信度 ${Math.round(candidate.draft.confidence * 100)}%${candidate.targetId ? ` · 目标 ${candidate.targetId}` : ''} · ${formatDate(candidate.createdAt)}`),
       pending ? element('div', { class: 'candidate-actions' },
         actionButton('拒绝', () => reviewCandidate(candidate, 'reject'), 'danger small'),
-        candidate.change?.kind === 'finalize' ? null : actionButton(action.editLabel, () => openEntryEditor(undefined, candidate), 'small', {
+        ['finalize', 'group'].includes(candidate.change?.kind) ? null : actionButton(action.editLabel, () => openEntryEditor(undefined, candidate), 'small', {
           disabled: !targetAvailable,
           title: targetAvailable ? action.editLabel : '目标文档不可用，无法安全编辑合并结果',
         }),
@@ -3731,6 +3784,14 @@ function renderCandidateCard(candidate) {
 }
 
 function renderCandidateDiff(candidate, target) {
+  if (candidate.change?.kind === 'group') {
+    return element('section', { class: 'candidate-change' },
+      element('strong', {}, '调整文档分组'),
+      element('p', {}, `${target?.group || '未分组'} → ${candidate.change.group}`),
+      element('p', {}, '只修改分组，正文、标签、路径和完成状态保持不变。'),
+      target && target.version !== candidate.change.baseVersion ? element('p', { role: 'alert' }, '文档版本已变化，请拒绝后重新提交分组调整。') : null,
+    )
+  }
   if (candidate.change?.kind === 'finalize') {
     return element('section', { class: 'candidate-change', 'aria-label': '文档结束预览' },
       element('strong', {}, `${target?.title || candidate.draft.title} · ${candidate.change.state === 'resolved' ? '标记已解决' : '标记收集完成'}`),
@@ -3818,6 +3879,7 @@ function renderCandidateMetadataChanges(candidate, target) {
 }
 
 function candidatePrimaryAction(candidate) {
+  if (candidate.change?.kind === 'group') return { label: '确认调整分组', manualOnly: candidate.action === 'conflict' }
   if (candidate.change?.kind === 'finalize') return { label: candidate.change.state === 'resolved' ? '确认标记已解决' : '确认收集完成', manualOnly: candidate.action === 'conflict' }
   if (candidate.action === 'create') return { label: '写入新文档', editLabel: '编辑后写入' }
   if (candidate.action === 'conflict' && candidate.change?.kind !== 'revise') {
@@ -4216,6 +4278,13 @@ function openEntryEditor(entry, candidate) {
   const activeBases = state.knowledgeBases.filter(base => base.status === 'active')
   const selectedBaseId = source.knowledgeBaseId || activeBases[0]?.id || 'default'
   const knowledgeBase = selectField('所属知识库', activeBases.map(base => ({ value: base.id, label: base.name })), selectedBaseId)
+  const requiresGroup = !entry && (!candidate || candidate.action === 'create')
+  let groupField = createDocumentGroupField({ element, api, baseId: selectedBaseId, value: candidateTarget?.group ?? source.group ?? '', required: requiresGroup })
+  const groupSlot = element('div', { class: 'span-2' }, groupField.wrapper)
+  knowledgeBase.input.addEventListener('change', () => {
+    groupField = createDocumentGroupField({ element, api, baseId: knowledgeBase.input.value, value: groupField.value(), required: requiresGroup })
+    groupSlot.replaceChildren(groupField.wrapper)
+  })
   const scope = selectField('范围', [{ value: 'global', label: '全局' }, { value: 'project', label: '项目' }], source.scope.kind)
   const project = formField('项目 ID / 路径', 'input', source.scope.kind === 'project' ? source.scope.id : '', { placeholder: '/workspace/project' })
   const tags = formField('标签', 'input', source.tags.join(', '), { placeholder: 'docker, deployment' })
@@ -4230,6 +4299,7 @@ function openEntryEditor(entry, candidate) {
     title.wrapper,
     type.wrapper,
     knowledgeBase.wrapper,
+    groupSlot,
     scope.wrapper,
     scopeProjectField,
     element('div', { class: 'field span-2' }, element('label', {}, '置信度'), element('div', { class: 'range-row' }, confidenceInput, confidenceValue)),
@@ -4249,8 +4319,12 @@ function openEntryEditor(entry, candidate) {
     : '保存文档'
   const modal = openSheet({ title: modeTitle, description: candidate ? candidateDescription : '文档保存后会立即参与后续召回。', body: form, primaryLabel, onPrimary: async () => {
     if (!form.reportValidity()) return false
+    await groupField.ready
+    groupField.validate()
+    if (requiresGroup && (!groupField.value() || groupField.value() === '未分组')) throw new Error('新文档必须选择分组。')
     const draft = {
       knowledgeBaseId: knowledgeBase.input.value,
+      group: groupField.value(),
       title: title.input.value.trim(), body: body.input.value.trim(), type: type.input.value,
       tags: parseTags(tags.input.value),
       scope: scope.input.value === 'global' ? { kind: 'global' } : { kind: 'project', id: project.input.value.trim() },
@@ -4322,6 +4396,8 @@ async function reviewCandidate(candidate, decision, resolution) {
   const title = approve ? `${action.label}？` : '拒绝这条候选？'
   const message = !approve
     ? '拒绝后会保留审核记录，但不会进入知识库。'
+    : candidate.change?.kind === 'group'
+      ? `确认后仅将文档归入“${candidate.change.group}”，不修改正文或完成状态。`
     : candidate.change?.kind === 'finalize'
       ? '确认后整篇文档将结束并停止回写，正文保持不变。如需继续补充，可在文档中重新打开；版本变化时本次确认不会生效。'
     : candidate.action === 'create'

@@ -104,7 +104,7 @@ test('AI note deletion preserves notes referenced by knowledge documents', async
   const root = await mkdtemp(join(tmpdir(), 'dsh-knowledge-note-delete-tools-'))
   const databasePath = join(root, 'knowledge.sqlite')
   const seed = new LocalKnowledgeProvider(databasePath)
-  const entry = await seed.create({
+  const entry = await seed.create({ group: '测试分组',
     knowledgeBaseId: 'default', title: '部署依据', body: '部署依据引用原始笔记。',
     type: 'fact', tags: [], scope: { kind: 'global' }, confidence: .9,
   })

@@ -58,6 +58,7 @@ import { enqueueDocumentProjection } from './documents/projection-queue.js'
 import { applyKnowledgeTextEdits, mergeKnowledgeBodies } from './knowledge-merge.js'
 import { normalizeFinalizationChange } from './document-lifecycle.js'
 import { NoteStore } from './notes/store.js'
+import { normalizeDocumentGroup, matchDocumentGroup, type KnowledgeDocumentGroup } from './document-groups.js'
 import {
   type KnowledgeNoteReference,
   type KnowledgeNoteReferenceSource,
@@ -71,12 +72,12 @@ type SqlRow = Record<string, unknown>
 
 const ENTRY_COLUMNS = `
   id, knowledge_base_id, title, body, type, tags_json, scope_kind, scope_id, confidence,
-  status, document_state, finalized_at, finalization_note, version, source_json, created_at, updated_at
+  status, document_group, document_state, finalized_at, finalization_note, version, source_json, created_at, updated_at
 `
 
 const JOINED_ENTRY_COLUMNS = `
   e.id AS id, e.knowledge_base_id AS knowledge_base_id, e.title AS title, e.body AS body, e.type AS type,
-  e.tags_json AS tags_json, e.scope_kind AS scope_kind, e.scope_id AS scope_id,
+  e.tags_json AS tags_json, e.document_group AS document_group, e.scope_kind AS scope_kind, e.scope_id AS scope_id,
   e.confidence AS confidence, e.status AS status, e.document_state AS document_state,
   e.finalized_at AS finalized_at, e.finalization_note AS finalization_note, e.version AS version,
   e.source_json AS source_json, e.created_at AS created_at, e.updated_at AS updated_at
@@ -359,7 +360,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     const rows = this.db.prepare(`
       WITH document_index AS (
         SELECT
-          id, knowledge_base_id, rel_path, title, entry_count, content_hash,
+          id, knowledge_base_id, rel_path, title, entry_count, content_hash, document_group,
           document_state, finalized_at, finalization_note, created_at, updated_at,
           CASE WHEN rel_path='README.md' THEN 0 ELSE 1 END AS sort_rank
         FROM knowledge_documents${sourceWhere}
@@ -389,6 +390,48 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     await this.documentsReady
     const row = this.db.prepare('SELECT * FROM knowledge_documents WHERE id=?').get(id) as SqlRow | undefined
     return row === undefined ? undefined : rowToDocument(row)
+  }
+
+  async listDocumentGroups(knowledgeBaseId: string): Promise<KnowledgeDocumentGroup[]> {
+    this.assertOpen()
+    if (!await this.getKnowledgeBase(knowledgeBaseId)) throw notFound('knowledge base', knowledgeBaseId)
+    return this.documentGroups(knowledgeBaseId)
+  }
+
+  private documentGroups(knowledgeBaseId: string): KnowledgeDocumentGroup[] {
+    return (this.db.prepare("SELECT document_group,COUNT(*) AS count FROM knowledge_entries WHERE knowledge_base_id=? AND status='active' GROUP BY document_group ORDER BY document_group COLLATE NOCASE").all(knowledgeBaseId) as SqlRow[])
+      .map(row => ({ name: String(row.document_group), count: Number(row.count) }))
+  }
+
+  private resolveDocumentGroup(baseId: string, name: string): string {
+    return matchDocumentGroup(name, this.documentGroups(baseId).map(group => group.name))
+  }
+
+  async assignDocumentGroup(knowledgeBaseId: string, ids: string[], group: string): Promise<KnowledgeEntry[]> {
+    this.assertOpen(); await this.documentsReady
+    const name = normalizeDocumentGroup(group)
+    if (!Array.isArray(ids) || ids.length < 1 || ids.length > 500 || ids.some(id => typeof id !== 'string')) throw inputError('请选择 1 到 500 篇文档')
+    const entries = this.transaction(() => {
+      if (!this.db.prepare("SELECT id FROM knowledge_bases WHERE id=? AND status='active'").get(knowledgeBaseId)) throw notFound('active knowledge base', knowledgeBaseId)
+      const canonical = this.resolveDocumentGroup(knowledgeBaseId, name)
+      const selected = [...new Set(ids)].map(id => {
+        const row = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM knowledge_entries WHERE id=?`).get(id) as SqlRow | undefined
+        if (!row || row.knowledge_base_id !== knowledgeBaseId || row.status !== 'active') throw conflict('文档已移动、归档或删除，请刷新分组后重试')
+        return rowToEntry(row)
+      })
+      return selected.map(current => this.setEntryGroup(current, canonical))
+    })
+    for (const entry of entries) await this.syncKnowledgeEntryQueued(entry.id)
+    return entries
+  }
+
+  private setEntryGroup(current: KnowledgeEntry, group: string): KnowledgeEntry {
+    const canonical = this.resolveDocumentGroup(current.knowledgeBaseId, normalizeDocumentGroup(group))
+    if ((current.group ?? '') === canonical) return current
+    const updated = { ...current, group: canonical, version: current.version + 1, updatedAt: nowIso() }
+    this.db.prepare('UPDATE knowledge_entries SET document_group=?,version=?,updated_at=? WHERE id=?').run(canonical, updated.version, updated.updatedAt, updated.id)
+    this.writeVersion(updated, 'update')
+    return updated
   }
 
   async listMounts(targetKind?: KnowledgeMountTargetKind, targetId?: string): Promise<KnowledgeMount[]> {
@@ -701,7 +744,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
         if (!this.db.prepare("SELECT id FROM knowledge_bases WHERE id=? AND status='active'").get(current.knowledgeBaseId)) throw conflict('目标知识库已归档')
         result = this.updateEntry(current.id, { ...current, body: `${current.body.trimEnd()}\n\n${body}`.trim() }, 'update')
       } else {
-        result = this.insertEntry({ knowledgeBaseId: input.knowledgeBaseId, title: input.title?.trim() || note.name.replace(/\.md$/i, ''), body, type: 'fact', tags: [], scope: { kind: 'global' }, confidence: 0.8 })
+        result = this.insertEntry({ knowledgeBaseId: input.knowledgeBaseId, ...(input.group === undefined ? {} : { group: input.group }), title: input.title?.trim() || note.name.replace(/\.md$/i, ''), body, type: 'fact', tags: [], scope: { kind: 'global' }, confidence: 0.8 })
       }
       this.db.prepare('INSERT OR IGNORE INTO knowledge_note_references(knowledge_id,note_id,source,source_session_id,created_at) VALUES(?,?,?,NULL,?)').run(result.id, note.id, 'user', nowIso())
       this.db.prepare('INSERT INTO note_excerpt_receipts(request_id,input_hash,knowledge_id) VALUES(?,?,?)').run(input.requestId, hash, result.id)
@@ -713,6 +756,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   private insertEntry(input: KnowledgeDraft): KnowledgeEntry {
     const draft = normalizeDraft(input)
+    draft.group = this.resolveDocumentGroup(draft.knowledgeBaseId, normalizeDocumentGroup(input.group, true))
     if (this.db.prepare("SELECT id FROM knowledge_bases WHERE id=? AND status='active'").get(draft.knowledgeBaseId) === undefined) {
       throw notFound('active knowledge base', draft.knowledgeBaseId)
     }
@@ -725,12 +769,13 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     this.db.prepare(`
       INSERT INTO knowledge_entries (
         id,knowledge_base_id,title,body,type,tags_json,scope_kind,scope_id,confidence,status,
-        document_state,finalized_at,finalization_note,version,content_hash,source_json,created_at,updated_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,'open',NULL,NULL,?,?,?,?,?)
+        document_state,finalized_at,finalization_note,version,content_hash,source_json,created_at,updated_at,document_group
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,'open',NULL,NULL,?,?,?,?,?,?)
     `).run(
       id, draft.knowledgeBaseId, draft.title, draft.body, draft.type, JSON.stringify(draft.tags), draft.scope.kind,
       draft.scope.kind === 'project' ? draft.scope.id : null, draft.confidence, 'active', 1,
       contentHash(draft), draft.source === undefined ? null : JSON.stringify(draft.source), timestamp, timestamp,
+      draft.group,
     )
     this.writeVersion(entry, 'create')
     this.upsertFts(entry)
@@ -857,6 +902,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     }
     if (current.documentState !== 'open') throw finalizedConflict(current)
     const draft = normalizeDraft(input)
+    draft.group = input.group === undefined ? current.group ?? '' : this.resolveDocumentGroup(draft.knowledgeBaseId, normalizeDocumentGroup(input.group))
     if (this.db.prepare("SELECT id FROM knowledge_bases WHERE id=? AND status='active'").get(draft.knowledgeBaseId) === undefined) {
       throw notFound('active knowledge base', draft.knowledgeBaseId)
     }
@@ -873,12 +919,12 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     this.db.prepare(`
       UPDATE knowledge_entries SET
         knowledge_base_id=?,title=?,body=?,type=?,tags_json=?,scope_kind=?,scope_id=?,confidence=?,status='active',
-        version=?,content_hash=?,source_json=?,updated_at=?
+        version=?,content_hash=?,source_json=?,updated_at=?,document_group=?
       WHERE id=?
     `).run(
       draft.knowledgeBaseId, draft.title, draft.body, draft.type, JSON.stringify(draft.tags), draft.scope.kind,
       draft.scope.kind === 'project' ? draft.scope.id : null, draft.confidence, entry.version,
-      contentHash(draft), draft.source === undefined ? null : JSON.stringify(draft.source), timestamp, id,
+      contentHash(draft), draft.source === undefined ? null : JSON.stringify(draft.source), timestamp, draft.group, id,
     )
     this.writeVersion(entry, changeKind)
     this.upsertFts(entry)
@@ -1139,6 +1185,8 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       }
       const entry = resolution.proposal.action === 'create'
         ? this.insertEntry(resolution.proposal.draft)
+        : resolution.proposal.change?.kind === 'group'
+          ? this.setEntryGroup(this.activeEntry(resolution.proposal.targetId as string), resolution.proposal.change.group)
         : resolution.proposal.change?.kind === 'finalize'
           ? this.finalizeEntry(resolution.proposal.targetId as string, resolution.proposal.change.state, resolution.proposal.change.note)
           : this.updateEntry(resolution.proposal.targetId as string, resolution.proposal.draft, 'update')
@@ -1191,7 +1239,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     if (proposal.action === 'conflict') return { outcome: 'conflict', proposal }
     if (proposal.action === 'update') {
       const target = this.activeEntry(proposal.targetId as string)
-      if (target.documentState !== 'open') return { outcome: 'finalized', entry: target }
+      if (target.documentState !== 'open' && proposal.change?.kind !== 'group') return { outcome: 'finalized', entry: target }
       if (target.knowledgeBaseId !== proposal.draft.knowledgeBaseId) {
         throw conflict('direct-write update cannot move knowledge between knowledge bases')
       }
@@ -1203,7 +1251,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
         return { outcome: 'conflict', proposal: { ...proposal, action: 'conflict' } }
       }
       const draft = applied.draft
-      if (proposal.change?.kind !== 'finalize' && contentHash(draft) === contentHash(target)) return { outcome: 'duplicate', entry: target }
+      if (proposal.change?.kind === 'group' ? (draft.group ?? '') === (target.group ?? '') : proposal.change?.kind !== 'finalize' && contentHash(draft) === contentHash(target)) return { outcome: 'duplicate', entry: target }
       return { outcome: 'merged', proposal: { ...proposal, action: 'update', draft } }
     }
 
@@ -1282,7 +1330,14 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       if (candidate.status !== 'pending') throw conflict(`candidate ${id} was already ${candidate.status}`)
       let draft = decision.draft === undefined ? candidate.draft : normalizeDraft(decision.draft)
       if (decision.decision === 'approve') {
-        if (candidate.change?.kind === 'finalize') {
+        if (candidate.change?.kind === 'group') {
+          if (decision.draft !== undefined) throw conflict('分组候选不能替换正文，请拒绝后重新提交')
+          const target = this.activeEntry(candidate.targetId as string)
+          assertExpectedReviewVersion(target, decision.expectedVersion)
+          const applied = applyCandidateToTarget(target, candidate, false)
+          if (!applied.ok) throw conflict(applied.reason)
+          touchedEntryId = this.setEntryGroup(target, candidate.change.group).id
+        } else if (candidate.change?.kind === 'finalize') {
           if (decision.draft !== undefined) throw conflict('结束候选不能替换正文，请拒绝后重新提交')
           const target = this.activeEntry(candidate.targetId as string)
           assertExpectedReviewVersion(target, decision.expectedVersion)
@@ -1541,6 +1596,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       body: entry.body,
       type: entry.type,
       tags: entry.tags,
+      group: entry.group ?? '',
       scope: entry.scope,
       confidence: entry.confidence,
       ...entry.source === undefined ? {} : { source: entry.source },
@@ -1630,14 +1686,14 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     this.db.prepare(`
       INSERT INTO knowledge_documents(
         id,knowledge_base_id,rel_path,title,content,entry_count,content_hash,
-        document_state,finalized_at,finalization_note,created_at,updated_at
-      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+        document_state,finalized_at,finalization_note,created_at,updated_at,document_group
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET
         knowledge_base_id=excluded.knowledge_base_id,rel_path=excluded.rel_path,
         title=excluded.title,content=excluded.content,entry_count=excluded.entry_count,
         content_hash=excluded.content_hash,document_state=excluded.document_state,
         finalized_at=excluded.finalized_at,finalization_note=excluded.finalization_note,
-        updated_at=excluded.updated_at
+        updated_at=excluded.updated_at,document_group=excluded.document_group
       WHERE knowledge_documents.knowledge_base_id<>excluded.knowledge_base_id
          OR knowledge_documents.content_hash<>excluded.content_hash
          OR knowledge_documents.rel_path<>excluded.rel_path
@@ -1646,10 +1702,11 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
          OR knowledge_documents.document_state<>excluded.document_state
          OR knowledge_documents.finalized_at IS NOT excluded.finalized_at
          OR knowledge_documents.finalization_note IS NOT excluded.finalization_note
+         OR knowledge_documents.document_group<>excluded.document_group
     `).run(
       entry.id, entry.knowledgeBaseId, relPath, entry.title, renderEntryContent(entry), 1, projectedHash,
       entry.documentState, entry.finalizedAt ?? null, entry.finalizationNote ?? null,
-      entry.createdAt, entry.updatedAt,
+      entry.createdAt, entry.updatedAt, entry.group ?? '',
     )
   }
 
@@ -1703,6 +1760,7 @@ function renderEntryMarkdown(entry: KnowledgeEntry): string {
       id: entry.id,
       type: entry.type,
       tags: entry.tags,
+      group: entry.group ?? '',
       scope: entry.scope,
       confidence: entry.confidence,
       status: entry.status,
@@ -1728,6 +1786,7 @@ function rowToEntry(row: SqlRow): KnowledgeEntry {
   return {
     id: String(row.id),
     knowledgeBaseId: row.knowledge_base_id == null ? DEFAULT_KNOWLEDGE_BASE_ID : String(row.knowledge_base_id),
+    group: String(row.document_group ?? ''),
     title: String(row.title),
     body: String(row.body),
     type: String(row.type) as KnowledgeEntry['type'],
@@ -1751,6 +1810,7 @@ function rowToDocument(row: SqlRow): KnowledgeDocument {
   return {
     id: String(row.id),
     knowledgeBaseId: String(row.knowledge_base_id),
+    group: String(row.document_group ?? ''),
     relPath: String(row.rel_path),
     title: String(row.title),
     content: String(row.content),
@@ -1768,6 +1828,7 @@ function rowToDocumentSummary(row: SqlRow): KnowledgeDocumentSummary {
   return {
     id: String(row.id),
     knowledgeBaseId: String(row.knowledge_base_id),
+    group: String(row.document_group ?? ''),
     relPath: String(row.rel_path),
     title: String(row.title),
     entryCount: Number(row.entry_count),
@@ -1843,6 +1904,10 @@ function normalizeProposal(input: CandidateProposal): CandidateProposal {
 function normalizeCandidateChange(input: CandidateChange | undefined): CandidateChange | undefined {
   if (input === undefined) return undefined
   if (input.kind === 'append') return { kind: 'append' }
+  if (input.kind === 'group') {
+    if (!Number.isSafeInteger(input.baseVersion) || input.baseVersion < 1) throw new Error('分组 baseVersion 必须为正整数')
+    return { kind: 'group', baseVersion: input.baseVersion, group: normalizeDocumentGroup(input.group, true) }
+  }
   if (input.kind === 'finalize') return normalizeFinalizationChange(input)
   if (input.kind !== 'revise') throw new Error('unsupported candidate change kind')
   if (!Number.isSafeInteger(input.baseVersion) || input.baseVersion < 1) {
@@ -1885,6 +1950,10 @@ function applyCandidateToTarget(
   proposal: Pick<CandidateProposal, 'change' | 'draft'>,
   preferIncomingTitle: boolean,
 ): { ok: true; draft: KnowledgeDraft } | { ok: false; reason: string } {
+  if (proposal.change?.kind === 'group') {
+    if (current.version !== proposal.change.baseVersion || current.knowledgeBaseId !== proposal.draft.knowledgeBaseId) return { ok: false, reason: '分组候选已过期，请重新读取文档后提交' }
+    return { ok: true, draft: { ...current, group: proposal.change.group } }
+  }
   if (proposal.change?.kind === 'finalize') {
     if (current.documentState !== 'open' || current.version !== proposal.change.baseVersion || contentHash(current) !== proposal.change.baseHash
       || current.knowledgeBaseId !== proposal.draft.knowledgeBaseId || contentHash(current) !== contentHash(proposal.draft)) {

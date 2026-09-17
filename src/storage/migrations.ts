@@ -6,7 +6,7 @@ type SqlRow = Record<string, unknown>
 /** Versioned upgrades preserve the provider's database and transaction boundaries. */
 export function migrateKnowledgeDatabase(db: DatabaseSync, notes: NoteStore): void {
   let version = Number((db.prepare('PRAGMA user_version').get() as SqlRow).user_version ?? 0)
-  if (version > 14) throw new Error(`knowledge database schema ${version} is newer than this plugin supports`)
+  if (version > 15) throw new Error(`knowledge database schema ${version} is newer than this plugin supports`)
   if (version === 0) db.exec(`
     BEGIN IMMEDIATE;
     CREATE TABLE knowledge_entries (
@@ -284,6 +284,17 @@ export function migrateKnowledgeDatabase(db: DatabaseSync, notes: NoteStore): vo
       const columns = db.prepare('PRAGMA table_info(knowledge_bases)').all() as SqlRow[]
       if (!columns.some(column => column.name === 'group_name')) db.exec("ALTER TABLE knowledge_bases ADD COLUMN group_name TEXT NOT NULL DEFAULT ''")
       db.exec('PRAGMA user_version = 14; COMMIT')
+    } catch (error) { db.exec('ROLLBACK'); throw error }
+  }
+  if (version <= 13) version = 14
+  if (version === 14) {
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const table of ['knowledge_entries', 'knowledge_documents']) {
+        const columns = db.prepare(`PRAGMA table_info(${table})`).all() as SqlRow[]
+        if (!columns.some(column => column.name === 'document_group')) db.exec(`ALTER TABLE ${table} ADD COLUMN document_group TEXT NOT NULL DEFAULT ''`)
+      }
+      db.exec('CREATE INDEX IF NOT EXISTS knowledge_entries_document_group ON knowledge_entries(knowledge_base_id,status,document_group); PRAGMA user_version = 15; COMMIT')
     } catch (error) { db.exec('ROLLBACK'); throw error }
   }
   // Alpha v2 used a migration note as the default base's routing description.

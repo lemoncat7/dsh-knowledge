@@ -6,6 +6,7 @@ export interface NoteExcerptRequest {
   documentId?: string
   expectedVersion?: number
   title?: string
+  group?: string
 }
 
 /** Plain selected text must not introduce Markdown/HTML or a second link. */

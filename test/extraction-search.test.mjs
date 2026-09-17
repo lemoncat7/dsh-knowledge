@@ -10,7 +10,7 @@ test('writeback retrieves related knowledge with a bounded query but keeps the m
   const root = await mkdtemp(join(tmpdir(), 'knowledge-extraction-search-'))
   const provider = new LocalKnowledgeProvider(join(root, 'knowledge.sqlite'))
   t.after(async () => { await provider.close(); await rm(root, { recursive: true, force: true }) })
-  const entry = await provider.create({
+  const entry = await provider.create({ group: '测试分组',
     knowledgeBaseId: 'default', title: '异常上报', body: 'nonStopCrypto report_analyse_result NSC_5006 不停机风险上报规则。',
     type: 'procedure', tags: [], scope: { kind: 'global' }, confidence: 0.9,
   })
@@ -31,6 +31,8 @@ test('writeback retrieves related knowledge with a bounded query but keeps the m
     const payload = JSON.parse(request.messages[0].content[0].text)
     assert.deepEqual(payload.conversation, { user: userText, assistant: assistantText })
     assert.ok(payload.existing.some(item => item.id === entry.id))
+    assert.deepEqual(payload.destinations[0].documentGroups, ['测试分组'])
+    assert.equal(payload.existing.find(item => item.id === entry.id).group, '测试分组')
     yield { type: 'text-delta', text: '{"candidates":[]}' }
     yield { type: 'finish', reason: { kind: 'stop' } }
   } } }

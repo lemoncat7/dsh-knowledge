@@ -47,6 +47,10 @@ export function createKnowledgeTrackingService(provider: KnowledgeProvider): Kno
       if (mount.writeMode === 'none') return { storage: 'local', outcome: 'not-writable', knowledgeBaseId: mount.knowledgeBaseId }
       const requestedTitle = referenceTitle(input.reference)
       const existing = await findEntry(provider, agent, mount, requestedTitle ?? input.subject, signal)
+      const groups = existing ? [] : await provider.listDocumentGroups(mount.knowledgeBaseId, signal)
+      const subject = input.subject.normalize('NFKC').toLocaleLowerCase()
+      const group = existing?.group ?? groups.find(item => item.name && subject.includes(item.name.normalize('NFKC').toLocaleLowerCase()))?.name
+        ?? groups.find(item => ['持续关注', '伙伴关注', '动态跟踪'].includes(item.name))?.name ?? '持续关注'
       const title = existing?.title ?? requestedTitle ?? compact(`伙伴关注 · ${input.subject}`, 200)
       const content = observationMarkdown(input)
       const proposal: CandidateProposal = {
@@ -54,6 +58,7 @@ export function createKnowledgeTrackingService(provider: KnowledgeProvider): Kno
         ...(existing === undefined ? {} : { targetId: existing.id }),
         draft: {
           knowledgeBaseId: mount.knowledgeBaseId,
+          group,
           title,
           body: content,
           type: existing?.type ?? 'fact',

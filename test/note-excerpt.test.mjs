@@ -14,7 +14,7 @@ test('note excerpt creates/appends atomically, preserves links and rejects confl
   let provider = new LocalKnowledgeProvider(join(root, 'knowledge.sqlite'))
   t.after(async () => { await provider.close(); await rm(root, { recursive: true, force: true }) })
   const note = await provider.createNoteDocument('来源.md', null, '第一段\n第二段')
-  const input = { requestId: 'excerpt-request-000001', noteId: note.id, text: '第一段\n第二段', knowledgeBaseId: DEFAULT_KNOWLEDGE_BASE_ID, title: '摘录知识' }
+  const input = { group: '测试分组', requestId: 'excerpt-request-000001', noteId: note.id, text: '第一段\n第二段', knowledgeBaseId: DEFAULT_KNOWLEDGE_BASE_ID, title: '摘录知识' }
   const entry = await provider.excerptNote(input)
   assert.equal(entry.title, '摘录知识')
   assert.equal(entry.body, `[第一段](note://${note.id})\n\n[第二段](note://${note.id})`)
@@ -54,7 +54,7 @@ test('a reference write failure rolls back new content and receipt together', as
   const provider = new LocalKnowledgeProvider(join(root, 'knowledge.sqlite'))
   t.after(async () => { await provider.close(); await rm(root, { recursive: true, force: true }) })
   const note = await provider.createNoteDocument('来源.md', null, '内容')
-  const input = { requestId: 'excerpt-rollback-0001', noteId: note.id, text: '内容', knowledgeBaseId: DEFAULT_KNOWLEDGE_BASE_ID }
+  const input = { group: '测试分组', requestId: 'excerpt-rollback-0001', noteId: note.id, text: '内容', knowledgeBaseId: DEFAULT_KNOWLEDGE_BASE_ID }
   provider.db.exec("CREATE TRIGGER fail_excerpt_reference BEFORE INSERT ON knowledge_note_references BEGIN SELECT RAISE(ABORT, 'reference failure'); END;")
   await assert.rejects(provider.excerptNote(input), /reference failure/)
   assert.equal((await provider.list({ limit: 100 })).items.length, 0)
@@ -75,7 +75,7 @@ test('excerpt HTTP endpoint enforces read/write permissions and version conflict
   const read = provider.createApiToken('read', ['read']).token
   const write = provider.createApiToken('read/write', ['read','write']).token
   const note = await provider.createNoteDocument('来源.md', null, '内容')
-  const input = { requestId:'excerpt-http-request-1', noteId:note.id, text:'内容', knowledgeBaseId:DEFAULT_KNOWLEDGE_BASE_ID }
+  const input = { group: '测试分组', requestId:'excerpt-http-request-1', noteId:note.id, text:'内容', knowledgeBaseId:DEFAULT_KNOWLEDGE_BASE_ID }
   const post=(token,body)=>fetch(`http://127.0.0.1:${server.address().port}/api/note-excerpts`,{method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':'application/json'},body:JSON.stringify(body)})
   assert.equal((await post(read,input)).status,403)
   const response=await post(write,input)

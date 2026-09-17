@@ -235,7 +235,7 @@ async function verifyKnowledgeTreeOverflow(browser) {
   const documents = []
   for (const state of ['open', 'resolved', 'complete']) {
     const title = `${state}-知识目录中的超长文件名称用于验证状态不被遮挡-${'VeryLongUnbrokenFilename'.repeat(6)}`
-    const entry = await provider.create({ knowledgeBaseId: 'default', title, body: '隔离目录布局验证。', type: 'fact', tags: [], scope: { kind: 'global' }, confidence: 1 })
+    const entry = await provider.create({ group: '测试分组',  knowledgeBaseId: 'default', title, body: '隔离目录布局验证。', type: 'fact', tags: [], scope: { kind: 'global' }, confidence: 1 })
     if (state !== 'open') await provider.finalize(entry.id, state, '测试确认')
     documents.push({ id: entry.id, title, state })
   }
@@ -281,7 +281,7 @@ async function verifyKnowledgeTreeOverflow(browser) {
 
 async function verifyKnowledgeActions(browser) {
   const targetBase = await provider.createKnowledgeBase({ name: '移动目标', description: '', defaultTags: [], extractionInstructions: '' })
-  await provider.create({ knowledgeBaseId: 'default', title: '工具栏检查', body: '只使用隔离测试数据。', type: 'procedure', tags: [], scope: { kind: 'global' }, confidence: 1 })
+  await provider.create({ group: '测试分组',  knowledgeBaseId: 'default', title: '工具栏检查', body: '只使用隔离测试数据。', type: 'procedure', tags: [], scope: { kind: 'global' }, confidence: 1 })
   const [document] = await provider.listDocuments('default')
   const page = await browser.newPage({ viewport: { width: 1280, height: 850 }, reducedMotion: 'reduce' })
   try {

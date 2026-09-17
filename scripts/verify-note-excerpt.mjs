@@ -48,6 +48,9 @@ try {
   await page.getByLabel('添加方式').selectOption('new')
   assert.equal(await page.getByLabel('搜索知识文档').isVisible(),false)
   await page.getByLabel('新文档标题').fill('摘录验证')
+  await page.waitForFunction(() => document.querySelector('select[aria-label="文档分组"]')?.options.length > 1)
+  await page.locator('select[aria-label="文档分组"]').selectOption({ label: '+ 新建分组…' })
+  await page.getByLabel('新分组名称', { exact: true }).fill('笔记摘录')
   await page.getByRole('button',{name:'添加摘录',exact:true}).click()
   await page.getByRole('dialog').waitFor({state:'hidden'})
   const entry=(await provider.list({limit:100})).items[0]
