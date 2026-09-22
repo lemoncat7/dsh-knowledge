@@ -6,7 +6,8 @@ export const KNOWLEDGE_PALETTE: Record<KnowledgeColorScheme, Readonly<Record<str
     '--bg': '#ebebeb', '--surface': '#f4f4f4', '--surface-raised': '#fafafa',
     '--surface-soft': '#eeeeef', '--surface-hover': 'rgb(118 118 128 / 9%)', '--dialog-surface': '#f4f4f4',
     '--menu-surface': 'rgb(232 234 236 / 98%)', '--menu-surface-solid': '#e8eaec',
-    '--document-surface': 'rgb(218 222 226 / 32%)',
+    '--document-surface': 'rgb(255 255 255 / 12%)',
+    '--document-backdrop-filter': 'blur(24px)',
     '--selection-background': '#b8c8d6', '--selection-text': '#17212b',
     '--activity-surface': 'rgba(255, 255, 255, 0.14)',
     '--text': '#1d1d1f', '--text-secondary': '#515154', '--text-tertiary': '#6e6e73',
@@ -19,7 +20,8 @@ export const KNOWLEDGE_PALETTE: Record<KnowledgeColorScheme, Readonly<Record<str
     '--bg': '#101719', '--surface': '#182022', '--surface-raised': '#20292b',
     '--surface-soft': 'rgb(184 204 205 / 6%)', '--surface-hover': 'rgb(105 182 186 / 9%)', '--dialog-surface': '#20292b',
     '--menu-surface': 'rgb(29 38 40 / 98%)', '--menu-surface-solid': '#1d2628',
-    '--document-surface': 'rgb(130 138 146 / 6%)',
+    '--document-surface': 'rgb(0 0 0 / 8%)',
+    '--document-backdrop-filter': 'blur(24px)',
     '--selection-background': '#455b68', '--selection-text': '#ffffff',
     '--activity-surface': 'rgb(29 36 38 / 24%)',
     '--text': '#e3eaeb', '--text-secondary': '#bbc9cc', '--text-tertiary': '#95a7ab',
@@ -36,16 +38,16 @@ export const KNOWLEDGE_FONTS = {
   '--font-mono': '"SFMono-Regular", "Cascadia Code", Menlo, Consolas, monospace',
 }
 
-/** One material for host-side activity and the embedded workspace panes. */
+/** SSH-aligned frost for host-side activity and embedded panes; reading tint stays independent. */
 export const KNOWLEDGE_EMBEDDED_MATERIAL: Record<KnowledgeColorScheme, Readonly<Record<string, string>>> = {
   light: {
     '--knowledge-embedded-surface': 'rgba(255, 255, 255, 0.08)',
-    '--knowledge-embedded-filter': 'saturate(.65) contrast(1.015) blur(24px)',
+    '--knowledge-embedded-filter': 'saturate(1.22) contrast(1.03) blur(32px)',
     '--knowledge-embedded-control': 'rgba(255, 255, 255, 0.27)',
   },
   dark: {
     '--knowledge-embedded-surface': 'rgb(16 23 25 / 18%)',
-    '--knowledge-embedded-filter': 'saturate(.55) contrast(1.02) blur(24px)',
+    '--knowledge-embedded-filter': 'saturate(1.22) contrast(1.03) blur(32px)',
     '--knowledge-embedded-control': 'rgb(39 50 53 / 72%)',
   },
 }

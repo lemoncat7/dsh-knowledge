@@ -77,7 +77,11 @@ try {
     if (width === 375) assert.equal(await page.locator('.notes-editor-outline').evaluate(node => getComputedStyle(node).backgroundColor), 'rgb(244, 244, 244)', 'mobile outline must occlude the document')
     const toolbar = page.locator('.notes-document-toolbar')
     assert.equal(await page.locator('.notes-document-scroll').evaluate(node => getComputedStyle(node).backgroundColor),
-      scheme === 'dark' ? 'rgba(130, 138, 146, 0.06)' : 'rgba(218, 222, 226, 0.32)', 'reading tint must follow the color scheme')
+      scheme === 'dark' ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.12)', 'reading tint must follow the color scheme')
+    assert.deepEqual(await page.locator('.notes-document-scroll').evaluate(node => {
+      const style = getComputedStyle(node)
+      return [style.backdropFilter, style.filter]
+    }), ['blur(24px)', 'none'], 'frost must blur the backdrop, not the document text')
     assert.equal(await toolbar.evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(0, 0, 0, 0)', 'reading tint must not reach the toolbar')
     assert.equal(await page.locator('.notes-content.is-document').evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(0, 0, 0, 0)', 'reading tint must not become a document workspace background')
     for (const selector of ['[data-note-save-state]', '[data-note-save]', '[data-note-outline]', '.notes-document-more > summary']) {
@@ -304,7 +308,11 @@ async function verifyKnowledgeActions(browser) {
     for (const scheme of ['dark', 'light']) {
       await page.emulateMedia({ colorScheme: scheme })
       assert.equal(await page.locator('.note-editor-scroll').evaluate(node => getComputedStyle(node).backgroundColor),
-        scheme === 'dark' ? 'rgba(130, 138, 146, 0.06)' : 'rgba(218, 222, 226, 0.32)')
+        scheme === 'dark' ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.12)')
+      assert.deepEqual(await page.locator('.note-editor-scroll').evaluate(node => {
+        const style = getComputedStyle(node)
+        return [style.backdropFilter, style.filter]
+      }), ['blur(24px)', 'none'])
       assert.equal(await toolbar.evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(0, 0, 0, 0)')
     }
     for (const width of [1280, 1024, 768, 375, 320]) {
@@ -416,7 +424,7 @@ async function verifyMaterialParity(browser, outputDirectory) {
       </style><div class="comparison"><section class="dsh-knowledge-activity-panel">
       <header class="dsh-knowledge-activity-header">会话知识库</header><nav class="dsh-knowledge-activity-tabs"><button class="is-active">知识文档</button><button>笔记文档</button></nav>
       <div class="dsh-knowledge-activity-browser"><form class="dsh-knowledge-activity-search"><input placeholder="搜索已挂载知识…"></form><div class="dsh-knowledge-activity-list-heading"><strong>项目资料</strong></div><button class="dsh-knowledge-activity-row">右栏 · 中性玻璃材质</button></div>
-      </section><iframe></iframe></div>`)
+      </section><iframe></iframe></div><section class="dsh-knowledge-workspace"><header class="dsh-knowledge-workspace-header">知识库</header></section>`)
     const frame = await (await page.locator('iframe').elementHandle()).contentFrame()
     await frame.setContent(`<html data-dsh-embed-mode="embedded"><head><style>${knowledgeDesignCss()}${workspaceCss}</style></head><body><main class="main" style="margin:0;width:100%;height:690px"><header class="topbar">完整工作区</header><div style="padding:16px"><input class="input" placeholder="搜索文档…"><p>完整工作区 · 中性玻璃材质</p></div></main></body></html>`)
     const material = node => {
@@ -431,8 +439,12 @@ async function verifyMaterialParity(browser, outputDirectory) {
       await frame.evaluate(scheme => { document.documentElement.dataset.colorScheme = scheme }, scheme)
       await frame.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
       const activity = await page.locator('.dsh-knowledge-activity-panel').evaluate(material)
+      const header = await page.locator('.dsh-knowledge-workspace-header').evaluate(material)
+      assert.equal(header.background, scheme === 'light' ? 'rgba(255, 255, 255, 0.16)' : 'rgba(25, 33, 35, 0.16)', `${scheme}: header keeps the same light tint opacity in both themes`)
+      assert.equal(header.filter, 'saturate(1.22) contrast(1.03) blur(32px)', `${scheme}: header matches SSH chrome frost without gray desaturation`)
       const workspace = await frame.locator('.main').evaluate(material)
       assert.equal(activity.filter, workspace.filter, `${scheme}: pane frost must stay consistent`)
+      assert.equal(workspace.filter, header.filter, `${scheme}: panes and header use the same SSH-aligned frost`)
       assert.equal(activity.color, workspace.color, `${scheme}: pane text must stay consistent`)
       assert.equal(activity.background, scheme === 'light' ? 'rgba(255, 255, 255, 0.14)' : 'rgba(29, 36, 38, 0.24)')
       assert.equal(workspace.background, scheme === 'light' ? 'rgba(255, 255, 255, 0.08)' : 'rgba(16, 23, 25, 0.18)', 'sidebar tint must not change workspace material')

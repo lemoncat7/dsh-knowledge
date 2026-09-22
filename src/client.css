@@ -10,6 +10,7 @@
   --knowledge-danger: var(--danger);
   --knowledge-success: var(--success);
   --knowledge-pane: rgba(255, 255, 255, 0.16);
+  --knowledge-header-surface: rgba(255, 255, 255, 0.16);
   --knowledge-raised: rgba(255, 255, 255, 0.38);
   --knowledge-control: rgba(255, 255, 255, 0.27);
   --knowledge-border: var(--border);
@@ -20,7 +21,6 @@
   --knowledge-glare-light: rgb(255 255 255 / 70%);
   --knowledge-glare-rim: rgb(60 60 67 / 11%);
   --knowledge-glass-filter: saturate(1.22) contrast(1.03) blur(32px);
-  --knowledge-host-glass-filter: saturate(.18) contrast(1.015) blur(24px);
   --knowledge-glass-shadow: inset 0 1px 0 rgb(255 255 255 / 70%), inset 0 -1px 0 rgb(60 60 67 / 11%), 0 10px 28px rgb(31 31 35 / 8.5%);
   --knowledge-font-family: var(--font-ui);
   color: var(--knowledge-text);
@@ -43,6 +43,7 @@ body[data-ds-dark-theme] :is(
   --knowledge-danger: var(--danger);
   --knowledge-success: var(--success);
   --knowledge-pane: rgb(25 33 35 / 90%);
+  --knowledge-header-surface: rgb(25 33 35 / 16%);
   --knowledge-raised: rgb(32 41 43 / 94%);
   --knowledge-control: rgb(39 50 53 / 92%);
   --knowledge-border: var(--border);
@@ -52,7 +53,6 @@ body[data-ds-dark-theme] :is(
   --knowledge-hover: var(--surface-hover);
   --knowledge-glare-light: rgb(255 255 255 / 16%);
   --knowledge-glare-rim: rgb(0 0 0 / 30%);
-  --knowledge-host-glass-filter: saturate(.45) contrast(1.02) blur(24px);
   --knowledge-glass-shadow: inset 0 1px 0 rgb(255 255 255 / 16%), inset 0 -1px 0 rgb(0 0 0 / 30%), 0 12px 32px rgb(0 0 0 / 30%);
 }
 
@@ -214,10 +214,11 @@ body[data-ds-dark-theme] :is(
   box-sizing: border-box;
   border: 1px solid var(--knowledge-border);
   border-radius: 14px 14px 11px 11px;
-  background: transparent;
+  background: var(--knowledge-header-surface);
   box-shadow: var(--knowledge-glass-shadow);
-  -webkit-backdrop-filter: var(--knowledge-host-glass-filter);
-  backdrop-filter: var(--knowledge-host-glass-filter);
+  /* Equal tint opacity in both themes; keep dense control surfaces independent. */
+  -webkit-backdrop-filter: var(--knowledge-glass-filter);
+  backdrop-filter: var(--knowledge-glass-filter);
 }
 
 .dsh-knowledge-workspace-header > div {
@@ -317,8 +318,8 @@ body[data-ds-dark-theme] :is(
   border-radius: 15px;
   background: var(--knowledge-pane);
   box-shadow: var(--knowledge-glass-shadow);
-  -webkit-backdrop-filter: var(--knowledge-host-glass-filter);
-  backdrop-filter: var(--knowledge-host-glass-filter);
+  -webkit-backdrop-filter: var(--knowledge-glass-filter);
+  backdrop-filter: var(--knowledge-glass-filter);
   color: var(--knowledge-text);
 }
 
