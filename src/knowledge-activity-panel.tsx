@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+// DSH 0.1.7 renamed size-suffixed icon exports to weight-suffixed ones;
+// aliases keep every call site (and the contract tests) on legacy names.
 import {
-  IconChevronLeftOutline14,
-  IconChevronDownOutline14,
-  IconCloseOutline16,
-  IconDatabaseOutline16,
-  IconDataOutline16,
-  IconRefreshOutline14,
-  IconSearchOutline16,
-  IconFullscreenOutline16,
+  IconChevronLeftOutlineRegular as IconChevronLeftOutline14,
+  IconChevronDownOutlineRegular as IconChevronDownOutline14,
+  IconCloseOutlineRegular as IconCloseOutline16,
+  IconDatabaseOutlineRegular as IconDatabaseOutline16,
+  IconDataOutlineRegular as IconDataOutline16,
+  IconRefreshOutlineRegular as IconRefreshOutline14,
+  IconSearchOutlineRegular as IconSearchOutline16,
+  IconFullscreenOutlineRegular as IconFullscreenOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { KnowledgeDocument, KnowledgeDocumentSummary, ResolvedKnowledgeMount } from './domain.js'
 import {
