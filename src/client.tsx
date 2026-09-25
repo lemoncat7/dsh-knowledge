@@ -14,17 +14,20 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { activatePluginWorkspace, observePluginWorkspace } from './workspace-ownership.js'
+// DSH 0.1.7 renamed size-suffixed icon exports to weight-suffixed ones;
+// aliases keep every call site (and the contract tests) on legacy names.
 import {
-  IconChevronLeftOutline14, IconDataOutline16, IconPanelLeftOutline16,
+  IconChevronLeftOutlineRegular as IconChevronLeftOutline14,
+  IconDataOutlineRegular as IconDataOutline16,
+  IconPanelLeftOutlineRegular as IconPanelLeftOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { knowledgeDesignCss } from './design-tokens.js'
-import { availableActivitySession } from './knowledge-activity-state.js'
+import { availableActivitySession, deriveCurrentSession } from './knowledge-activity-state.js'
 import { supportsDockedPanels } from './docked-panel-compat.js'
 import cssText from './client.css'
 import { registerMainPanel } from './main-panel-compat.js'
 import activityCss from './knowledge-activity.css'
 import { createKnowledgeActivityController, type KnowledgeActivityController } from './knowledge-activity-controller.js'
-import { KNOWLEDGE_SETTINGS_NAMESPACE } from './constants.js'
 import {
   createKnowledgeHostTheme,
   KNOWLEDGE_THEME_PROTOCOL_VERSION,
@@ -89,15 +92,19 @@ export function apply(ctx: ClientContext): void {
     order: -10,
   }, props => <KnowledgeLauncher {...props} workspace={workspace} activity={activity!} docked={supportsDockedPanels(ctx)} />))
 
-  ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
-    name: 'settings.plugin.item',
-    key: KNOWLEDGE_SETTINGS_NAMESPACE,
+  // DSH 0.1.7 retired `settings.plugin.item`; `settings.plugins.tab` exists on
+  // both host generations and hosts the same connection card as one tab.
+  ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
+    name: 'settings.plugins.tab',
+    id: 'knowledge',
+    order: 20,
+    label: () => '知识库',
   }, KnowledgeConnectionCard))
 
   ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
     name: 'conversation.chat.turnTail',
-    select: owner => ({ turn: owner.turn.turn }),
-  }, props => <KnowledgeWritebackStatus sessionId={String(props.sessionId)} turn={props.matched.turn} workspace={workspace} />))
+    id: 'knowledge-writeback-status',
+  }, props => <KnowledgeWritebackStatus sessionId={String(props.sessionId)} turn={props.turn.turn} workspace={workspace} />))
 }
 
 function KnowledgeWritebackStatus({
@@ -464,7 +471,7 @@ function KnowledgeWorkspace({
   const [managementPath, setManagementPath] = useState<string | undefined>(cachedManagementPath)
   const [panelError, setPanelError] = useState('')
   const [target, setTarget] = useState<KnowledgeDocumentTarget | undefined>(workspace.currentTarget())
-  const selectedSessionId = useSessions((state: SessionListState) => state.current)
+  const selectedSessionId = useSessions((state: SessionListState) => deriveCurrentSession(state))
   const sessionId = scopedSessionId ?? selectedSessionId
   const projectId = useSessions((state: SessionListState) => sessionId === undefined ? undefined : state.byId[sessionId]?.cwd)
   const knowledgeUrl = managementPath === undefined ? undefined : knowledgePanelUrl(managementPath, sessionId, projectId, target)

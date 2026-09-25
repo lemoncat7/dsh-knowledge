@@ -96,9 +96,12 @@ export function registerKnowledgeCatalog(
 }
 
 function isKnowledgeSurfaceMessage(message: { source: { kind: string; plugin?: string; form?: string } }): boolean {
-  return message.source.kind === 'plugin'
-    && message.source.plugin === 'dsh-knowledge'
-    && (message.source.form === 'notice' || message.source.form === 'recall')
+  const form = message.source.form
+  if (form !== 'notice' && form !== 'recall') return false
+  // Current producer-owned kind, plus the retired wrapper still persisted by
+  // older hosts so historical injections are sanitized out of the context.
+  return message.source.kind === 'plugin:dsh-knowledge'
+    || (message.source.kind === 'plugin' && message.source.plugin === 'dsh-knowledge')
 }
 
 function automaticRecallQuery(

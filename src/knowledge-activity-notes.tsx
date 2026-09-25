@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useState, useRef, type FormEvent } from 'react'
+// DSH 0.1.7 renamed size-suffixed icon exports to weight-suffixed ones;
+// aliases keep every call site (and the contract tests) on legacy names.
 import {
-  IconChevronLeftOutline14,
-  IconChevronRightOutline14,
-  IconCloseOutline16,
-  IconDataOutline16,
-  IconFolderOpenOutline16,
-  IconRefreshOutline14,
-  IconSearchOutline16,
+  IconChevronLeftOutlineRegular as IconChevronLeftOutline14,
+  IconChevronRightOutlineRegular as IconChevronRightOutline14,
+  IconCloseOutlineRegular as IconCloseOutline16,
+  IconDataOutlineRegular as IconDataOutline16,
+  IconFolderOpenOutlineRegular as IconFolderOpenOutline16,
+  IconRefreshOutlineRegular as IconRefreshOutline14,
+  IconSearchOutlineRegular as IconSearchOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { NoteNode } from './notes/domain.js'
 import { loadNoteContent, loadNoteIndex, type KnowledgeActivityNoteContent } from './knowledge-activity-api.js'
