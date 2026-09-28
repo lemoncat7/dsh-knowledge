@@ -1,8 +1,27 @@
-import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
+/** DSH 0.1.7 removed `current` from SessionListState; both generations share this shape. */
+export interface SessionListSnapshotLike<K extends string = string> {
+  readonly byId: Readonly<Partial<Record<K, { readonly retainedBy?: { readonly mainView?: number } | undefined }>>>
+  readonly current?: string | undefined
+}
+
+/**
+ * Derive the session the main view shows: 0.1.7 keeps it as main-view
+ * retention (`retainedBy.mainView`), older hosts keep the plain `current` field.
+ */
+export function deriveCurrentSession<K extends string>(state: SessionListSnapshotLike<K>): K | undefined {
+  const rows = Object.entries(
+    (state.byId ?? {}) as Readonly<Record<string, { readonly retainedBy?: { readonly mainView?: number } | undefined } | undefined>>,
+  )
+  const retained = rows.find(([, row]) => (row?.retainedBy?.mainView ?? 0) > 0)?.[0]
+  return (retained ?? state.current) as K | undefined
+}
 
 /** Legacy details requires content; new docked tabs support a loaded blank session. */
-export function availableActivitySession(state: Pick<SessionListState, 'current' | 'byId'>, docked = false): string | undefined {
-  const current = state.current
+export function availableActivitySession<K extends string>(state: {
+  readonly byId: Readonly<Partial<Record<K, { readonly blank?: boolean | undefined; readonly retainedBy?: { readonly mainView?: number } | undefined }>>>
+  readonly current?: string | undefined
+}, docked = false): string | undefined {
+  const current = deriveCurrentSession(state)
   if (current === undefined || state.byId[current] === undefined) return undefined
   return docked || state.byId[current]?.blank === false ? String(current) : undefined
 }

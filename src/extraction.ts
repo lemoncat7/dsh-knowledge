@@ -398,7 +398,9 @@ async function extractWithLlm(
     id: randomUUID(),
     role: 'user',
     content: [{ type: 'text', text: framed }],
-    source: { kind: 'plugin' },
+    // Producer-owned source kind; the retired { kind: 'plugin' } wrapper is
+    // rejected by the DSH 0.1.7 session format on any durable or replayed slot.
+    source: { kind: 'plugin:dsh-knowledge' },
   }
   const output = await callStructuredModel(
     ctx, route, message, snapshot.sessionId, config.extractionMaxTokens,

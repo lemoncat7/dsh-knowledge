@@ -150,6 +150,9 @@ export function createRecallMessage(text: string): MessageLike {
     id: randomUUID(),
     role: 'user',
     content: [{ type: 'text', text }],
-    source: { kind: 'plugin', plugin: 'dsh-knowledge', form: 'recall' },
+    // DSH 0.1.7 retired the { kind: 'plugin', plugin } wrapper on durable
+    // messages ("format v4 message requires a producer-owned source kind");
+    // producers carry their own kind and keep non-identity metadata.
+    source: { kind: 'plugin:dsh-knowledge', form: 'recall' },
   }
 }

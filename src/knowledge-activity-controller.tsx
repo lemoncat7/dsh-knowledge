@@ -6,7 +6,7 @@ import type { KnowledgeDocumentTarget } from './client.js'
 import { createDockedPanel, supportsDockedPanels } from './docked-panel-compat.js'
 
 export type { KnowledgeActivitySelection } from './knowledge-activity-state.js'
-import { mergeActivitySelection, type KnowledgeActivitySelection } from './knowledge-activity-state.js'
+import { deriveCurrentSession, mergeActivitySelection, type KnowledgeActivitySelection } from './knowledge-activity-state.js'
 
 export interface KnowledgeActivityController {
   open(sessionId: string, selection?: KnowledgeActivitySelection): void
@@ -31,7 +31,7 @@ export function createKnowledgeActivityController(
   const runtime = ctx as unknown as { sessions: ISessions }
   const listeners = new Set<() => void>()
   const states = new Map<string, KnowledgeActivitySelection & { open: boolean }>()
-  let currentSessionId = normalizeSessionId(runtime.sessions.list.getSnapshot().current)
+  let currentSessionId = normalizeSessionId(deriveCurrentSession(runtime.sessions.list.getSnapshot()))
   let mountedSessionId: string | undefined
   let restoreFrame: number | undefined
   let disposePanel: (() => void) | undefined
@@ -68,7 +68,7 @@ export function createKnowledgeActivityController(
     if (openDetails) ctx.layout.openDetails()
   }
   const syncCurrentSession = (): void => {
-    const nextSessionId = normalizeSessionId(runtime.sessions.list.getSnapshot().current)
+    const nextSessionId = normalizeSessionId(deriveCurrentSession(runtime.sessions.list.getSnapshot()))
     if (nextSessionId === currentSessionId) return
     cancelRestore()
     const wasMounted = unmount()
@@ -163,7 +163,7 @@ function createDockedKnowledgeController(
   const selections = new Map<string, KnowledgeActivitySelection>()
   const listeners = new Set<() => void>()
   const notify = (): void => { for (const listener of listeners) listener() }
-  const current = (): string | undefined => normalizeSessionId((ctx.sessions as unknown as ISessions).list.getSnapshot().current)
+  const current = (): string | undefined => normalizeSessionId(deriveCurrentSession((ctx.sessions as unknown as ISessions).list.getSnapshot()))
   const panel = createDockedPanel(ctx, '@lemoncat7/dsh-knowledge/activity', '知识库',
     props => <KnowledgeActivityPanel {...props} controller={controller} />, notify)
   const controller: KnowledgeActivityController = {
