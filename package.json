@@ -38,7 +38,8 @@
     "web/**/*",
     "docs/**/*.md",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "docs/releases/2.11.0.md"
   ],
   "dsh": {
     "bundle": {

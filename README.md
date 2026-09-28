@@ -1,6 +1,6 @@
 # dsh-knowledge
 
-> 当前兼容分支 `compat/dsh-017-rc2` 面向 **DSH 0.1.7-rc.2**，使用 Node.js 22 构建并在隔离容器验证。此分支尚未发布，不应安装到旧宿主；下文旧版本说明仅适用于对应历史发行版。外部真实渠道、远端主机及付费模型调用不在隔离测试范围内。
+> 当前正式版 **2.11.0**，适配并验证 **DSH 0.1.7-rc.2**。插件为正式版，宿主仍为 RC；不支持直接用于旧宿主。Node.js **^22.19.0 或 >=24.0.0**。旧版源码保留于 `pre-dsh-0.1.7-rc.2`；详见 [2.11.0 发布说明](docs/releases/2.11.0.md)。
 
 [![npm](https://img.shields.io/npm/v/%40lemoncat7%2Fdsh-knowledge)](https://www.npmjs.com/package/@lemoncat7/dsh-knowledge)
 [![GitHub Release](https://img.shields.io/github/v/release/lemoncat7/dsh-knowledge)](https://github.com/lemoncat7/dsh-knowledge/releases/latest)
@@ -12,7 +12,7 @@
 
 ### 2.11.0 DSH 0.1.7 适配
 
-插件正式版，已在 DSH **0.1.7-rc.2** 构建与测试验证，覆盖 0.1.6-alpha.2 起的宿主破坏性变更：图标渲染崩溃、回合尾回写状态条注册抛错、停靠侧栏「待打开」恒被取消、连接设置卡片静默消失、会话消息 source 校验失败（共五项），逐一修复；开发依赖 11 个客户端包升至 0.1.7-rc.2。**0.1.5 及更早宿主请继续使用 2.10.1**（图标改名为单向迁移）。数据库无变更。186 项测试 168 项通过，18 项失败与 2.10.1 基线一致（本机 Windows 环境既有问题）。详见 [更新说明](docs/releases/2.11.0.md) 和 [DSH 0.1.7 兼容说明](docs/dsh-017-compatibility.md)。
+插件正式版，已在 DSH **0.1.7-rc.2** 构建与测试验证，覆盖 0.1.6-alpha.2 起的宿主破坏性变更：图标渲染崩溃、回合尾回写状态条注册抛错、停靠侧栏「待打开」恒被取消、连接设置卡片静默消失、会话消息 source 校验失败（共五项），逐一修复；开发依赖 11 个客户端包升至 0.1.7-rc.2。**0.1.5 及更早宿主请继续使用 2.10.1**（图标改名为单向迁移）。数据库无变更。本次 Linux / Node.js 22 验证 186 项测试全部通过，宿主实际回写、召回与设置注册已补充验证。详见 [更新说明](docs/releases/2.11.0.md) 和 [DSH 0.1.7 兼容说明](docs/dsh-017-compatibility.md)。
 
 ### 2.10.0 知识文档分组与会话工具
 
