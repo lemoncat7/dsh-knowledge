@@ -1,5 +1,4 @@
 import type { Context } from '@deepseek-ai/cordis'
-import Schema from '@deepseek-ai/schemastery'
 import { randomBytes } from 'node:crypto'
 import { assertKnowledgeBrowserRequest, LOCAL_MANAGEMENT_API_PREFIX, registerKnowledgeApi } from './api.js'
 import { registerKnowledgeActivityControl } from './activity-control.js'
@@ -15,7 +14,6 @@ import {
   type KnowledgeConnectionSettings,
 } from './connection.js'
 import { Config as ConfigSchema, resolveConfig, type Config as KnowledgeConfig } from './config.js'
-import { KNOWLEDGE_SETTINGS_NAMESPACE } from './constants.js'
 import { registerKnowledgeControl, type KnowledgeConnectionUpdate } from './control.js'
 import { ExtractionCoordinator } from './extraction.js'
 import type { ExtractionJobRecord } from './domain.js'
@@ -64,12 +62,10 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
     sync()
     if (typeof trust.subscribe === 'function') runtime.effect(() => trust.subscribe!(sync), 'dsh-knowledge: trusted share origin synchronization')
   }
+  // rc.2 projects settings from Loader entries; no synthetic namespace is needed.
+  // Keep the native generated form hidden because the plugin owns its connection UI.
   runtime.inject?.(['settings'], settingsRuntime => {
-    settingsRuntime.settings?.register(
-      KNOWLEDGE_SETTINGS_NAMESPACE,
-      Schema.object({}),
-      { base: {} },
-    )
+    settingsRuntime.effect(() => settingsRuntime.settings!.configure({ auto: false }, ctx.fiber))
   })
   const persistedServicePath = serviceSettingsPath(resolved.connectionPath)
   let publicApiEnabled = resolved.exposeApi

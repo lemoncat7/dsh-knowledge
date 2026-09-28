@@ -36,9 +36,9 @@ function createRuntime() {
       },
     },
     settings: {
-      register(namespace) {
-        settingsNamespaces.add(namespace)
-        return { get() { return {} }, watch() { return () => {} } }
+      configure(options) {
+        settingsNamespaces.add(options.auto)
+        return () => {}
       },
     },
     webServer: {
@@ -125,7 +125,7 @@ test('plugin verifies, persists, hot-switches, and restores remote connections',
   }
   const first = createRuntime()
   KnowledgePlugin.apply(first.runtime, config)
-  assert.deepEqual([...first.settingsNamespaces], ['dsh-knowledge-connection'])
+  assert.deepEqual([...first.settingsNamespaces], [false])
   const control = createServer((req, res) => void first.handler()(req, res))
   const controlPort = await listen(control)
   const controlUrl = `http://127.0.0.1:${controlPort}/knowledge-control/v1/connection`

@@ -1,5 +1,7 @@
 # dsh-knowledge
 
+> 当前兼容分支 `compat/dsh-017-rc2` 面向 **DSH 0.1.7-rc.2**，使用 Node.js 22 构建并在隔离容器验证。此分支尚未发布，不应安装到旧宿主；下文旧版本说明仅适用于对应历史发行版。外部真实渠道、远端主机及付费模型调用不在隔离测试范围内。
+
 [![npm](https://img.shields.io/npm/v/%40lemoncat7%2Fdsh-knowledge)](https://www.npmjs.com/package/@lemoncat7/dsh-knowledge)
 [![GitHub Release](https://img.shields.io/github/v/release/lemoncat7/dsh-knowledge)](https://github.com/lemoncat7/dsh-knowledge/releases/latest)
 [![awesome · DSH plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)

@@ -109,7 +109,7 @@ export interface RuntimeContextLike {
   provide?(name: string, value: unknown): () => void
   webServer?: WebServerLike
   settings?: {
-    register(namespace: string, schema: unknown, options?: { base?: object }): unknown
+    configure(options: { auto: boolean }, owner?: unknown): () => void
   }
   logger: {
     debug(message: unknown): void
