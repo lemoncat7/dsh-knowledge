@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { WritebackStatusClient } from './writeback/status-client.js'
+import { observeWritebackVisibility } from './writeback/status-visibility.js'
 import { subscribeWritebackChanges } from '../web/writeback-live.js'
 import type { WritebackStatus } from './writeback/queue.js'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
@@ -25,6 +26,7 @@ import { knowledgeDesignCss } from './design-tokens.js'
 import { availableActivitySession, deriveCurrentSession } from './knowledge-activity-state.js'
 import { supportsDockedPanels } from './docked-panel-compat.js'
 import cssText from './client.css'
+import { settingsSurfaceCss } from './settings-surface.js'
 import { registerMainPanel } from './main-panel-compat.js'
 import activityCss from './knowledge-activity.css'
 import { createKnowledgeActivityController, type KnowledgeActivityController } from './knowledge-activity-controller.js'
@@ -126,25 +128,11 @@ function KnowledgeWritebackStatus({
       (value, pending, error) => { setState(value); setRetrying(pending); setReadError(error) },
     )
     client.current = status
-    const unsubscribeChanges = subscribeWritebackChanges('conversation-web', () => status.invalidate())
-    let inView = true
-    const refresh = (): void => status.setVisible(inView && !document.hidden)
-    const observer = typeof IntersectionObserver === 'undefined' ? undefined : new IntersectionObserver(entries => {
-      inView = entries[0]?.isIntersecting ?? true
-      refresh()
-    }, { rootMargin: '100px' })
-    if (container.current) observer?.observe(container.current)
-    document.addEventListener('visibilitychange', refresh)
-    window.addEventListener('focus', refresh)
-    window.addEventListener('online', refresh)
-    refresh()
+    const stopVisibility = container.current ? observeWritebackVisibility(container.current, status,
+      () => subscribeWritebackChanges('conversation-web', () => status.invalidate())) : undefined
     return () => {
-      observer?.disconnect()
-      document.removeEventListener('visibilitychange', refresh)
-      window.removeEventListener('focus', refresh)
-      window.removeEventListener('online', refresh)
+      stopVisibility?.()
       status.dispose()
-      unsubscribeChanges()
       client.current = undefined
     }
   }, [sessionId, turn])
@@ -315,7 +303,7 @@ function KnowledgeConnectionCard() {
   }
 
   return (
-    <li className={`dsh-knowledge-settings-card${open ? ' dsh-knowledge-settings-card--open' : ''}`}>
+    <li className={`dsh-plugin-settings dsh-knowledge-settings-card${open ? ' dsh-knowledge-settings-card--open' : ''}`}>
       <button type="button" className="dsh-knowledge-settings-header" aria-expanded={open} onClick={() => { setOpen(value => !value) }}>
         <span><strong>知识库连接</strong><small>选择本机知识库，或连接一台中央 DSH 知识库</small></span>
         <span className="dsh-knowledge-settings-summary">{loadState === 'loading' ? '读取中' : loadState === 'error' ? '连接入口' : current?.backend === 'remote' ? '远程' : '本地'}<i aria-hidden="true" /></span>
@@ -604,7 +592,7 @@ function installStyles(): () => void {
   style.dataset.plugin = PLUGIN_ID
   style.dataset.pluginCss = STYLE_ID
   const scope = ':is(.dsh-knowledge-trigger, .dsh-knowledge-activity-panel, .dsh-knowledge-workspace, .dsh-knowledge-settings-card, .dsh-knowledge-writeback-notice)'
-  style.textContent = knowledgeDesignCss(scope, 'body[data-ds-dark-theme] ' + scope, false) + cssText + activityCss
+  style.textContent = knowledgeDesignCss(scope, 'body[data-ds-dark-theme] ' + scope, false) + cssText + activityCss + settingsSurfaceCss
   document.head.appendChild(style)
   return () => { style.remove() }
 }

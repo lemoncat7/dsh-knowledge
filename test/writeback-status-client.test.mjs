@@ -131,3 +131,19 @@ test('temporary status transport failure does not permanently stop polling; disp
   client.refresh(); client.retry(); t.mock.timers.tick(60000); await tick()
   assert.equal(calls, 2)
 })
+
+test('visibility cancellation does not publish stale responses or a false network error', async t => {
+  let release, calls = 0
+  const changes = []
+  const client = new WritebackStatusClient('/status', (value, pending, error) => changes.push({ value, error }), async () => {
+    if (++calls === 1) return new Promise(resolve => { release = resolve })
+    return response(completed)
+  })
+  t.after(() => client.dispose())
+  client.refresh()
+  client.setVisible(false)
+  release(response(queued)); await tick()
+  assert.ok(changes.every(change => change.value === undefined && change.error === undefined))
+  client.setVisible(true); await tick()
+  assert.equal(changes.at(-1).value.status, 'completed')
+})

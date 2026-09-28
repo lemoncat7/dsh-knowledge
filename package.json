@@ -1,6 +1,6 @@
 {
   "name": "@lemoncat7/dsh-knowledge",
-  "version": "2.11.0",
+  "version": "2.11.1",
   "description": "Local and remote knowledge bases for DeepSeek Harness, with scoped recall, controlled write-back, and a Web management console",
   "keywords": [
     "deepseek-harness",
@@ -39,7 +39,7 @@
     "docs/**/*.md",
     "README.md",
     "LICENSE",
-    "docs/releases/2.11.0.md"
+    "docs/releases/2.11.1.md"
   ],
   "dsh": {
     "bundle": {

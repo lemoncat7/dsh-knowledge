@@ -53,7 +53,7 @@ export class WritebackStatusClient {
         headers: { accept: 'application/json', 'x-dsh-knowledge-client': 'conversation-web' },
       })
       const body = await response.json() as WritebackStatus
-      if (this.request !== controller || this.disposed) return
+      if (this.request !== controller || this.disposed || controller.signal.aborted) return
       if (!response.ok && (retry || response.status !== 404 || String(body.status) !== 'missing')) throw new Error(body.error ?? `状态请求失败（HTTP ${response.status}）`)
       if (response.ok && !body.summary) throw new Error('无效的回写状态响应')
       if (response.ok && body.summary) {
@@ -74,6 +74,9 @@ export class WritebackStatusClient {
       }
     } catch (error) {
       if (this.request !== controller || this.disposed) return
+      // Visibility cancellation is not a transport failure. Timeout aborts still
+      // report errors while visible, and an explicit retry retains its feedback.
+      if (controller.signal.aborted && !this.visible && !retry) return
       delay = Math.min(60_000, 2_000 * 2 ** Math.min(5, this.failures++))
       if (retry && this.value) this.value = { ...this.value, error: error instanceof Error ? error.message : String(error) }
       else if (this.visible) this.readError = '暂时无法读取回写状态，正在自动重试；这不代表回写失败。'
