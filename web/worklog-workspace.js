@@ -10,7 +10,7 @@ export function createWorklogWorkspace({ element, actionButton }) {
     } catch {
       if (!disposed) root.replaceChildren(element('div', { class: 'empty-state', role: 'alert' },
         element('h2', {}, '工作记录暂不可用'),
-        element('p', {}, '请确认当前 DSH 已安装并启用工作记录服务。原有知识文档不受影响。'),
+        element('p', {}, '知识库内置日报模块加载失败，请刷新后重试。原有知识文档不受影响。'),
         actionButton('重新加载', load)))
     }
   }

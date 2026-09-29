@@ -1,5 +1,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { randomBytes } from 'node:crypto'
+import { existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { apply as registerWorklog } from './worklog-runtime.js'
 import { assertKnowledgeBrowserRequest, LOCAL_MANAGEMENT_API_PREFIX, registerKnowledgeApi } from './api.js'
 import { registerKnowledgeActivityControl } from './activity-control.js'
 import { registerWritebackControl } from './writeback/control.js'
@@ -52,6 +55,16 @@ export const inject = ['llm', 'tools']
 export function apply(ctx: Context, config: KnowledgeConfig): void {
   const runtime = ctx as unknown as RuntimeContextLike
   const resolved = resolveConfig(config)
+  // Own the journal lifecycle inside Knowledge; preserve the trial database.
+  ctx.inject?.(['connection'], journal => {
+    const connection = journal.get('connection') as { requestRejection?: unknown } | undefined
+    if (typeof connection?.requestRejection !== 'function') return
+    const base = resolved.databasePath || resolved.connectionPath
+    if (!base) return
+    const legacy = join(dirname(dirname(base)), 'worklog', 'worklog.sqlite')
+    const databasePath = base === ':memory:' ? ':memory:' : existsSync(legacy) ? legacy : `${base}.worklog.sqlite`
+    registerWorklog(journal, { databasePath })
+  })
   const trustedShareOrigins = [...resolved.trustedShareOrigins]
   const trust = runtime.get('remoteSettingsTrust') as { origins?: readonly string[]; subscribe?(listener: () => void): () => void } | undefined
   if (trust !== undefined) {

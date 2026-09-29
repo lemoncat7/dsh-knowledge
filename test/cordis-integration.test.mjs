@@ -91,7 +91,7 @@ test('real Cordis context dynamically mounts API and Web routes', async (t) => {
   assert.equal((await fetch(endpoint('/knowledge-control/v1/writeback-status?sessionId=s&turn=1'))).status, 401)
   assert.equal((await fetch(endpoint('/knowledge-control/v1/writeback-status?sessionId=s&turn=1'), {
     headers: { 'x-dsh-knowledge-client': 'conversation-web' },
-  })).status, 404)
+  })).status, 200)
   const restored = await fetch(endpoint('/knowledge-control/v1/writeback-status?sessionId=persisted-session&turn=3'), {
     headers: { 'x-dsh-knowledge-client': 'conversation-web' },
   })

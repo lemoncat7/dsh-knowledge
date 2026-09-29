@@ -1,0 +1,20 @@
+.knowledge-worklog .dsh-worklog {
+  --wl-text:var(--text);--wl-muted:var(--text-secondary);--wl-line:var(--border);
+  --wl-surface:var(--material-pane,rgba(255,255,255,.16));--wl-solid:var(--dialog-surface);
+  --wl-accent:var(--accent);--wl-on-accent:var(--on-accent);color-scheme:inherit;
+}
+:root[data-color-scheme="dark"] .knowledge-worklog .dsh-worklog {
+  --wl-control:rgb(156 165 177 / 10%);--wl-hover:rgb(209 217 227 / 12%);--wl-error:#ffaaaa;
+}
+.knowledge-worklog .wl-toolbar {justify-content:flex-end;background:transparent;backdrop-filter:none;padding:8px 12px}
+.knowledge-worklog .wl-body>main{padding:20px clamp(14px,2vw,28px)}
+.knowledge-worklog .wl-body>aside{width:180px}
+.dsh-worklog :focus-visible{outline:2px solid color-mix(in srgb,var(--wl-muted) 65%,transparent);outline-offset:2px}
+.dsh-worklog button:focus:not(:focus-visible){outline:none}
+.dsh-worklog button[aria-pressed="true"],.dsh-worklog .wl-days button[aria-current]{background:var(--wl-hover);border-color:transparent;font-weight:600;box-shadow:inset 3px 0 0 var(--wl-muted)}
+.dsh-worklog input[type="checkbox"]{appearance:none;position:relative;border:1px solid var(--wl-muted);border-radius:5px;background:var(--wl-control);margin:0;cursor:pointer}
+.dsh-worklog input[type="checkbox"]:checked{background:var(--wl-hover)}
+.dsh-worklog input[type="checkbox"]:checked::after{content:"";position:absolute;left:5px;top:2px;width:5px;height:9px;border:solid var(--wl-text);border-width:0 2px 2px 0;transform:rotate(45deg)}
+.dsh-worklog select{width:100%;min-width:0;background-color:var(--wl-control);color:var(--wl-text)}
+.wl-projects{max-height:240px;overflow:auto;margin-top:8px}
+

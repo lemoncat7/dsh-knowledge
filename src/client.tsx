@@ -517,7 +517,11 @@ function KnowledgeWorkspace({
       if (event.source !== currentFrame?.contentWindow) return
       const expectedOrigin = frameOrigin(currentFrame)
       if (expectedOrigin !== undefined && event.origin !== expectedOrigin) return
-      const data = event.data as { type?: unknown; version?: unknown } | null
+      const data = event.data as { type?: unknown; version?: unknown; sessionId?: unknown } | null
+      if (data?.type === '@lemoncat7/dsh-worklog/open-session' && typeof data.sessionId === 'string' && data.sessionId.length > 0 && data.sessionId.length <= 256) {
+        const navigation = client.get('uiWorkspace') as { openSession(id: string): void } | undefined
+        if (navigation) { navigation.openSession(data.sessionId); activatePluginWorkspace('conversation') }
+      }
       if (data?.type === KNOWLEDGE_THEME_READY_MESSAGE && data.version === KNOWLEDGE_THEME_PROTOCOL_VERSION) sendTheme()
     }
     window.addEventListener('message', onMessage)

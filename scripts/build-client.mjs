@@ -1,8 +1,16 @@
-import { writeFile } from 'node:fs/promises'
+import { writeFile, readFile, mkdir } from 'node:fs/promises'
 import { knowledgeDesignCss } from '../lib/design-tokens.js'
 import { build } from 'esbuild'
 
 const pluginId = '@lemoncat7/dsh-knowledge'
+
+await build({ entryPoints: ['worklog/index.js'], outfile: 'lib/worklog-runtime.js', bundle: true,
+  platform: 'node', format: 'esm', target: 'node22', packages: 'external' })
+await mkdir('lib/worklog', { recursive: true })
+await build({ entryPoints: ['worklog/web-entry.jsx'], outfile: 'lib/worklog/workspace.js', bundle: true,
+  platform: 'browser', format: 'esm', target: 'es2022', jsx: 'automatic', minify: true,
+  define: { 'process.env.NODE_ENV': '"production"' } })
+await writeFile('lib/worklog/workspace.css', await readFile('worklog/client.css', 'utf8') + '\n' + await readFile('worklog/web-embedded.css', 'utf8'))
 
 await build({
   entryPoints: ['src/client.tsx'],

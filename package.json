@@ -1,6 +1,6 @@
 {
   "name": "@lemoncat7/dsh-knowledge",
-  "version": "2.12.0",
+  "version": "2.12.1",
   "description": "Local and remote knowledge bases for DeepSeek Harness, with scoped recall, controlled write-back, and a Web management console",
   "keywords": [
     "deepseek-harness",
@@ -32,6 +32,7 @@
     "lib/**/*.js",
     "lib/**/*.d.ts",
     "lib/**/*.map",
+    "lib/worklog/*.css",
     "lib/client.js",
     "lib/client.js.map",
     "cordis.patch.yml",
@@ -57,7 +58,8 @@
         "@deepseek-ai/dsh-client-ui-slots",
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-ui-settings-plugins",
-        "@deepseek-ai/dsh-client-ui-theme"
+        "@deepseek-ai/dsh-client-ui-theme",
+        "@deepseek-ai/dsh-client-ui-workspace"
       ]
     }
   },
@@ -109,6 +111,7 @@
     "dompurify": "^3.4.14",
     "esbuild": "^0.25.0",
     "react": "18.3.1",
+    "react-dom": "18.3.1",
     "typescript": "^5.9.3"
   },
   "publishConfig": {
