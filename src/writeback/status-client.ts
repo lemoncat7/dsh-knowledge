@@ -54,9 +54,12 @@ export class WritebackStatusClient {
       })
       const body = await response.json() as WritebackStatus
       if (this.request !== controller || this.disposed || controller.signal.aborted) return
-      if (!response.ok && (retry || response.status !== 404 || String(body.status) !== 'missing')) throw new Error(body.error ?? `状态请求失败（HTTP ${response.status}）`)
-      if (response.ok && !body.summary) throw new Error('无效的回写状态响应')
-      if (response.ok && body.summary) {
+      // Accept the legacy 404 sentinel during rolling upgrades, but never
+      // interpret other HTTP failures (or retry failures) as an empty record.
+      const absent = !retry && String(body.status) === 'missing' && (response.ok || response.status === 404)
+      if (!response.ok && !absent) throw new Error(body.error ?? `状态请求失败（HTTP ${response.status}）`)
+      if (!absent && !body.summary) throw new Error('无效的回写状态响应')
+      if (!absent) {
         this.readError = undefined
         this.missing = false
         this.value = body

@@ -34,14 +34,14 @@ test('unrelated HTTP 404 does not masquerade as an authoritative missing record'
   assert.match(changes.at(-1).error, /暂时无法读取/)
 })
 
-test('authoritative missing clears old queued state, stays explicit and later recovers', async t => {
+for (const status of [200, 404]) test(`authoritative missing HTTP ${status} clears old queued state, stays explicit and later recovers`, async t => {
   let body = response(queued)
   const changes = []
   const client = new WritebackStatusClient('/status', (value, pending, error) => changes.push({ value, error }), async () => body.clone())
   t.after(() => client.dispose())
   client.refresh(); await tick()
   assert.equal(changes.at(-1).value.status, 'queued')
-  body = new Response(JSON.stringify({ status: 'missing' }), { status: 404 })
+  body = new Response(JSON.stringify({ status: 'missing' }), { status })
   client.refresh(); await tick()
   assert.equal(changes.at(-1).value, undefined)
   assert.match(changes.at(-1).error, /旧等待状态已失效/)

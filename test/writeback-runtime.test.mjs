@@ -42,6 +42,15 @@ async function waitFor(check) {
   assert.fail('writeback runtime condition timed out')
 }
 
+test('missing writeback is a successful empty lookup, not HTTP 404', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'knowledge-missing-status-'))
+  const app = await runtime(join(root, 'knowledge.sqlite'), async function* () {})
+  t.after(async () => { await app.close(); await rm(root, { recursive: true, force: true }) })
+  assert.deepEqual(await app.status(), { code: 200, status: 'missing' })
+  const retry = await app.status('POST')
+  assert.notEqual(retry.code, 200, 'retrying a nonexistent job must still fail')
+})
+
 test('turn-stop and HTTP retry return before extraction; failed snapshot survives runtime restart and new turns', async t => {
   const root = await mkdtemp(join(tmpdir(), 'knowledge-runtime-outbox-'))
   const path = join(root, 'knowledge.sqlite')

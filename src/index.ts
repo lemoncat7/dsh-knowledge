@@ -337,7 +337,8 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
             writebackSources.delete(key)
             writebackStatuses.delete(key)
           }
-          res.writeHead(state === undefined ? 404 : 200, {
+          // An absent record is a successful status lookup, not a missing route.
+          res.writeHead(200, {
             'content-type': 'application/json; charset=utf-8',
             'cache-control': 'no-store',
           }).end(JSON.stringify(state === undefined ? { status: 'missing' } : state))
