@@ -18,7 +18,8 @@ export function installSelectControls(root = document.body) {
     if (restore && button.isConnected) button.focus()
   }
   const enhance = select => {
-    if (controls.has(select) || select.multiple || select.size > 1) return
+    // Embedded renderers own their control DOM and must not be reparented.
+    if (select.closest('[data-ui-owned]') || controls.has(select) || select.multiple || select.size > 1) return
     const wrapper = make('span', 'knowledge-select')
     const originalTabIndex = select.getAttribute('tabindex')
     const originalAriaHidden = select.getAttribute('aria-hidden')

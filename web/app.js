@@ -19,11 +19,13 @@ const { actionButton, badge, createToastPresenter, element, interfaceIcon, paneT
 const { renderMenu: renderDocumentMenu, closeMenus: closeDocumentMenus } = documentActionsModule.createDocumentMenuPresenter(uiModule)
 const readModelCatalog = modelCatalogModule.createModelCatalogLoader()
 const { createWritebackWorkspace } = await import(moduleUrl('writeback-workspace'))
+const { createWorklogWorkspace } = await import(moduleUrl('worklog-workspace'))
 const { createDocumentSync } = await import(moduleUrl('document-sync'))
 const { openNoteExcerpt } = await import(moduleUrl('note-excerpt'))
 const { createBaseGroups, knowledgeBasePathLabel, sortKnowledgeBasesByGroup } = await import(moduleUrl('base-groups'))
 let baseGroups
 let writebackWorkspace
+let worklogWorkspace
 const TOKEN_KEY = 'dsh-knowledge.session-token'
 const TYPES = ['preference', 'fact', 'decision', 'procedure', 'lesson']
 const TYPE_LABELS = { preference: '偏好', fact: '事实', decision: '决策', procedure: '流程', lesson: '经验' }
@@ -39,7 +41,7 @@ const NOTE_MAX_FILE_SIZE = 64 * 1024 * 1024
 const pageParams = new URLSearchParams(location.search)
 const initialKnowledgeBaseId = pageParams.get('knowledgeBaseId')?.trim() || ''
 const initialDocumentId = pageParams.get('documentId')?.trim() || ''
-const initialView = ['notes', 'writeback'].includes(pageParams.get('view')) ? pageParams.get('view') : 'entries'
+const initialView = ['notes', 'writeback', 'worklog'].includes(pageParams.get('view')) ? pageParams.get('view') : 'entries'
 const initialNoteId = pageParams.get('noteId')?.trim() || ''
 const mountContext = {
   sessionId: pageParams.get('sessionId')?.trim() || '',
@@ -981,6 +983,8 @@ async function loadTokens(signal) {
 }
 
 function renderShell() {
+  worklogWorkspace?.dispose()
+  worklogWorkspace = undefined
   writebackWorkspace?.dispose()
   writebackWorkspace = undefined
   closeDocumentMenus()
@@ -994,10 +998,11 @@ function renderShell() {
     shares: ['已分享', '管理只读分享链接，也可以导入别人分享的笔记和目录'],
     candidates: ['待审核', '确认 AI 提取结果后再写入知识文档'],
     writeback: ['回写任务', '查看本机队列，处理失败和阻塞的回写'],
+    worklog: ['工作日报', '按日期整理工作进展、决定与交付，保留来源依据'],
     tokens: ['访问管理', '管理其他客户端连接中央知识库的权限'],
   }
   const [title, subtitle] = titles[state.view]
-  const viewIndexes = { overview: '00', notes: '01', shares: '02', entries: '03', candidates: '04', writeback: '05', bases: '06', tokens: '07' }
+  const viewIndexes = { overview: '00', notes: '01', shares: '02', entries: '03', candidates: '04', writeback: '05', bases: '06', worklog: '07', tokens: '08' }
   const shell = element('div', {
     class: 'app-shell', 'data-menu-open': String(state.menuOpen),
     'data-view': state.view, 'data-loading': String(state.loading),
@@ -1182,6 +1187,7 @@ function renderSidebar() {
   const navGroups = [
     ['笔记工作区', [['notes', '笔记文档'], ['shares', '已分享']]],
     ['知识工作区', [['entries', '知识文档'], ['candidates', '待审核'], ['writeback', '回写任务'], ['bases', '知识库与挂载']]],
+    ['工作记录', [['worklog', '工作日报']]],
     ['连接', [['tokens', '访问管理']].filter(([id]) => id !== 'tokens' || !state.service.remote)],
   ].filter(([, items]) => items.length)
   let navIndex = 0
@@ -1207,6 +1213,10 @@ function renderSidebar() {
 function renderCurrentView() {
   if (state.loading) return loadingView(state.view, state.loadingPhase, state.loadingProgress)
   if (state.error) return errorView(state.error, () => navigate(state.view))
+  if (state.view === 'worklog') {
+    worklogWorkspace = createWorklogWorkspace({ element, actionButton })
+    return worklogWorkspace.root
+  }
   if (state.view === 'writeback') {
     writebackWorkspace = createWritebackWorkspace({ element, actionButton, openConfirm, sessionId: mountContext.sessionId })
     return writebackWorkspace.root
