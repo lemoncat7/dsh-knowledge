@@ -5,6 +5,7 @@ import type { KnowledgeProvider } from './provider.js'
 import { resolveKnowledgeMounts } from './retrieval.js'
 import type { AgentLike } from './runtime.js'
 import { mapConcurrent } from './async-pool.js'
+import { compareNames } from './collation.js'
 
 export const KNOWLEDGE_TRACKING_SERVICE = 'dshKnowledgeTracking'
 
@@ -107,7 +108,7 @@ export function createKnowledgeTrackingService(provider: KnowledgeProvider): Kno
         })
       })
       return batches.flat()
-        .sort((left, right) => right.score - left.score || left.label.localeCompare(right.label, 'zh-CN'))
+        .sort((left, right) => right.score - left.score || compareNames(left.label, right.label))
         .slice(0, boundedLimit)
         .map(({ score: _score, ...source }) => source)
     },

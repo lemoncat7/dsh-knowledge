@@ -67,6 +67,7 @@ import {
   type NoteReference,
   type NoteVersion,
 } from './notes/domain.js'
+import { compareNames } from './collation.js'
 
 type SqlRow = Record<string, unknown>
 
@@ -517,7 +518,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       if (base === undefined || base.status !== 'active') continue
       output.push({ ...mount, base, ...inheritedFrom === undefined ? {} : { inheritedFrom } })
     }
-    return output.sort((left, right) => left.base.name.localeCompare(right.base.name, 'zh-CN'))
+    return output.sort((left, right) => compareNames(left.base.name, right.base.name))
   }
 
   async stats(): Promise<KnowledgeStats> {

@@ -10,6 +10,7 @@ import type { AgentLike } from './runtime.js'
 import { knowledgeDocumentPath } from './documents/path.js'
 import { mapConcurrent } from './async-pool.js'
 import { SessionReferences } from './session-references.js'
+import { compareNames } from './collation.js'
 
 interface HandlePayload {
   v: 1
@@ -239,7 +240,7 @@ export function searchMountedKnowledgeBases(
   const units = queryUnits(normalizedQuery)
   return mounts.map(mount => scoreMountedBase(mount, normalizedQuery, units))
     .filter((match): match is MountedBaseMatch => match !== undefined)
-    .sort((left, right) => right.score - left.score || left.mount.base.name.localeCompare(right.mount.base.name, 'zh-CN'))
+    .sort((left, right) => right.score - left.score || compareNames(left.mount.base.name, right.mount.base.name))
     .slice(0, boundedLimit)
 }
 
