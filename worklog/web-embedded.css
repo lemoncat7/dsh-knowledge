@@ -17,4 +17,6 @@
 .dsh-worklog input[type="checkbox"]:checked::after{content:"";position:absolute;left:5px;top:2px;width:5px;height:9px;border:solid var(--wl-text);border-width:0 2px 2px 0;transform:rotate(45deg)}
 .dsh-worklog select{width:100%;min-width:0;background-color:var(--wl-control);color:var(--wl-text)}
 .wl-projects{max-height:240px;overflow:auto;margin-top:8px}
-
+.dsh-worklog .wl-central-settings{border:0;padding:0;margin:0;min-width:0}
+.dsh-worklog .wl-central-settings:disabled{opacity:.65}
+.wl-sync-status{padding:8px 16px;border-bottom:1px solid var(--wl-line);font-size:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}

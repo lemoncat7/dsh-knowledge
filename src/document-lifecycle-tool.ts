@@ -14,7 +14,7 @@ export function documentLifecycleTool(provider: KnowledgeProvider, codec: Knowle
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
-        handle: { type: 'string' }, expectedVersion: { type: 'integer', minimum: 1 },
+        handle: { type: 'string', description: 'Exact short session reference from knowledge_search; never reconstruct. If unavailable, search and read again before retrying.' }, expectedVersion: { type: 'integer', minimum: 1 },
         state: { type: 'string', enum: ['resolved', 'complete'] },
         confirmation: { type: 'string', description: 'Exact complete clause from the current direct user confirmation; do not omit negations or question suffixes.' },
         note: { type: 'string', description: 'Verified resolution or completion conclusion, up to 2000 characters.' },

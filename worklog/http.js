@@ -23,7 +23,7 @@ async function body(req) {
   }
   try { const data = JSON.parse(Buffer.concat(chunks).toString()); if (!data || Array.isArray(data) || typeof data !== 'object') throw 0; return data } catch { throw fail('请求必须是 JSON 对象') }
 }
-export function handler(store, worker, authenticate = () => 401, models = async () => []) {
+export function handler(store, worker, authenticate = () => 401, models = async () => [], dispatch) {
   return async (req, res) => {
     try {
       authorize(req)
@@ -36,7 +36,11 @@ export function handler(store, worker, authenticate = () => 401, models = async 
       if (rejection !== undefined) throw fail(rejection === 401 ? '请重新登录 DSH 后打开工作记录' : 'DSH 拒绝此请求来源', rejection)
       const url = new URL(req.url, 'http://localhost'), path = url.pathname.slice('/worklog-control/v1'.length)
       let result
-      if (req.method === 'GET' && path === '/version') result = { version: `${store.version()}:${dayOf(Date.now(), store.config().timezone)}` }
+      if (dispatch) {
+        if (!['GET', 'POST'].includes(req.method)) throw fail('请求方法不支持', 405)
+        result = await dispatch(req.method, path, req.method === 'POST' ? await body(req) : {}, url.searchParams)
+      }
+      else if (req.method === 'GET' && path === '/version') result = { version: `${store.version()}:${dayOf(Date.now(), store.config().timezone)}` }
       else if (req.method === 'GET' && path === '/models') result = { providers: await models() }
       else if (req.method === 'GET' && path === '/state') result = { ...store.overview(), today: dayOf(Date.now(), store.config().timezone) }
       else if (req.method === 'GET' && path === '/day') result = store.detail(validDay(url.searchParams.get('day')))
@@ -57,4 +61,3 @@ export function handler(store, worker, authenticate = () => 401, models = async 
     }
   }
 }
-

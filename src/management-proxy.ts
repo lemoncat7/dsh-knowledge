@@ -42,6 +42,8 @@ async function dispatch(
   }
   const incoming = new URL(req.url ?? '/', 'http://knowledge.local')
   const relative = incoming.pathname.slice(prefix.length).replace(/^\/+/, '')
+  // Journal uses its own Host-authenticated browser gateway, never this generic proxy.
+  if (/^worklog(?:\/|$)/i.test(decodeURIComponent(relative))) throw httpError(404, '请通过日报工作区访问。')
   const method = req.method ?? 'GET'
   if (relative === 'service') {
     if (method === 'GET') {

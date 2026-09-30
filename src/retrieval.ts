@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto'
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import type {
   KnowledgeEntry,
   ResolvedKnowledgeMount,
@@ -9,6 +9,7 @@ import type { KnowledgeProvider } from './provider.js'
 import type { AgentLike } from './runtime.js'
 import { knowledgeDocumentPath } from './documents/path.js'
 import { mapConcurrent } from './async-pool.js'
+import { SessionReferences } from './session-references.js'
 
 interface HandlePayload {
   v: 1
@@ -30,7 +31,9 @@ export interface MountedBaseMatch {
 
 /** Signed, session-bound entry handles prevent a model from widening its mounted scope. */
 export class KnowledgeHandleCodec {
-  constructor(private readonly secret: Buffer) {
+  private readonly references = new SessionReferences()
+  clear(): void { this.references.clear(); this.secret = randomBytes(32) }
+  constructor(private secret: Buffer) {
     if (secret.length < 32) throw new Error('knowledge handle secret must contain at least 32 bytes')
   }
 
@@ -41,34 +44,40 @@ export class KnowledgeHandleCodec {
       knowledgeBaseId: entry.knowledgeBaseId,
       entryId: entry.id,
     } satisfies HandlePayload)).toString('base64url')
-    return `k1.${payload}.${this.sign(payload)}`
+    return this.references.put(sessionId, `k1.${payload}.${this.sign(payload)}`)
   }
 
   decode(handle: string, sessionId: string): HandlePayload {
+    handle = handle.trim()
+    if (/^k1\.[A-Za-z0-9_-]{22}$/u.test(handle)) handle = this.references.get(handle, sessionId)
     const parts = handle.trim().split('.')
-    if (parts.length !== 3 || parts[0] !== 'k1') throw new Error('invalid knowledge handle')
+    if (parts.length !== 3 || parts[0] !== 'k1') throw new Error('[REFERENCE_FORMAT_INVALID] invalid knowledge handle: 应为搜索返回的完整短引用；旧签名句柄必须含版本、载荷、签名三段。请重新搜索，不要猜测补全。')
     const payload = parts[1]
     const signature = parts[2]
     if (payload === undefined || signature === undefined) throw new Error('invalid knowledge handle')
+    if (!/^[A-Za-z0-9_-]+$/u.test(payload) || !/^[A-Za-z0-9_-]{43}$/u.test(signature)
+      || Buffer.from(payload, 'base64url').toString('base64url') !== payload
+      || Buffer.from(signature, 'base64url').toString('base64url') !== signature) {
+      throw new Error('[REFERENCE_FORMAT_INVALID] invalid knowledge handle: 载荷编码或签名格式无效，签名应为 43 个 base64url 字符；请重新搜索获取引用。')
+    }
     const expected = Buffer.from(this.sign(payload), 'base64url')
     let actual: Buffer
     try {
       actual = Buffer.from(signature, 'base64url')
     } catch {
-      throw new Error('invalid knowledge handle')
+      throw new Error('[REFERENCE_SIGNATURE_MISMATCH] invalid knowledge handle: 签名不匹配，可能被改写或服务已重启；请重新搜索并读取，不要重试旧句柄。')
     }
     if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
-      throw new Error('invalid knowledge handle')
+      throw new Error('[REFERENCE_SIGNATURE_MISMATCH] invalid knowledge handle: 签名不匹配，可能被改写或服务已重启；请重新搜索并读取，不要重试旧句柄。')
     }
     let value: unknown
     try {
       value = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'))
     } catch {
-      throw new Error('invalid knowledge handle')
+      throw new Error('[REFERENCE_PAYLOAD_INVALID] invalid knowledge handle: 载荷不是有效 JSON；请重新搜索。')
     }
-    if (!isHandlePayload(value) || value.sessionId !== sessionId) {
-      throw new Error('knowledge handle does not belong to this session')
-    }
+    if (!isHandlePayload(value)) throw new Error('[REFERENCE_PAYLOAD_INVALID] invalid knowledge handle: 载荷缺少必需字段；请重新搜索。')
+    if (value.sessionId !== sessionId) throw new Error('[REFERENCE_SESSION_MISMATCH] knowledge handle does not belong to this session；请在当前会话重新搜索。')
     return value
   }
 

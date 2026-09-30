@@ -193,7 +193,7 @@ function updateKnowledgeBaseTool(provider: KnowledgeProvider, llm: LlmLike): Too
 function searchTool(provider: KnowledgeProvider, codec: KnowledgeHandleCodec): ToolDefinitionLike {
   return {
     name: 'knowledge_search',
-    description: 'Second-stage knowledge retrieval. Search one exact knowledge base returned by knowledge_base_search. The base must still be mounted for recall in THIS session. Returns ranked snippets and signed opaque handles; call knowledge_read with an exact handle to open a result. Never invent a base id or handle.',
+    description: 'Second-stage knowledge retrieval. Search one exact knowledge base returned by knowledge_base_search. The base must still be mounted for recall in THIS session. Returns ranked snippets and short session-bound references in handle; call knowledge_read with that exact handle. Never invent or reconstruct references. If a reference is unavailable, search again and read before retrying a mutation.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -223,7 +223,7 @@ function searchTool(provider: KnowledgeProvider, codec: KnowledgeHandleCodec): T
 function readTool(provider: KnowledgeProvider, codec: KnowledgeHandleCodec): ToolDefinitionLike {
   return {
     name: 'knowledge_read',
-    description: 'Read one approved knowledge document using the exact signed handle returned by knowledge_search. Handles are session-bound. Long documents are paginated; when a result says it was truncated, call again with the reported offset.',
+    description: 'Read one approved knowledge document using the exact short handle returned by knowledge_search. Handles are session-bound and may expire after restart or a source switch; search again on REFERENCE_UNAVAILABLE, never repeat the stale reference. Long documents are paginated; when a result says it was truncated, call again with the reported offset. Body truncation is separate from reference validity.',
     parameters: {
       type: 'object',
       additionalProperties: false,

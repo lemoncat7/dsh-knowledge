@@ -18,6 +18,7 @@ const MAX_SHARED_NOTE_PREVIEW_BYTES = 512 * 1024
 export const LOCAL_MANAGEMENT_API_PREFIX = '/knowledge-local/v1'
 
 export interface KnowledgeApiOptions {
+  worklog?: (method: string, path: string, data: Record<string, unknown>, query: URLSearchParams) => Promise<unknown>
   shareRequestPolicy?: () => NoteShareRequestPolicy
   authMode?: 'bearer' | 'same-origin'
   service?: {
@@ -116,6 +117,14 @@ async function dispatch(
   }
 
   const actor = options.authMode === 'same-origin' ? authenticateSameOrigin(req) : authenticateBearer(provider, req)
+
+  if (segments[0] === 'worklog') {
+    if (!['GET', 'POST'].includes(method) || segments.length !== 2) throw httpError(404, '日报接口不存在')
+    requirePermission(actor.permissions, method === 'GET' ? 'read' : segments[1] === 'settings' || segments[1] === 'archive' ? 'admin' : 'write')
+    if (!options.worklog) throw httpError(503, '中央日报服务尚未就绪')
+    const result = await options.worklog(method, `/${segments[1]}`, method === 'POST' ? await readObject(req) : {}, url.searchParams)
+    return sendJson(res, 200, segments[1] === 'state' && method === 'GET' ? { ...(result as Record<string, unknown>), canManage: actor.permissions.includes('admin') } : result)
+  }
 
   if (segments[0] === 'notes') {
     if (method === 'GET' && segments.length === 1) {

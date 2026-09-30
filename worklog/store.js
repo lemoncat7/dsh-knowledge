@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { defaults, fail, settings, text, validDay } from './domain.js'
+import { scheduledDay } from './scheduler.js'
 
 // SQLite transactions are short and never span a model/network request.
 export class Store {
@@ -22,18 +23,71 @@ export class Store {
       CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, day TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, due INTEGER NOT NULL, body TEXT NOT NULL);
       CREATE UNIQUE INDEX IF NOT EXISTS active_day ON jobs(day) WHERE status IN ('queued','running');`)
     this.db.exec('PRAGMA user_version=1')
+    this.db.exec('CREATE TABLE IF NOT EXISTS journal_imports (id TEXT PRIMARY KEY)')
     this.db.prepare("UPDATE jobs SET status='queued' WHERE status='running'").run()
   }
-  config() { return JSON.parse(this.db.prepare("SELECT value FROM meta WHERE key='settings'").get()?.value || JSON.stringify(defaults)) }
+  config() { return { ...defaults, ...JSON.parse(this.db.prepare("SELECT value FROM meta WHERE key='settings'").get()?.value || '{}') } }
   version() { return `${this.instance}:${this.db.prepare('SELECT total_changes() AS count').get().count}` }
-  configure(value) { const config = settings(value); this.db.prepare("INSERT INTO meta VALUES ('settings',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(config)); return config }
+  configure(value, now = Date.now()) {
+    const config = settings(value), previous = this.config(), state = this.scheduleState()
+    if (config.scheduleEnabled && (!previous.scheduleEnabled || config.scheduleTime !== previous.scheduleTime || config.timezone !== previous.timezone)) state.since = now
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.setMeta('settings', config); this.setMeta('schedule', state)
+      this.db.exec('COMMIT')
+    } catch (e) { this.db.exec('ROLLBACK'); throw e }
+    return config
+  }
+  setMeta(key, value) { this.db.prepare('INSERT INTO meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(value)) }
+  originId() {
+    let value = this.db.prepare("SELECT value FROM meta WHERE key='originId'").get()?.value
+    if (!value) { this.db.prepare("INSERT OR IGNORE INTO meta VALUES ('originId',?)").run(JSON.stringify(randomUUID())); value = this.db.prepare("SELECT value FROM meta WHERE key='originId'").get().value }
+    return JSON.parse(value)
+  }
+  importRecord(record) {
+    // First receipt wins. Retrying an upload must not undo subsequent exclusions.
+    this.db.prepare('INSERT OR IGNORE INTO records(id,day,project,excluded,body) VALUES (?,?,?,?,?)').run(record.id, record.day, record.project, +record.excluded, JSON.stringify(record))
+    this.observe(record.project)
+  }
+  importArchive(id, report) {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      if (this.db.prepare('INSERT OR IGNORE INTO journal_imports VALUES (?)').run(id).changes) this.db.prepare('INSERT INTO history(day,body) VALUES (?,?)').run(report.day, JSON.stringify(report))
+      this.db.exec('COMMIT')
+    } catch (e) { this.db.exec('ROLLBACK'); throw e }
+  }
+  scheduleState() { return JSON.parse(this.db.prepare("SELECT value FROM meta WHERE key='schedule'").get()?.value || '{}') }
+  schedule(now = Date.now()) {
+    // Persist the once-per-day decision and its queued job in one transaction.
+    // A crash can neither lose the job after claiming a day nor enqueue it twice.
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const state = this.scheduleState(), day = scheduledDay(this.config(), state, now)
+      const active = day && this.db.prepare("SELECT id FROM jobs WHERE day=? AND status IN ('queued','running')").get(day)
+      if (day && !active) {
+        const report = this.report(day), records = this.records(day)
+        const last = { day, time: now, status: 'skipped', message: '' }
+        if (report.edited) last.message = '日报有手工修改，未自动覆盖；可在对应日期手动整理。'
+        else if (!records.some(r => !report.covered.includes(r.id))) last.message = '没有待整理的新素材，已跳过。'
+        else {
+          try { last.jobId = this.enqueue(day); last.status = 'queued'; last.message = '已加入整理队列，可在对应日期查看进度或重试。' }
+          catch (e) {
+            if (!e.status) throw e
+            last.status = 'failed'; last.message = e.message
+          }
+        }
+        this.setMeta('schedule', { ...state, last })
+      }
+      this.db.exec('COMMIT')
+    } catch (e) { this.db.exec('ROLLBACK'); throw e }
+  }
   observe(project) { if (project) this.db.prepare('INSERT OR IGNORE INTO projects VALUES (?)').run(project) }
   insert(record) { this.db.prepare('INSERT OR IGNORE INTO records(id,day,project,body) VALUES (?,?,?,?)').run(record.id, record.day, record.project, JSON.stringify(record)) }
   records(day, includeExcluded = false) { return this.db.prepare(`SELECT body,excluded FROM records WHERE day=? ${includeExcluded ? '' : 'AND excluded=0'} ORDER BY rowid`).all(day).map(r => ({ ...JSON.parse(r.body), excluded: !!r.excluded })) }
   report(day) { const row = this.db.prepare('SELECT * FROM reports WHERE day=?').get(day); return row ? { ...JSON.parse(row.body), revision: row.revision } : { revision: 0, markdown: '', covered: [], edited: false } }
   overview() {
-    return { config: this.config(), today: null, projects: this.db.prepare('SELECT id FROM projects ORDER BY id').all().map(p => p.id),
-      days: this.db.prepare('SELECT day FROM records UNION SELECT day FROM reports ORDER BY day DESC').all().map(d => d.day) }
+    return { config: this.config(), scheduleLast: this.scheduleState().last || null, today: null, projects: this.db.prepare('SELECT id FROM projects ORDER BY id').all().map(p => p.id),
+      days: this.db.prepare('SELECT day FROM records UNION SELECT day FROM reports UNION SELECT day FROM history ORDER BY day DESC').all().map(d => d.day) }
   }
   detail(day) {
     const records = this.records(day, true), report = this.report(day)

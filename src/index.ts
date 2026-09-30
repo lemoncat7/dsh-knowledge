@@ -2,7 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { apply as registerWorklog } from './worklog-runtime.js'
+import { apply as registerWorklog, type JournalRuntime } from './worklog-runtime.js'
 import { assertKnowledgeBrowserRequest, LOCAL_MANAGEMENT_API_PREFIX, registerKnowledgeApi } from './api.js'
 import { registerKnowledgeActivityControl } from './activity-control.js'
 import { registerWritebackControl } from './writeback/control.js'
@@ -55,16 +55,6 @@ export const inject = ['llm', 'tools']
 export function apply(ctx: Context, config: KnowledgeConfig): void {
   const runtime = ctx as unknown as RuntimeContextLike
   const resolved = resolveConfig(config)
-  // Own the journal lifecycle inside Knowledge; preserve the trial database.
-  ctx.inject?.(['connection'], journal => {
-    const connection = journal.get('connection') as { requestRejection?: unknown } | undefined
-    if (typeof connection?.requestRejection !== 'function') return
-    const base = resolved.databasePath || resolved.connectionPath
-    if (!base) return
-    const legacy = join(dirname(dirname(base)), 'worklog', 'worklog.sqlite')
-    const databasePath = base === ':memory:' ? ':memory:' : existsSync(legacy) ? legacy : `${base}.worklog.sqlite`
-    registerWorklog(journal, { databasePath })
-  })
   const trustedShareOrigins = [...resolved.trustedShareOrigins]
   const trust = runtime.get('remoteSettingsTrust') as { origins?: readonly string[]; subscribe?(listener: () => void): () => void } | undefined
   if (trust !== undefined) {
@@ -115,6 +105,20 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   const provider: KnowledgeProvider = providerRouter.provider
   let activeConnection = initialConnection
   let connectionChanging = false
+  let journalRuntime: JournalRuntime | undefined
+  ctx.inject?.(['connection'], journal => {
+    const connection = journal.get('connection') as { requestRejection?: unknown } | undefined
+    if (typeof connection?.requestRejection !== 'function') return
+    const base = resolved.databasePath || resolved.connectionPath
+    if (!base) return
+    const legacy = join(dirname(dirname(base)), 'worklog', 'worklog.sqlite')
+    const databasePath = base === ':memory:' ? ':memory:' : existsSync(legacy) ? legacy : `${base}.worklog.sqlite`
+    journalRuntime = registerWorklog(journal, { databasePath, current: () => ({ ...activeConnection, paused: connectionChanging }), onDispose: () => { journalRuntime = undefined } })
+  })
+  const journalDispatch = (method: string, path: string, data: Record<string, unknown>, query: URLSearchParams): Promise<unknown> => {
+    if (!journalRuntime) throw connectionError(503, '中央日报服务尚未就绪')
+    return journalRuntime.dispatch(method, path, data, query)
+  }
 
   const coordinator = new ExtractionCoordinator(runtime, provider, resolved, () => (
     clientSettings.writebackProvider && clientSettings.writebackModel
@@ -160,6 +164,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
       validateConnectionSettings(next, publicApiEnabled, resolved.databasePath !== undefined && resolved.databasePath.trim().length > 0)
       if (sameConnection(next, activeConnection)) return activeConnection
       if (writebackQueue?.isRunning) throw connectionError(409, '回写正在执行，请完成后再切换知识库连接')
+      if (journalRuntime?.isRunning()) throw connectionError(409, '日报正在整理，请完成或取消后再切换知识库连接')
       if (resolved.connectionPath === undefined) throw connectionError(409, '当前插件没有配置持久化路径，无法保存连接。')
       const candidate = connectionProvider(next)
       connectionChanging = true
@@ -186,6 +191,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
           throw error
         }
         await providerRouter.replace(candidate.provider, { owned: candidate.owned })
+        handleCodec.clear()
         installed = true
         runtime.logger.info(`dsh-knowledge: verified and switched to ${next.backend} provider`)
         return activeConnection
@@ -227,6 +233,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
       if (enabled) {
         if (managementProvider === undefined) throw connectionError(409, '当前 DSH 没有可供远程访问的本地知识库。')
         disposePublicApi = registerKnowledgeApi(httpRuntime, managementProvider, resolved.apiPrefix, {
+          worklog: journalDispatch,
           shareRequestPolicy: () => ({ trustedPrivateOrigins: trustedShareOrigins }),
         })
       }

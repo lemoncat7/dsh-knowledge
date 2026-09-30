@@ -1,8 +1,9 @@
 import { generate } from './generator.js'
 import { fail } from './domain.js'
+import { Scheduler } from './scheduler.js'
 
 export class Worker {
-  constructor(store, llm, render = generate, onError = () => {}) { this.store = store; this.llm = llm; this.render = render; this.closed = false; this.onError = onError }
+  constructor(store, llm, render = generate, onError = () => {}) { this.store = store; this.llm = llm; this.render = render; this.closed = false; this.onError = onError; this.scheduler = new Scheduler(store) }
   start() { this.timer = setInterval(() => this.tick(), 1500); this.timer.unref?.(); this.tick() }
   async tick() {
     if (this.running || this.closed) return
@@ -10,6 +11,8 @@ export class Worker {
     return this.running
   }
   async run() {
+    if (this.isEnabled && !this.isEnabled()) return
+    this.scheduler.tick()
     const job = this.store.next()
     if (!job) return
     const payload = JSON.parse(job.body), attempts = job.attempts + 1
@@ -39,4 +42,3 @@ export class Worker {
   }
   async close() { this.closed = true; clearInterval(this.timer); this.controller?.abort(new Error('服务停止')); await this.running }
 }
-

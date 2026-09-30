@@ -31,9 +31,9 @@ export function applyKnowledgeTextEdits(
     const newText = edit.newText.replace(/\r\n?/gu, '\n')
     if (oldText.length === 0) return { ok: false, reason: `revision edit ${index + 1} has an empty anchor` }
     const first = body.indexOf(oldText)
-    if (first < 0) return { ok: false, reason: `revision edit ${index + 1} no longer matches the target document` }
+    if (first < 0) return { ok: false, reason: `revision edit ${index + 1} no longer matches the target document [EDIT_ANCHOR_NOT_FOUND]：oldText 未完整匹配，无法可靠判断缺失位置；请 knowledge_read 重新读取对应段落（有分页须按 offset 继续），使用最短且唯一的原文片段。未应用任何修改，不要原样重试。` }
     if (body.indexOf(oldText, first + oldText.length) >= 0) {
-      return { ok: false, reason: `revision edit ${index + 1} matches more than one location` }
+      return { ok: false, reason: `revision edit ${index + 1} matches more than one location [EDIT_ANCHOR_AMBIGUOUS]：首个匹配位于第 ${body.slice(0, first).split('\n').length} 行；请补充相邻原文直到匹配唯一。未应用任何修改。` }
     }
     body = `${body.slice(0, first)}${newText}${body.slice(first + oldText.length)}`
   }
