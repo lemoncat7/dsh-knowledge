@@ -5,6 +5,7 @@ import { request as requestHttps } from 'node:https'
 import { isIP, type LookupFunction } from 'node:net'
 import type { NoteNode, NoteNodeKind, NoteShare } from './domain.js'
 import type { NoteStore } from './store.js'
+import { compareNames } from '../collation.js'
 
 const SHARE_TOKEN_PATTERN = /^share_[A-Za-z0-9_-]{32}$/
 const MAX_MANIFEST_BYTES = 2 * 1024 * 1024
@@ -123,7 +124,7 @@ export async function importNoteShare(
       if (depth !== 0) return depth
       if (left.kind === 'folder' && right.kind !== 'folder') return -1
       if (left.kind !== 'folder' && right.kind === 'folder') return 1
-      return left.path.localeCompare(right.path, 'zh-CN')
+      return compareNames(left.path, right.path)
     })
     for (const item of ordered) {
       const name = pathName(item.path)

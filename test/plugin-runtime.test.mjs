@@ -131,9 +131,13 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
   assert.equal(pending.length, 6)
   assert.equal(session.events.at(-1).type, 'assistant/message')
   const writebackNotice = staleNotice
+  // Mount order follows the knowledge-base name. With deterministic collation
+  // (see src/collation.ts) a Latin name sorts before a CJK one, so the base
+  // using a dedicated model is contacted first. Previously this depended on a
+  // hardcoded 'zh-CN' locale and on the host LANG.
   assert.deepEqual(extractionRequests.map(request => [request.provider, request.model]), [
-    ['mock', 'extractor'],
     ['kimi', 'kimi-k2.7-code'],
+    ['mock', 'extractor'],
   ])
   const extractionRequest = extractionRequests.find(request => request.provider === 'mock')
   const extractionPayload = JSON.parse(extractionRequest.messages[0].content[0].text)
