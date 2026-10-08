@@ -190,8 +190,13 @@ export function KnowledgeActivityPanel(
       ...selectedBaseId === undefined ? {} : { knowledgeBaseId: selectedBaseId },
     })
   }
+  const SEARCH_THROTTLE_MS = 500
+  const lastSearchAt = useRef(0)
   const submitSearch = (event: FormEvent): void => {
     event.preventDefault()
+    const now = Date.now()
+    if (now - lastSearchAt.current < SEARCH_THROTTLE_MS) return
+    lastSearchAt.current = now
     setSelectedDocumentId(undefined)
     setDocumentValue(undefined)
     props.controller.select(sessionId, { documentId: undefined })
