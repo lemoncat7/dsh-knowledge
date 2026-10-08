@@ -23,6 +23,7 @@ import type { KnowledgeActivityController } from './knowledge-activity-controlle
 import { KnowledgeActivityNotes } from './knowledge-activity-notes.js'
 import { LatestRequest } from './latest-request.js'
 import { renderMarkdown } from './web-markdown-preview.js'
+import { compareNames } from './collation.js'
 
 type DetailsProps = PropsRuntime<'details'>
 
@@ -293,7 +294,10 @@ function GroupedDocuments({ documents, mounts, searching, onSelect }: { document
   const groups = useMemo(() => {
     const result = new Map<string, KnowledgeDocumentSummary[]>()
     for (const doc of documents) { const key = JSON.stringify([doc.knowledgeBaseId, doc.group || '']); const list = result.get(key) ?? []; list.push(doc); result.set(key, list) }
-    return [...result].sort((a, b) => (a[1][0]?.group || '\uffff').localeCompare(b[1][0]?.group || '\uffff', 'zh-CN'))
+    return [...result].sort((a, b) => {
+      const left = a[1][0]?.group || '', right = b[1][0]?.group || ''
+      return Number(!left) - Number(!right) || compareNames(left, right)
+    })
   }, [documents])
   return <>{groups.map(([key, members]) => {
     const first = members[0]!

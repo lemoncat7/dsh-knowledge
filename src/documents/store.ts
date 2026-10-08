@@ -16,6 +16,7 @@ import {
   renderKnowledgeBaseManifest,
   type ParsedMarkdownDocument,
 } from './markdown.js'
+import { compareNames } from '../collation.js'
 
 export const KNOWLEDGE_BASE_MANIFEST = '.knowledge-base.yml'
 
@@ -98,7 +99,7 @@ export class KnowledgeDocumentStore {
         modifiedAt: fileStat.mtime.toISOString(),
       })
     }
-    return documents.sort((left, right) => left.relPath.localeCompare(right.relPath, 'zh-CN'))
+    return documents.sort((left, right) => compareNames(left.relPath, right.relPath))
   }
 
   async readDocument(directory: string, relPath: string): Promise<StoredKnowledgeDocument> {

@@ -1,6 +1,7 @@
 import { SHARE_PAGE_CSS } from './share-page-styles.js'
 import type { NoteNode, NoteShare } from './domain.js'
 import { renderSharedMarkdown, type SharedMarkdownHeading } from './share-markdown.js'
+import { compareNames } from '../collation.js'
 
 export interface NoteSharePageInput {
   apiPrefix: string
@@ -79,7 +80,7 @@ function childNodes(nodes: NoteNode[]): Map<string, NoteNode[]> {
     siblings.sort((left, right) => {
       if (left.kind === 'folder' && right.kind !== 'folder') return -1
       if (left.kind !== 'folder' && right.kind === 'folder') return 1
-      return left.name.localeCompare(right.name, 'zh-CN', { numeric: true })
+      return compareNames(left.name, right.name, { numeric: true })
     })
   }
   return result
