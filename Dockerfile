@@ -14,6 +14,7 @@ COPY docs ./docs
 COPY scripts ./scripts
 COPY src ./src
 COPY test ./test
+COPY worklog ./worklog
 
 RUN npm test \
   && mkdir /out \
