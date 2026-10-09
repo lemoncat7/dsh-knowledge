@@ -15,7 +15,7 @@ export class Worker {
     this.scheduler.tick()
     const job = this.store.next()
     if (!job) return
-    const payload = JSON.parse(job.body), attempts = job.attempts + 1
+    const payload = JSON.parse(job.body), attempts = job.attempts + 1, started = Date.now()
     this.active = job.id; this.controller = new AbortController()
     const timeout = setTimeout(() => this.controller?.abort(new Error('整理超时')), 180000)
     this.store.status(job.id, 'running', payload, attempts)
@@ -30,7 +30,10 @@ export class Worker {
       if (this.closed) this.store.status(job.id, 'queued', payload, job.attempts)
       else if (this.store.job(job.id).status !== 'cancelled') {
         const retry = attempts < 3 && e.status !== 409
-        this.store.status(job.id, retry ? 'queued' : 'failed', { ...payload, error: e.status === 409 ? e.message : '模型整理失败或超时，请检查会话模型连接后重试。' }, attempts, Date.now() + attempts * 10000)
+        const diagnostic = { ...(e.worklogDiagnostic || { code: this.controller.signal.aborted ? 'timeout' : 'request_error' }), elapsedMs: Date.now() - started, attempt: attempts, httpStatus: Number.isInteger(e.status) ? e.status : null }
+        const message = e.worklogDiagnostic || e.status === 409 ? e.message : diagnostic.code === 'timeout' ? '整理超过 180 秒，已中止' : '模型请求或流式读取失败'
+        this.store.status(job.id, retry ? 'queued' : 'failed', { ...payload, diagnostic, error: `${message}（第 ${attempts}/3 次，${diagnostic.code}）` }, attempts, Date.now() + attempts * 10000)
+        this.onError({ jobId: job.id, day: job.day, ...diagnostic })
       }
     } finally { clearTimeout(timeout); this.active = null; this.controller = null }
   }

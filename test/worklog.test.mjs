@@ -103,7 +103,7 @@ test('browser and official loopback desktop origin checks', () => {
 test('generator uses deltas once and rejects invented evidence', async () => {
   const llm = { async *stream() { yield { type: 'text-delta', text: '完成 [依据:s:1]' }; yield { type: 'block-end', block: { type: 'text', text: '完成 [依据:s:1]' } } } }
   assert.equal(await generate(llm, { records: [record()], route: {} }, new AbortController().signal), '完成 [依据:s:1]')
-  await assert.rejects(generate(llm, { records: [], route: {} }, new AbortController().signal), /未知来源/)
+  await assert.rejects(generate(llm, { records: [], route: {} }, new AbortController().signal), /来源引用校验失败/)
 })
 test('HTTP serves JSON errors and supports notes/settings', async t => {
   const s = db(t), w = new Worker(s, {}), server = createServer(handler(s, w, () => undefined))
@@ -124,4 +124,3 @@ test('custom API fails closed without Host authentication', async t => {
   assert.equal(response.status, 401)
   assert.match((await response.json()).error, /登录/)
 })
-
