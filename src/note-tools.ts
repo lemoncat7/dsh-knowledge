@@ -5,6 +5,7 @@ import type { RuntimeContextLike, ToolDefinitionLike, ToolRunContextLike } from 
 import { assertExplicitKnowledgeNoteRequest } from './tool-authorization.js'
 import { readMountedKnowledge, type KnowledgeHandleCodec } from './retrieval.js'
 import { optionalToolInteger, requiredToolString, requireToolAgent, toolRecord } from './tool-input.js'
+import { noteConfirmationTools, requestNoteConfirmation } from './note-confirmation.js'
 
 const MAX_TOOL_NOTE_CONTENT = 200_000
 
@@ -13,7 +14,7 @@ const textOutput = {
   render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
 } as const
 
-/** Note operations use session handles. Mounted references authorize content access; other mutations require direct user requests. */
+/** Reads need no semantic grant. Session handles and explicit mutation consent remain independent. */
 export function registerKnowledgeNoteTools(
   ctx: RuntimeContextLike,
   provider: KnowledgeProvider,
@@ -22,16 +23,17 @@ export function registerKnowledgeNoteTools(
 ): void {
   ctx.tools.register(listNotesTool(provider, codec))
   ctx.tools.register(readNoteTool(provider, codec, knowledgeCodec))
-  ctx.tools.register(createNoteTool(provider, codec))
-  ctx.tools.register(updateNoteTool(provider, codec, knowledgeCodec))
-  ctx.tools.register(moveNoteTool(provider, codec))
+  const confirmable = noteConfirmationTools(ctx)
+  ctx.tools.register(confirmable(createNoteTool(ctx, provider, codec)))
+  ctx.tools.register(confirmable(updateNoteTool(ctx, provider, codec, knowledgeCodec)))
+  ctx.tools.register(confirmable(moveNoteTool(ctx, provider, codec)))
   ctx.tools.register(deleteNoteTool(provider, codec))
 }
 
 function listNotesTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCodec): ToolDefinitionLike {
   return {
     name: 'knowledge_note_list',
-    description: 'Browse one folder in the independent note workspace, or search note and folder names. Use this when the user explicitly asks to inspect, create, organize, or edit notes. Omit folderHandle to browse the root. Handles are session-bound; pass exact returned handles to other knowledge_note tools.',
+    description: 'Browse or search the independent note workspace without an extra user authorization request. Read access does not authorize mutations. Omit folderHandle to browse the root. Handles are session-bound; pass exact returned handles to other knowledge_note tools.',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
@@ -74,7 +76,7 @@ async function authorizeReferencedNote(provider: KnowledgeProvider, codec: Knowl
   if (!references.some(reference => reference.note.id === noteId)) throw new Error('note is not referenced by this mounted knowledge document')
 }
 
-function readNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCodec, knowledgeCodec: KnowledgeHandleCodec): ToolDefinitionLike {
+function readNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCodec, _knowledgeCodec: KnowledgeHandleCodec): ToolDefinitionLike {
   return {
     name: 'knowledge_note_read',
     description: 'Read a bounded chunk from an editable text or Markdown note after knowledge_note_list/search returned its exact handle. This never reads folders or binary attachments. Use offset and maxChars to continue long notes.',
@@ -82,7 +84,7 @@ function readNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCod
       type: 'object', additionalProperties: false,
       properties: {
         noteHandle: { type: 'string', description: 'Exact signed note handle returned by knowledge_note_list or knowledge_note_search.' },
-        knowledgeHandle: { type: 'string', description: 'Optional mounted knowledge handle: its current note reference authorizes reading without a new direct user request. Obtain noteHandle from knowledge_note_references list.' },
+        knowledgeHandle: { type: 'string', description: 'Optional legacy reference metadata. Reading requires only a valid session-bound noteHandle, not a knowledge mount or user authorization.' },
         offset: { type: 'integer', description: 'Character offset, default 0.' },
         maxChars: { type: 'integer', description: 'Maximum returned characters, default 20000 and maximum 80000.' },
       },
@@ -97,8 +99,6 @@ function readNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCod
       const offset = optionalToolInteger(args.offset, 'offset', 0, 50_000_000) ?? 0
       const maxChars = optionalToolInteger(args.maxChars, 'maxChars', 1, 80_000) ?? 20_000
       const node = await resolveNoteHandle(provider, codec, agent.session.id, handle, exec.signal)
-      if (args.knowledgeHandle !== undefined) await authorizeReferencedNote(provider, knowledgeCodec, exec, args.knowledgeHandle, node.id)
-      else assertExplicitKnowledgeNoteRequest(agent, 'inspect')
       if (!node.editable || node.kind === 'folder') throw new Error('knowledge_note_read only supports editable text and Markdown notes')
       const { node: snapshot, content } = await provider.readNote(node.id, exec.signal)
       const text = decodeTextNote(content)
@@ -115,10 +115,10 @@ function readNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCod
   }
 }
 
-function createNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCodec): ToolDefinitionLike {
+function createNoteTool(ctx: RuntimeContextLike, provider: KnowledgeProvider, codec: KnowledgeNoteHandleCodec): ToolDefinitionLike {
   return {
     name: 'knowledge_note_create',
-    description: 'Create a Markdown note or folder in the active local or remote note workspace only when the current user explicitly asks. Omit parentFolderHandle to create at the root. The tool follows the active provider and never copies or synchronizes between local and remote storage.',
+    description: 'Propose creating a note or folder from natural user intent. This tool asks the user for one-shot approval before writing; no prescribed user wording is needed. Omit parentFolderHandle for root. Do not repeatedly ask after rejection.',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
@@ -134,11 +134,12 @@ function createNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleC
       const agent = requireToolAgent(exec, 'knowledge note tools')
       const args = toolRecord(raw)
       const kind = noteKind(args.kind)
-      assertExplicitKnowledgeNoteRequest(agent, 'create', kind === 'folder' ? 'folder' : 'document')
       const name = requiredToolString(args.name, 'name', 255)
       const content = optionalContent(args.content, 'content') ?? ''
       if (kind === 'folder' && args.content !== undefined) throw new Error('content must be omitted when creating a folder')
       const parentId = await resolveOptionalFolderId(provider, codec, agent.session.id, args.parentFolderHandle, 'parentFolderHandle', exec.signal)
+      const parent = parentId === null ? '根目录' : (await provider.getNote(parentId, exec.signal))?.name ?? parentId
+      await approveNoteMutation(ctx, exec, 'knowledge_note_create', `创建${kind === 'folder' ? '目录' : '笔记'}「${name}」\n目标目录：${parent}\n${content.slice(0, 600)}${content.length > 600 ? '\n（预览已截断）' : ''}`)
       const node = kind === 'folder'
         ? await provider.createNoteFolder(name, parentId, exec.signal)
         : await provider.createNoteDocument(name, parentId, content, exec.signal)
@@ -147,16 +148,17 @@ function createNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleC
   }
 }
 
-function updateNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCodec, knowledgeCodec: KnowledgeHandleCodec): ToolDefinitionLike {
+function updateNoteTool(ctx: RuntimeContextLike, provider: KnowledgeProvider, codec: KnowledgeNoteHandleCodec, knowledgeCodec: KnowledgeHandleCodec): ToolDefinitionLike {
   return {
     name: 'knowledge_note_update',
-    description: 'Update an existing note. A current reference from a mounted knowledge document authorizes append_content/replace_content without another user request: pass knowledgeHandle and its referenced noteHandle. This never authorizes editing the knowledge document, renaming, moving or deleting notes. Otherwise an explicit user request is required. Read before writing; append_content preserves the existing body, replace_content replaces the complete body. Do not write unchanged observations.',
+    description: 'Propose a note update from natural user intent. The tool obtains one-shot user approval for the exact change; do not ask the user to repeat a prescribed phrase. Read first and pass expectedVersion. append_content preserves the body; replace_content overwrites the entire body and the confirmation explicitly warns of this. Do not retry after rejection or write unchanged observations.',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
         noteHandle: { type: 'string', description: 'Exact signed handle returned by knowledge_note_list or knowledge_note_search.' },
         knowledgeHandle: { type: 'string', description: 'Mounted knowledge document referencing this note. Checked against current mounts and references on every call; partner heartbeat uses its dedicated recording tool.' },
-        operation: { type: 'string', enum: ['rename', 'replace_content', 'append_content'] },
+        operation: { type: 'string', enum: ['rename', 'replace_range', 'replace_content', 'append_content'], description: 'Prefer replace_range for editing, merging or removing existing sections. Never append a replacement section or regenerate the untouched document.' },
+        oldText: { type: 'string', description: 'For replace_range: exact existing text copied from knowledge_note_read. Must match exactly once. value replaces only this text; all other characters are preserved by the server.' },
         expectedVersion: { type: 'integer', minimum: 1, description: 'For content updates, pass note.version from knowledge_note_read. A stale version is rejected; reread and merge instead of overwriting.' },
         value: { type: 'string', description: 'New name or content, according to operation.' },
       },
@@ -170,19 +172,36 @@ function updateNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleC
       const operation = updateOperation(args.operation)
       const node = await resolveNoteHandle(provider, codec, agent.session.id, handle, exec.signal)
       if (args.knowledgeHandle !== undefined && operation !== 'rename') await authorizeReferencedNote(provider, knowledgeCodec, exec, args.knowledgeHandle, node.id)
-      else assertExplicitKnowledgeNoteRequest(agent, 'update', node.kind === 'folder' ? 'folder' : 'document')
       let updated: NoteNode
       if (operation === 'rename') {
-        updated = await provider.renameNote(node.id, requiredToolString(args.value, 'value', 255), exec.signal)
+        const name = requiredToolString(args.value, 'value', 255)
+        if (name === node.name) throw new Error('名称未变化，不生成待确认提案')
+        await approveNoteMutation(ctx, exec, 'knowledge_note_update', `改名：「${node.name}」→「${name}」\n原版本：${node.version}，原目录：${node.parentId ?? '根目录'}`)
+        await assertNoteUnchanged(provider, node, exec.signal)
+        updated = await provider.renameNote(node.id, name, exec.signal)
       } else {
         if (!node.editable || node.kind === 'folder') throw new Error('only editable text and Markdown notes support content updates')
         const expectedVersion = optionalToolInteger(args.expectedVersion, 'expectedVersion', 1, Number.MAX_SAFE_INTEGER)
         if (expectedVersion === undefined) throw new Error('请先用 knowledge_note_read 读取笔记，并提供返回的 note.version 作为 expectedVersion')
         if (node.version !== expectedVersion) throw new Error('笔记已变化，请重新读取并合并后更新')
         const value = requiredContent(args.value, 'value')
-        const content = operation === 'append_content'
-          ? `${decodeTextNote((await provider.readNote(node.id, exec.signal)).content)}${value}`
-          : value
+        const original = decodeTextNote((await provider.readNote(node.id, exec.signal)).content)
+        let content: string
+        let change: string
+        if (operation === 'replace_range') {
+          const oldText = requiredContent(args.oldText, 'oldText')
+          if (!oldText.trim()) throw new Error('局部替换必须提供非空原文，不接受空行定位')
+          const start = original.indexOf(oldText)
+          if (start < 0 || original.indexOf(oldText, start + 1) >= 0) throw new Error('原文必须精确且唯一匹配，请重新读取并补足上下文；未生成提案')
+          content = original.slice(0, start) + value + original.slice(start + oldText.length)
+          change = `局部替换：第 ${start + 1}–${start + oldText.length} 字符；范围外 ${original.length - oldText.length} 字符原样保留\n原文预览：${oldText.slice(0, 300)}`
+        } else {
+          content = operation === 'append_content' ? original + value : value
+          change = operation === 'append_content' ? '末尾追加（不会删除或合并已有章节）' : '警告：整篇覆盖，将替换全部原文；局部修改应改用 replace_range'
+        }
+        if (content.replace(/\s/gu, '') === original.replace(/\s/gu, '')) throw new Error('内容未变化或仅有空白变化，不生成待确认提案')
+        await approveNoteMutation(ctx, exec, 'knowledge_note_update', `${change}：${node.name}\n版本：${expectedVersion}\n新内容（${value.length} 字符）：\n${value.slice(0, 600)}${value.length > 600 ? '\n（预览已截断）' : ''}`)
+        await assertNoteUnchanged(provider, node, exec.signal)
         updated = await provider.updateNoteContent(node.id, new TextEncoder().encode(content), exec.signal, expectedVersion)
       }
       return mutationResult(provider, 'updated', updated, codec.encode(agent.session.id, updated.id))
@@ -190,10 +209,10 @@ function updateNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleC
   }
 }
 
-function moveNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCodec): ToolDefinitionLike {
+function moveNoteTool(ctx: RuntimeContextLike, provider: KnowledgeProvider, codec: KnowledgeNoteHandleCodec): ToolDefinitionLike {
   return {
     name: 'knowledge_note_move',
-    description: 'Move a note or folder only when the user explicitly asks. Use exact signed handles. Omit targetFolderHandle to move the item to the note-workspace root.',
+    description: 'Propose moving a note or folder; this tool requests one-shot user approval showing the item and destination, without prescribed user wording. Use exact signed handles. Omit targetFolderHandle for root. Do not retry after rejection.',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
@@ -208,12 +227,23 @@ function moveNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCod
       const args = toolRecord(raw)
       const handle = requiredToolString(args.noteHandle, 'noteHandle', 4096)
       const node = await resolveNoteHandle(provider, codec, agent.session.id, handle, exec.signal)
-      assertExplicitKnowledgeNoteRequest(agent, 'move', node.kind === 'folder' ? 'folder' : 'document')
       const parentId = await resolveOptionalFolderId(provider, codec, agent.session.id, args.targetFolderHandle, 'targetFolderHandle', exec.signal)
+      const parent = parentId === null ? '根目录' : (await provider.getNote(parentId, exec.signal))?.name ?? parentId
+      await approveNoteMutation(ctx, exec, 'knowledge_note_move', `移动「${node.name}」到「${parent}」\n原版本：${node.version}，原目录：${node.parentId ?? '根目录'}`)
+      await assertNoteUnchanged(provider, node, exec.signal)
       const moved = await provider.moveNote(node.id, parentId, exec.signal)
       return mutationResult(provider, 'moved', moved, codec.encode(agent.session.id, moved.id))
     },
   }
+}
+
+async function approveNoteMutation(ctx: RuntimeContextLike, exec: ToolRunContextLike, toolName: string, reason: string): Promise<void> {
+  requestNoteConfirmation(exec, reason)
+}
+
+async function assertNoteUnchanged(provider: KnowledgeProvider, node: NoteNode, signal: AbortSignal): Promise<void> {
+  const current = await provider.getNote(node.id, signal)
+  if (!current || current.version !== node.version || current.name !== node.name || current.parentId !== node.parentId) throw new Error('确认期间笔记已变化，请重新读取并确认，未执行修改')
 }
 
 function deleteNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCodec): ToolDefinitionLike {
@@ -309,8 +339,8 @@ function noteKind(value: unknown): 'document' | 'folder' {
   return value
 }
 
-function updateOperation(value: unknown): 'rename' | 'replace_content' | 'append_content' {
-  if (value !== 'rename' && value !== 'replace_content' && value !== 'append_content') {
+function updateOperation(value: unknown): 'rename' | 'replace_range' | 'replace_content' | 'append_content' {
+  if (value !== 'rename' && value !== 'replace_range' && value !== 'replace_content' && value !== 'append_content') {
     throw new Error('operation must be rename, replace_content, or append_content')
   }
   return value

@@ -19,85 +19,64 @@ function directUserTurn(session, turn, text) {
   )
 }
 
-test('AI note tools create, browse, read, update, move, and safely delete session-bound notes', async (t) => {
-  const root = await mkdtemp(join(tmpdir(), 'dsh-knowledge-note-workspace-tools-'))
-  const databasePath = join(root, 'knowledge.sqlite')
+test('note changes require later conversational confirmation and preserve exact content', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'note-chat-confirm-'))
+  const p = new LocalKnowledgeProvider(join(root, 'db.sqlite'))
+  const { registerKnowledgeNoteTools } = await import('../lib/note-tools.js')
+  const { KnowledgeNoteHandleCodec } = await import('../lib/note-reference-handle.js')
+  const { KnowledgeHandleCodec } = await import('../lib/retrieval.js')
   const tools = new Map()
-  const disposers = []
-  const ctx = {
-    logger: { debug() {}, info() {}, warn() {}, error() {} },
-    llm: { async *stream() {} },
-    tools: { register(definition) { tools.set(definition.name, definition); return () => tools.delete(definition.name) } },
-    on() { return () => {} },
-    effect(factory) { disposers.push(factory()) },
-    get() { return undefined },
-  }
-  apply(ctx, { ...config, databasePath })
-  const observer = new LocalKnowledgeProvider(databasePath)
-  t.after(async () => {
-    await observer.close()
-    for (const dispose of disposers.reverse()) await dispose()
-    await rm(root, { recursive: true, force: true })
-  })
-
-  const session = { id: 'note-workspace-session', header: { cwd: '/workspace/demo' }, snapshotEvents() { return this.events }, events: [] }
+  registerKnowledgeNoteTools({ tools: { register(d) { tools.set(d.name, d) } }, get() { throw Error('must not call popup service') } }, p, new KnowledgeNoteHandleCodec(Buffer.alloc(32, 1)), new KnowledgeHandleCodec(Buffer.alloc(32, 2)))
+  t.after(async () => { await p.close(); await rm(root, { recursive: true, force: true }) })
+  const session = { id: 'chat', events: [], snapshotEvents() { return this.events }, header: {} }
   const exec = { agent: { session }, signal: new AbortController().signal }
-  directUserTurn(session, 1, '请新建一个项目笔记目录，并在里面创建一篇发布计划笔记。')
-  const folderResult = JSON.parse(await tools.get('knowledge_note_create').execute({ kind: 'folder', name: '项目笔记' }, exec))
-  assert.equal(folderResult.storage, 'local')
-  assert.equal(folderResult.note.kind, 'folder')
-  const noteResult = JSON.parse(await tools.get('knowledge_note_create').execute({
-    kind: 'document', name: '发布计划', parentFolderHandle: folderResult.note.handle,
-    content: '# 发布计划\n\n第一阶段。',
-  }, exec))
-  assert.equal(noteResult.note.name, '发布计划.md')
+  const run = async (name, args) => JSON.parse(await tools.get(name).execute(args, exec))
+  const confirm = id => run('knowledge_note_confirm', { confirmationId: id })
+  directUserTurn(session, 1, '整理一下吧')
+  const plan = await run('knowledge_note_create', { kind: 'document', name: '课程', content: '保留原文' })
+  assert.equal(plan.modified, false)
+  assert.deepEqual(await p.listNotes({ parentId: null }), [])
+  await assert.rejects(() => confirm(plan.confirmationId), /下一轮/)
+  directUserTurn(session, 2, '可以')
+  const created = await confirm(plan.confirmationId)
+  await assert.rejects(() => confirm(plan.confirmationId), /失效/)
+  const handle = created.note.handle
+  const initial = await run('knowledge_note_read', { noteHandle: handle })
+  const change = await run('knowledge_note_update', { noteHandle: handle, operation: 'append_content', expectedVersion: initial.note.version, value: '\\n补充图文' })
+  directUserTurn(session, 3, '按这个改')
+  await confirm(change.confirmationId)
+  assert.equal((await run('knowledge_note_read', { noteHandle: handle })).content, '保留原文\\n补充图文')
+  const rename = await run('knowledge_note_update', { noteHandle: handle, operation: 'rename', value: '新标题' })
+  directUserTurn(session, 4, '取消')
+  await assert.rejects(() => confirm(rename.confirmationId), /取消/)
+  const stale = await run('knowledge_note_update', { noteHandle: handle, operation: 'rename', value: '新标题' })
+  const node = (await p.listNotes({ parentId: null }))[0]
+  await p.updateNoteContent(node.id, new TextEncoder().encode('他人新内容'))
+  directUserTurn(session, 5, '确认')
+  await assert.rejects(() => confirm(stale.confirmationId), /变化/)
+  assert.equal((await p.getNote(node.id)).name, '课程.md')
+  const replacement = await run('knowledge_note_update', { noteHandle: handle, operation: 'replace_content', expectedVersion: (await p.getNote(node.id)).version, value: '全文' })
+  assert.match(replacement.summary, /整篇覆盖/)
+  const other = { ...exec, agent: { session: { ...session, id: 'other' } } }
+  await assert.rejects(() => tools.get('knowledge_note_confirm').execute({ confirmationId: replacement.confirmationId }, other), /失效/)
+  directUserTurn(session, 6, '好的')
+  await confirm(replacement.confirmationId)
+  assert.equal((await run('knowledge_note_read', { noteHandle: handle })).content, '全文')
+  const version = (await p.getNote(node.id)).version
+  await assert.rejects(() => run('knowledge_note_update', { noteHandle: handle, operation: 'append_content', expectedVersion: version, value: '\n\n' }), /空白变化/)
+  await assert.rejects(() => run('knowledge_note_update', { noteHandle: handle, operation: 'replace_range', expectedVersion: version, oldText: '不存在', value: '新' }), /唯一匹配/)
+  await p.updateNoteContent(node.id, new TextEncoder().encode('前十三节原文\n十四节旧规范\n十五节旧规范\n后文原样'))
+  const partial = await run('knowledge_note_update', { noteHandle: handle, operation: 'replace_range', expectedVersion: (await p.getNote(node.id)).version, oldText: '十四节旧规范\n十五节旧规范', value: '十四节通用规范' })
+  assert.match(partial.summary, /范围外.*原样保留/)
+  directUserTurn(session, 7, '空行那个不需要。合并内容我确认了')
+  await confirm(partial.confirmationId)
+  assert.equal((await run('knowledge_note_read', { noteHandle: handle })).content, '前十三节原文\n十四节通用规范\n后文原样')
+})
 
-  const folderListing = JSON.parse(await tools.get('knowledge_note_list').execute({ folderHandle: folderResult.note.handle }, exec))
-  assert.deepEqual(folderListing.items.map(item => item.name), ['发布计划.md'])
-  const search = JSON.parse(await tools.get('knowledge_note_list').execute({ query: '发布计划' }, exec))
-  assert.equal(search.items[0].handle, noteResult.note.handle)
-  const initial = JSON.parse(await tools.get('knowledge_note_read').execute({ noteHandle: noteResult.note.handle, maxChars: 8 }, exec))
-  assert.equal(initial.content.length, 8)
-  assert.equal(initial.nextOffset, 8)
-
-  directUserTurn(session, 2, '请给发布计划笔记追加第二阶段，并把笔记改名为正式发布计划。')
-  await tools.get('knowledge_note_update').execute({
-    noteHandle: noteResult.note.handle, operation: 'append_content', expectedVersion: initial.note.version, value: '\n\n第二阶段。',
-  }, exec)
-  const renamed = JSON.parse(await tools.get('knowledge_note_update').execute({
-    noteHandle: noteResult.note.handle, operation: 'rename', value: '正式发布计划.md',
-  }, exec))
-  assert.equal(renamed.note.name, '正式发布计划.md')
-  const renamedNode = (await observer.searchNotes('正式发布计划', 10))[0]
-  assert.ok(renamedNode)
-  const updated = await observer.readNote(renamedNode.id)
-  assert.match(new TextDecoder().decode(updated.content), /第一阶段。[\s\S]*第二阶段。/)
-
-  const otherSession = { id: 'other-note-workspace-session', header: { cwd: '/workspace/demo' }, snapshotEvents() { return this.events }, events: [] }
-  directUserTurn(otherSession, 1, '请查看正式发布计划笔记。')
-  await assert.rejects(
-    () => tools.get('knowledge_note_read').execute({ noteHandle: noteResult.note.handle }, {
-      agent: { session: otherSession }, signal: new AbortController().signal,
-    }),
-    /does not belong to this session/,
-  )
-
-  directUserTurn(session, 3, '请把正式发布计划笔记移动到笔记根目录。')
-  const moved = JSON.parse(await tools.get('knowledge_note_move').execute({ noteHandle: noteResult.note.handle }, exec))
-  assert.equal(moved.note.name, '正式发布计划.md')
-  assert.deepEqual((await observer.listNotes({ parentId: null })).map(item => item.name), ['项目笔记', '正式发布计划.md'])
-
-  directUserTurn(session, 4, '继续讨论发布，不要修改笔记。')
-  await assert.rejects(
-    () => tools.get('knowledge_note_update').execute({
-      noteHandle: noteResult.note.handle, operation: 'replace_content', value: '不应写入',
-    }, exec),
-    /requires an explicit request in the current direct user message/,
-  )
-
-  directUserTurn(session, 5, '请删除正式发布计划笔记。')
-  await tools.get('knowledge_note_delete').execute({ noteHandle: noteResult.note.handle }, exec)
-  assert.deepEqual(await observer.searchNotes('正式发布计划', 10), [])
+test('conversational confirmation rejects changed or negated instructions', async () => {
+  const { isNoteConfirmation } = await import('../lib/note-confirmation.js')
+  for (const text of ['可以', '合并内容我确认了', '空行那个不需要。合并内容我确认了']) assert.equal(isNoteConfirmation(text), true, text)
+  for (const text of ['我不确认了', '可以，但是改成另外的标题', '如果我确认了', '你说我确认了', '可以吗']) assert.equal(isNoteConfirmation(text), false, text)
 })
 
 test('AI note deletion preserves notes referenced by knowledge documents', async (t) => {

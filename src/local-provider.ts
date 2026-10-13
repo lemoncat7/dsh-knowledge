@@ -2212,7 +2212,12 @@ function fallbackTerms(text: string): string[] {
       terms.add(`${chars[index]}${chars[index + 1]}`)
     }
   }
-  return [...terms].slice(0, 20)
+  // Filter before allocating the budget. Sample the whole query instead of
+  // silently discarding subjects mentioned near the end of a long request.
+  const candidates = [...terms].filter(term => !SEARCH_STOP_TERMS.has(term))
+  const limit = 40
+  if (candidates.length <= limit) return candidates
+  return Array.from({ length: limit }, (_, index) => candidates[Math.round(index * (candidates.length - 1) / (limit - 1))]!)
 }
 
 function relevanceScore(entry: KnowledgeEntry, query: string): number {
@@ -2228,12 +2233,17 @@ function relevanceScore(entry: KnowledgeEntry, query: string): number {
   const coverage = terms.filter(term => combined.includes(term)).length / terms.length
   const titleCoverage = terms.filter(term => title.includes(term)).length / terms.length
   const tagCoverage = terms.filter(term => tags.includes(term)).length / terms.length
-  return Math.min(.97, .05 + coverage * .72 + titleCoverage * .13 + tagCoverage * .1)
+  // Two distinct title terms are useful evidence even when conversational
+  // instructions dilute overall query coverage. One generic word is not.
+  const titleMatches = terms.filter(term => title.includes(term)).length
+  const titleFloor = titleMatches >= 2 ? .3 : 0
+  return Math.min(.97, Math.max(titleFloor, .05 + coverage * .72 + titleCoverage * .13 + tagCoverage * .1))
 }
 
 const SEARCH_STOP_TERMS = new Set([
   'a', 'an', 'and', 'are', 'for', 'how', 'is', 'of', 'or', 'the', 'to', 'what', 'when', 'where', 'which', 'who', 'why',
   '什么', '么是', '如何', '怎么', '是否', '介绍',
+  '这轮', '不要', '别用', '任何', '工具', '假设', '我要', '要你', '帮我', '请你', '一下', '里面',
 ])
 
 function encodeCursor(updatedAt: string, id: string): string {

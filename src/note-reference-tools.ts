@@ -23,7 +23,7 @@ export function registerKnowledgeNoteReferenceTools(
 function searchNotesTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCodec): ToolDefinitionLike {
   return {
     name: 'knowledge_note_search',
-    description: 'Search note-document and editable-file metadata when the current user explicitly asks to inspect, edit, organize, or reference notes. This never reads note content. Pass exact returned handles to knowledge_note_read/update/move/delete or knowledge_note_references; never invent a handle.',
+    description: 'Search note-document and editable-file metadata without an extra user authorization request. This never reads note content or authorizes modifications. Pass exact returned handles to knowledge_note_read/update/move/delete or knowledge_note_references; never invent a handle.',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
@@ -57,7 +57,7 @@ function manageNoteReferencesTool(
 ): ToolDefinitionLike {
   return {
     name: 'knowledge_note_references',
-    description: 'List structured note references of a mounted knowledge document. Each referenced note may be read and its content updated by passing knowledgeHandle plus the returned note handle to knowledge_note_read/update, in ordinary agent conversations; no extra authorization switch is needed. Partner heartbeat uses its explicitly selected recording target instead. Adding/removing references still requires an explicit current user request and a writable mounted knowledge base. Never modify the knowledge body through note tools.',
+    description: 'List structured note references of a mounted knowledge document. Referenced notes may be read without extra user authorization, but updating them still requires an explicit current user instruction. Partner heartbeat uses its explicitly selected recording target instead. Adding/removing references requires an explicit current user request and a writable mounted knowledge base. Never modify the knowledge body through note tools.',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {

@@ -27,6 +27,7 @@ export interface AgentLike {
 
 export interface ToolRunContextLike {
   agent?: AgentLike
+  callId?: string
   signal: AbortSignal
 }
 

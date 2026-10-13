@@ -47,8 +47,9 @@ export function assertExplicitKnowledgeNoteRequest(
   operation: KnowledgeNoteOperation,
   target: KnowledgeNoteTarget = 'any',
 ): void {
+  if (operation === 'inspect') return
   const text = currentDirectUserText(agent).normalize('NFKC').toLocaleLowerCase('zh-CN').trim()
-  const clauses = text.split(/[。！？!?；;\n，,]+/u).map(clause => clause.trim()).filter(Boolean)
+  const clauses = text.split(/[。！？!?；;\n]+/u).map(clause => clause.trim()).filter(Boolean)
   if (!clauses.some(clause => clauseRequestsKnowledgeNote(clause, operation, target))) {
     throw new Error(`knowledge_note_${operation} requires an explicit request in the current direct user message`)
   }
@@ -59,9 +60,10 @@ export function explicitlyRequestsKnowledgeNote(
   operation: KnowledgeNoteOperation,
   target: KnowledgeNoteTarget = 'any',
 ): boolean {
+  if (operation === 'inspect') return true
   const text = input.normalize('NFKC').toLocaleLowerCase('zh-CN').trim()
   if (text.length === 0) return false
-  return text.split(/[。！？!?；;\n，,]+/u)
+  return text.split(/[。！？!?；;\n]+/u)
     .map(clause => clause.trim())
     .filter(Boolean)
     .some(clause => clauseRequestsKnowledgeNote(clause, operation, target))
@@ -123,17 +125,25 @@ function clauseRequestsKnowledgeNote(
   const documentSubject = /(?:笔记|筆記|文档|文檔|markdown|md\s*文件|notes?|notebook|document)/iu
   const workspaceSubject = /(?:笔记工作区|筆記工作區|note\s*workspace|notes?|notebook)/iu
   const targetSubject = target === 'folder' ? folderSubject : target === 'document' ? documentSubject : /(?:笔记|筆記|文档|文檔|目录|目錄|文件夹|資料夾|markdown|md\s*文件|notes?|notebook|document|folder|directory)/iu
+  const knowledgeAction = {
+    inspect: /(?:查看|读取|列出|写入|写进|整理进|整理到|保存到|放到|创建|新建|修改|更新|编辑|移动|删除|read|list|write|save|create|update|edit|move|delete)/iu,
+    create: /(?:写入|写进|整理进|整理到|保存到|放到|创建|新建|建一个|write|save|create)/iu,
+    update: /(?:写入|写进|追加|补充|修改|更新|编辑|重命名|改名|整理成|覆盖|替换|重写|write|append|update|edit|rename|replace|rewrite)/iu,
+    move: /(?:移动|挪到|放到|整理到|move|relocate)/iu,
+    delete: /(?:删除|移除|清理|delete|remove)/iu,
+  }[operation]
   const hasQualifiedTarget = noteSubject.test(text)
     || (workspaceSubject.test(text) && targetSubject.test(text))
+    || (operation !== 'delete' && /(?:知识库|知識庫|knowledge\s*base)/iu.test(text)
+      && (targetSubject.test(text) || (target === 'document' && folderSubject.test(text)))
+    )
   if (!hasQualifiedTarget) return false
   if (operation === 'inspect') return true
   if (deniesKnowledgeNoteMutation(text, operation)) return false
-  // Naming the note workspace in the current direct user turn is the consent
-  // boundary for non-destructive note work. The selected tool and its signed
-  // handles still constrain the concrete operation and target. This keeps the
-  // boundary easy to express in natural language without carrying consent
-  // forward from an earlier turn.
-  if (operation !== 'delete') return true
+  // Mentioning notes is not write consent. Read access is independent, while
+  // mutations require the corresponding action in the current user request.
+  if (operation !== 'delete') return knowledgeAction.test(text)
+    && !/(?:假设|假如|如果|例如|比如|举例|能否|是否|可不可以|怎么|如何|不要|别|禁止|无需|不需要|取消|停止|suppose|hypothetical|for example|how to|do\s+not|don't|never)/iu.test(text)
   // Permanent deletion remains deliberately stricter than browsing and
   // reversible maintenance: the current message must also say to delete.
   return /(?:删除|移除|清理|delete|remove)/iu.test(text) && targetSubject.test(text)
