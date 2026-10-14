@@ -1,6 +1,6 @@
 {
   "name": "@lemoncat7/dsh-knowledge",
-  "version": "2.13.5",
+  "version": "2.13.6",
   "description": "Local and remote knowledge bases for DeepSeek Harness, with scoped recall, controlled write-back, and a Web management console",
   "keywords": [
     "deepseek-harness",
@@ -29,6 +29,7 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "docs/releases/2.13.6.md",
     "docs/releases/2.13.3.md",
     "docs/releases/2.13.2.md",
     "docs/releases/2.13.1.md",
@@ -52,6 +53,7 @@
     "client": {
       "platform": "web",
       "inject": [
+        "@deepseek-ai/dsh-client-ui-input-trigger",
         "@deepseek-ai/dsh-api-session-controller",
         "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-client-ui-session",
@@ -93,6 +95,7 @@
     "@deepseek-ai/dsh-api-session-controller": "0.2.0-rc.2",
     "@deepseek-ai/dsh-client-ui-chat": "0.2.0-rc.2",
     "@deepseek-ai/dsh-client-ui-conversation": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-input-trigger": "0.2.0-rc.2",
     "@deepseek-ai/dsh-client-ui-layout": "0.2.0-rc.2",
     "@deepseek-ai/dsh-client-ui-primitives": "0.2.0-rc.2",
     "@deepseek-ai/dsh-client-ui-renderer": "0.2.0-rc.2",

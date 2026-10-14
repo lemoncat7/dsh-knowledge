@@ -1,6 +1,6 @@
 # dsh-knowledge
 
-> 当前版本 **2.13.1**，已验证宿主 **DSH 0.2.0-rc.2**（宿主仍为 RC）。Node.js **^22.19.0 或 >=24.0.0**。详见 [兼容说明](docs/dsh-020-compatibility.md) 和 [发布说明](docs/releases/2.13.1.md)。
+> 当前版本 **2.13.6**，已验证宿主 **DSH 0.2.0-rc.2**（宿主仍为 RC）。Node.js **^22.19.0 或 >=24.0.0**。详见 [兼容说明](docs/dsh-020-compatibility.md) 和 [发布说明](docs/releases/2.13.6.md)。
 
 [![npm](https://img.shields.io/npm/v/%40lemoncat7%2Fdsh-knowledge)](https://www.npmjs.com/package/@lemoncat7/dsh-knowledge)
 [![GitHub Release](https://img.shields.io/github/v/release/lemoncat7/dsh-knowledge)](https://github.com/lemoncat7/dsh-knowledge/releases/latest)
@@ -232,6 +232,8 @@ pnpm dsh web
 - 查看 AI 提取依据和真实增删差异，直接通过、编辑最终文档后通过或拒绝候选。
 - 创建、查看和撤销客户端令牌；新令牌原文只显示一次。
 
+输入框的 `@` 菜单支持独立的「笔记文档」分组：跨目录按标题搜索，选中后引用准确的文档 ID，发送时生成当前会话可用的读取句柄。不会混入普通知识条目、目录或附件，也不会授予修改权限；沿用原菜单的方向键、Enter、Tab 与 Escape。详见 [笔记文档引用](docs/note-mentions.md)。
+
 知识库的 `description` 同时用于读取和回写路由：它以轻量目录形式告诉模型每个挂载库覆盖什么主题，`knowledge_base_search` 也用它匹配当前信息需求；文档正文不会随目录注入。主模型不执行内容回写，所有回答都在完整结束后进行一次独立的严格提取，同时判断长期价值、目标知识库、重复、更新与冲突；用户明确要求保存时也走同一条回答后链路。挂载只表示“可选”，不代表每次回答都要写入。`extractionInstructions` 用于匹配后继续限定具体收录规则。
 
 笔记工具与知识回写相互独立。当前用户消息只要明确提到“笔记文档”“笔记目录”或“笔记工作区”，AI 就可以按该消息的要求查看和维护笔记，不需要固定授权句式；永久删除仍必须在当前消息中明确提出，并且授权不会从历史消息延续。工具会先用 `knowledge_note_list` 浏览目录或按名称搜索，也可用 `knowledge_note_search` 查找非目录节点；随后把返回的精确句柄传给 `knowledge_note_read / update / move / delete`。`knowledge_note_create` 未指定父目录时写入笔记根目录，指定目录时必须使用 `knowledge_note_list` 返回的文件夹句柄。本地和远程模式由当前 Provider 决定，工具不接受也不猜测存储位置。管理台中的笔记文档和普通文件均可从目录列表或打开后的工具栏下载。
@@ -271,7 +273,7 @@ pnpm dsh web
 | GET | `/documents/:id` | read | 读取单篇 Markdown 文档 |
 | POST | `/documents/:id/finalize` | write | 标记为已解决或已收集完成并封存 |
 | POST | `/documents/:id/reopen` | write | 重新打开封存文档 |
-| GET | `/notes` | read | 懒加载目录子节点，或使用 `q` 搜索全部笔记文档 |
+| GET | `/notes` | read | 懒加载目录子节点，或使用 `q` 搜索笔记；支持 `kind=document` 类型过滤和 `recursive=1` 跨目录列举 |
 | POST | `/notes/folders` | write | 在任意层级创建目录 |
 | POST | `/notes/documents` | write | 创建可编辑的 Markdown 笔记文档 |
 | POST | `/notes/files` | write | 上传原始文件；名称和父目录通过查询参数传入 |

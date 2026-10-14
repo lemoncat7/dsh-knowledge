@@ -131,10 +131,14 @@ async function dispatch(
       requirePermission(actor.permissions, 'read')
       const query = url.searchParams.get('q')
       const parentId = url.searchParams.get('parentId')
+      const kind = url.searchParams.get('kind')
+      if (kind !== null && kind !== 'document' && kind !== 'folder' && kind !== 'file') throw httpError(400, 'invalid note kind')
       return sendJson(res, 200, provider.notes.list({
         ...query === null ? {} : { query },
         ...query === null ? { parentId } : {},
         limit: integerParam(url, 'limit', 200, 1, 500),
+        ...kind === null ? {} : { kind },
+        ...url.searchParams.get('recursive') === '1' ? { recursive: true } : {},
       }))
     }
     if (method === 'POST' && segments[1] === 'folders' && segments.length === 2) {

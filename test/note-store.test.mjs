@@ -8,6 +8,21 @@ import test from 'node:test'
 import { noteReferenceMarkdown } from '../lib/notes/domain.js'
 import { NoteStore } from '../lib/notes/store.js'
 
+test('document-only recursive search filters before limiting and excludes folders and uploaded files', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-note-mention-'))
+  const store = new NoteStore(root)
+  t.after(async () => { await store.close(); await rm(root, { recursive: true, force: true }) })
+  const folder = await store.createFolder('部署资料')
+  for (let i = 0; i < 25; i++) await store.createFolder(`部署-${i}`, folder.id)
+  await store.upload({ name: '部署附件.txt', parentId: folder.id, mediaType: 'text/plain', content: Buffer.from('text') })
+  const doc = await store.createDocument('部署规范', folder.id, '# content')
+  assert.deepEqual(store.list({ query: '部署', kind: 'document', recursive: true, limit: 1 }).map(n => n.id), [doc.id])
+  assert.deepEqual(store.list({ kind: 'document', recursive: true, limit: 20 }).map(n => n.id), [doc.id])
+  assert.deepEqual(store.list({ kind: 'document', parentId: null }), [])
+  assert.deepEqual(store.list({ kind: 'document', parentId: folder.id }).map(n => n.id), [doc.id])
+  assert.deepEqual(store.list({ query: '%', kind: 'document' }), [])
+})
+
 test('note store provides a stable, nested document tree independent from knowledge bases', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-note-store-'))
   const store = new NoteStore(root)

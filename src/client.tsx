@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { WritebackStatusClient } from './writeback/status-client.js'
+import { createNoteMentionSource } from './note-mention-source.js'
+import type {} from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import { observeWritebackVisibility } from './writeback/status-visibility.js'
 import { subscribeWritebackChanges } from '../web/writeback-live.js'
 import type { WritebackStatus } from './writeback/queue.js'
@@ -82,6 +84,11 @@ export function apply(ctx: ClientContext): void {
   const docked = supportsDockedPanels(ctx)
   let activity: KnowledgeActivityController | undefined
   const workspace = createKnowledgeWorkspaceController(ctx, () => { if (!docked) activity?.close(undefined, true) })
+  ctx.inject(['inputTriggers'], scoped => {
+    scoped.effect(() => scoped.inputTriggers.registerSource(createNoteMentionSource(
+      noteId => workspace.openDocument({ view: 'notes', noteId }),
+    )), 'dsh-knowledge: @ note documents')
+  })
   activity = createKnowledgeActivityController(ctx, {
     beforeOpen: () => { workspace.close(); if (!docked) activatePluginWorkspace(PLUGIN_ID) },
     openWorkspace: target => { if (target === undefined) workspace.open(); else workspace.openDocument(target) },

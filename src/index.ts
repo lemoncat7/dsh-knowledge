@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { apply as registerWorklog, type JournalRuntime } from './worklog-runtime.js'
@@ -217,7 +217,10 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   }
 
   const registerHttpSurfaces = (httpRuntime: RuntimeContextLike): void => {
-    const disposeActivityControl = registerKnowledgeActivityControl(httpRuntime, provider)
+    const disposeActivityControl = registerKnowledgeActivityControl(httpRuntime, provider, {
+      codec: noteHandleCodec,
+      sourceKey: () => createHash('sha256').update(destination()).digest('hex'),
+    })
     httpRuntime.effect(() => disposeActivityControl, 'dsh-knowledge.activity-control')
     let disposePublicApi: (() => void) | undefined
     const publicApiView = () => ({

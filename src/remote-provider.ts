@@ -260,6 +260,8 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     if (query) params.set('q', query)
     else if (request.parentId !== undefined && request.parentId !== null) params.set('parentId', request.parentId)
     else if (request.parentId === null) params.set('parentId', '')
+    if (request.kind !== undefined) params.set('kind', request.kind)
+    if (request.recursive) params.set('recursive', '1')
     return this.request<NoteNode[]>(`notes?${params}`, { signal })
   }
 

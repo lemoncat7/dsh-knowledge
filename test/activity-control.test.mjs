@@ -2,14 +2,15 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import test from 'node:test'
 import { KNOWLEDGE_ACTIVITY_PATH, registerKnowledgeActivityControl } from '../lib/activity-control.js'
+import { KnowledgeNoteHandleCodec } from '../lib/note-reference-handle.js'
 
-async function activityServer(provider) {
+async function activityServer(provider, mentions) {
   let handler
   const ctx = {
     webServer: { register(route) { handler = route.handler; return () => {} } },
     get() { return undefined },
   }
-  registerKnowledgeActivityControl(ctx, provider)
+  registerKnowledgeActivityControl(ctx, provider, mentions)
   const server = createServer((req, res) => void handler(req, res))
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()
@@ -39,6 +40,42 @@ const note = {
   id: `note_${'a'.repeat(32)}`, parentId: null, kind: 'document', name: '设计记录.md', mediaType: 'text/markdown',
   editable: true, size: 24, sha256: 'def', version: 2, createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-02T00:00:00Z',
 }
+
+test('note mentions search documents only and issue fresh session-bound handles without reading content', async t => {
+  const codec = new KnowledgeNoteHandleCodec(Buffer.alloc(32, 1))
+  let sourceKey = 'a'.repeat(64), current = note
+  const requests = []
+  const server = await activityServer({
+    async listNotes(request) { requests.push(request); return [note, { ...note, id: 'file', kind: 'file' }, { ...note, id: 'folder', kind: 'folder' }] },
+    async getNote(id) { return id === note.id ? current : undefined },
+    async readNote() { assert.fail('mentions must not read full note content') },
+    async resolveMounts() { assert.fail('note mentions must not require knowledge mounts') },
+  }, { codec, sourceKey: () => sourceKey })
+  t.after(server.close)
+  const headers = { 'x-dsh-knowledge-client': 'conversation-web' }
+  const path = `${server.url}/note-mentions?sessionId=session-a&q=设计`
+  const result = await (await fetch(path, { headers })).json()
+  assert.equal(result.items.length, 1)
+  assert.equal(result.items[0].id, note.id)
+  assert.equal(result.items[0].parent, '根目录')
+  assert.deepEqual(requests[0], { query: '设计', kind: 'document', recursive: true, limit: 20 })
+  assert.equal(JSON.stringify(result).includes('n1.'), false)
+  current = { ...note, name: '重新命名.md' }
+  const refUrl = `${server.url}/note-mentions/${note.id}?sessionId=session-a&sourceKey=${sourceKey}`
+  const serialized = await (await fetch(refUrl, { headers })).json()
+  assert.match(serialized.text, /重新命名/)
+  const handle = serialized.text.match(/noteHandle: (n1\.[\w.-]+)/)[1]
+  assert.equal(codec.decode(handle, 'session-a').noteId, note.id)
+  assert.throws(() => codec.decode(handle, 'session-b'), /does not belong/)
+  assert.match(serialized.text, /不授权修改或删除/)
+  assert.equal((await fetch(path)).status, 401)
+  assert.equal((await fetch(path, { headers: { ...headers, origin: 'https://attacker.example', 'sec-fetch-site': 'cross-site' } })).status, 403)
+  assert.equal((await fetch(refUrl, { method: 'POST', headers })).status, 405)
+  current = undefined
+  assert.equal((await fetch(refUrl, { headers })).status, 404)
+  sourceKey = 'b'.repeat(64)
+  assert.equal((await fetch(refUrl, { headers })).status, 409)
+})
 
 test('activity control exposes only mounted documents to the conversation panel', async (t) => {
   const indexRequests = []

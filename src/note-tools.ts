@@ -80,11 +80,11 @@ async function authorizeReferencedNote(provider: KnowledgeProvider, codec: Knowl
 function readNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCodec, _knowledgeCodec: KnowledgeHandleCodec): ToolDefinitionLike {
   return {
     name: 'knowledge_note_read',
-    description: 'Read a bounded chunk from an editable text or Markdown note after knowledge_note_list/search returned its exact handle. This never reads folders or binary attachments. Use offset and maxChars to continue long notes.',
+    description: 'Read a bounded chunk from an editable text or Markdown note using its exact session-bound handle from knowledge_note_list/search or an explicit @ note-document reference in the user message. An @ reference already identifies the selected note; do not replace it with a same-title search result. This never reads folders or binary attachments and does not authorize mutations. Use offset and maxChars to continue long notes.',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
-        noteHandle: { type: 'string', description: 'Exact signed note handle returned by knowledge_note_list or knowledge_note_search.' },
+        noteHandle: { type: 'string', description: 'Exact signed note handle returned by knowledge_note_list, knowledge_note_search, or an explicit @ note-document reference.' },
         knowledgeHandle: { type: 'string', description: 'Optional legacy reference metadata. Reading requires only a valid session-bound noteHandle, not a knowledge mount or user authorization.' },
         offset: { type: 'integer', description: 'Character offset, default 0.' },
         maxChars: { type: 'integer', description: 'Maximum returned characters, default 20000 and maximum 80000.' },

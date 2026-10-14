@@ -42,6 +42,22 @@ export class NoteStore {
     this.assertOpen()
     const query = request.query?.trim() ?? ''
     const limit = normalizeLimit(request.limit)
+    if (request.kind !== undefined && !['folder', 'document', 'file'].includes(request.kind)) throw new Error('invalid note kind')
+    if (request.kind !== undefined || request.recursive) {
+      const clauses: string[] = []
+      const args: (string | number)[] = []
+      if (query) { clauses.push("name LIKE ? ESCAPE '\\'"); args.push(`%${escapeLike(query)}%`) }
+      else if (!request.recursive) {
+        const parentId = normalizeParentId(request.parentId)
+        if (parentId !== null) this.assertFolder(parentId)
+        clauses.push('parent_key = ?'); args.push(parentKey(parentId))
+      }
+      if (request.kind !== undefined) { clauses.push('kind = ?'); args.push(request.kind) }
+      return (this.db.prepare(`SELECT ${NOTE_COLUMNS} FROM note_nodes
+        ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
+        ORDER BY CASE kind WHEN 'folder' THEN 0 ELSE 1 END, name COLLATE NOCASE, id LIMIT ?
+      `).all(...args, limit) as SqlRow[]).map(mapNoteNode)
+    }
     if (query.length > 0) {
       return (this.db.prepare(`
         SELECT ${NOTE_COLUMNS}

@@ -56,6 +56,8 @@ export interface NoteListRequest {
   parentId?: string | null
   query?: string
   limit?: number
+  kind?: NoteNodeKind
+  recursive?: boolean
 }
 
 export interface NoteFileUpload {
