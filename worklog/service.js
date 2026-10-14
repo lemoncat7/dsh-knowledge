@@ -4,8 +4,9 @@ import { Outbox } from './outbox.js'
 import { destination, requestCentral } from './remote.js'
 
 export class JournalService {
-  constructor(store, worker, models, current = () => ({ backend: 'local' }), request = requestCentral) {
+  constructor(store, worker, models, current = () => ({ backend: 'local' }), request = requestCentral, defaultProject = '') {
     this.store = store; this.worker = worker; this.current = current; this.request = request
+    this.defaultProject = defaultProject
     this.central = createCentral(store, worker, models)
     this.outbox = new Outbox(store, current, request)
     worker.isEnabled = () => this.current().backend === 'local' && !this.current().paused
@@ -28,7 +29,7 @@ export class JournalService {
   collectorState() {
     const target = destination(this.current())
     return { remote: !!target, sourceId: this.store.originId(), capture: pick(this.store.config(), captureKeys),
-      projects: this.store.overview().projects,
+      projects: this.store.overview().projects, defaultProject: this.defaultProject,
       sync: target ? this.outbox.status(target) : null,
       localHistory: this.store.db.prepare('SELECT count(*) AS n FROM records').get().n,
       localReports: this.store.db.prepare('SELECT count(*) AS n FROM reports').get().n }
@@ -58,7 +59,7 @@ export class JournalService {
         return this.store.configure(data)
       }
       const value = await this.central(method, path, data, query)
-      if (path === '/state') return { ...value, remote: false, canManage: true, sourceId: this.store.originId() }
+      if (path === '/state') return { ...value, remote: false, canManage: true, sourceId: this.store.originId(), defaultProject: this.defaultProject }
       return value
     }
     if (method === 'POST' && path === '/settings') {
@@ -70,7 +71,7 @@ export class JournalService {
     }
     const value = await this.request(connection, method, path, data, query)
     if (path === '/version') return { version: `${value.version}:local:${this.store.version()}` }
-    if (path === '/state') return { ...value, remote: true, sourceId: this.store.originId(), config: { ...value.config, ...pick(this.store.config(), captureKeys) }, projects: this.store.overview().projects }
+    if (path === '/state') return { ...value, remote: true, sourceId: this.store.originId(), config: { ...value.config, ...pick(this.store.config(), captureKeys) }, projects: this.store.overview().projects, defaultProject: this.defaultProject }
     return value
   }
   start() { this.worker.start(); this.outbox.start() }

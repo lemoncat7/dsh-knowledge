@@ -1,4 +1,6 @@
-export const defaults = { enabled: false, scope: 'selected', projects: [], excludedSessions: [], timezone: 'Asia/Shanghai', provider: '', model: '', scheduleEnabled: false, scheduleTime: '23:00' }
+import { projectInScope } from './project-scope.js'
+
+export const defaults = { enabled: false, scope: 'selected', projects: [], recursiveProjects: false, excludedSessions: [], timezone: 'Asia/Shanghai', provider: '', model: '', scheduleEnabled: false, scheduleTime: '23:00' }
 export const fail = (message, status = 400) => Object.assign(new Error(message), { status })
 export function dayOf(time, timezone) {
   const parts = new Intl.DateTimeFormat('en', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(time))
@@ -17,12 +19,14 @@ export function settings(value) {
   }
   const provider = value.provider ?? '', model = value.model ?? ''
   const scope = value.scope ?? 'selected'
+  const recursiveProjects = value.recursiveProjects === undefined ? false : value.recursiveProjects
+  if (typeof recursiveProjects !== 'boolean') throw fail('包含子目录设置必须为开关值')
   const scheduleEnabled = value.scheduleEnabled === undefined ? false : value.scheduleEnabled
   const scheduleTime = value.scheduleTime === undefined ? '23:00' : value.scheduleTime
   if (typeof scheduleEnabled !== 'boolean' || typeof scheduleTime !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(scheduleTime)) throw fail('每日整理时间无效，请选择 00:00–23:59')
   if (!['all', 'selected'].includes(scope)) throw fail('采集范围无效')
   if (typeof provider !== 'string' || typeof model !== 'string' || provider.length > 256 || model.length > 256 || !!provider.trim() !== !!model.trim()) throw fail('服务商与模型 ID 必须同时填写或同时留空')
-  return { enabled: value.enabled, scope, timezone: value.timezone, projects: [...new Set(value.projects.map(p => p.trim()))], excludedSessions: [...new Set(value.excludedSessions)], provider: provider.trim(), model: model.trim(), scheduleEnabled, scheduleTime }
+  return { enabled: value.enabled, scope, timezone: value.timezone, projects: [...new Set(value.projects.map(p => p.trim()))], recursiveProjects, excludedSessions: [...new Set(value.excludedSessions)], provider: provider.trim(), model: model.trim(), scheduleEnabled, scheduleTime }
 }
 export function text(value, max = 100000) {
   if (typeof value !== 'string' || !value.trim() || value.length > max) throw fail(`请输入内容，最多 ${max} 字符`)
@@ -30,7 +34,7 @@ export function text(value, max = 100000) {
 }
 export function capture(session, turn, config, now = Date.now()) {
   const project = session.header.cwd || ''
-  if (!config.enabled || (config.scope !== 'all' && !config.projects.includes(project)) || config.excludedSessions.includes(session.id)) return null
+  if (!config.enabled || !projectInScope(project, config) || config.excludedSessions.includes(session.id)) return null
   const events = session.snapshotEvents()
   const start = events.findLastIndex(e => e.type === 'turn/start' && e.data.turn === turn)
   if (start < 0) return null

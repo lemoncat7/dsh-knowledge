@@ -1,45 +1,47 @@
-import { useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ModelPicker } from './ModelPicker.jsx'
+import { ProjectTree } from './ProjectTree.jsx'
+import { HelpTip } from './HelpTip.jsx'
+import { buildProjectTree, directoryChain } from '../project-tree.js'
 
-export function Settings({ state, save, saveCapture, busy, currentProject = '' }) {
+export function Settings({ state, save, saveCapture, busy, currentProject = '', onDirtyChange }) {
   const [config, set] = useState({ ...state.config, sharedRevision: state.sharedRevision })
   const [project, setProject] = useState('')
-  const projects = [...new Set([currentProject, ...state.projects, ...config.projects].filter(Boolean))]
+  const [addedProjects, setAddedProjects] = useState([])
+  const initial = useRef(JSON.stringify(config))
+  useLayoutEffect(() => { onDirtyChange?.(JSON.stringify(config) !== initial.current || !!project.trim()) }, [config, project, onDirtyChange])
+  const projects = useMemo(() => [...new Set([state.defaultProject, currentProject, ...state.projects, ...addedProjects].filter(Boolean))], [state.defaultProject, currentProject, state.projects, addedProjects])
+  const known = useMemo(() => buildProjectTree(projects).nodes, [projects])
+  const visibleSelected = config.projects.filter(path => known.has(directoryChain(path).at(-1)?.key))
+  const otherSelected = config.projects.filter(path => !visibleSelected.includes(path))
   return <form onSubmit={e => { e.preventDefault(); save(config) }}>
-    <h3>本机采集</h3>
-    <p>{state.remote ? '当前 DSH 实例按本地项目路径采集，并上传至已连接的中央知识库；断网时暂存补传。' : '当前节点保存并整理日报；其他 DSH 实例连接此中央知识库后可上传来源。'}只采集启用后的新对话，不自动发送渠道消息。</p>
+    <h3 className="wl-setting-heading">本机采集<HelpTip label="本机采集"><span>本机指运行 DSH 的实例；目录来自本机默认工作目录和会话，不扫描磁盘。只采集启用后的新对话，排除指定会话，不补采历史、不自动发送消息。</span><span>勾选“包含子目录”后采集全部下级；否则只采集目录本身。展开不改变勾选，方向键浏览、空格勾选。</span>{state.remote && <span>素材上传中央，断网暂存补传；关闭采集不取消待上传记录、不删除中央记录。</span>}</HelpTip></h3>
     <label className="wl-check"><input type="checkbox" checked={config.enabled} onChange={e => set({ ...config, enabled: e.target.checked })} />启用工作素材采集</label>
-    {state.remote && <p className="wl-muted">关闭采集只停止新增素材，不会取消已经授权采集的待上传记录，也不会删除中央记录。</p>}
-    <h3>采集项目</h3>
+    <h3 className="wl-setting-heading wl-setting-subheading">采集工作目录</h3>
     <div className="wl-actions" role="group" aria-label="采集范围">
-      <button type="button" aria-pressed={config.scope === 'all'} onClick={() => set({ ...config, scope: 'all' })}>全部项目</button>
-      <button type="button" aria-pressed={config.scope !== 'all'} onClick={() => set({ ...config, scope: 'selected' })}>选择项目</button>
+      <button type="button" aria-pressed={config.scope === 'all'} onClick={() => set({ ...config, scope: 'all' })}>全部目录</button>
+      <button type="button" aria-pressed={config.scope !== 'all'} onClick={() => set({ ...config, scope: 'selected' })}>选择目录</button>
     </div>
-    {config.scope === 'all' ? <p className="wl-muted">包含当前及未来项目的新对话，仍排除下方指定的会话。保存并开启采集后生效。</p> : <>
-    <p className="wl-muted">从当前及已记录的项目选择，也可手写路径；不选项目则不采集。</p>
-    {currentProject && <button type="button" onClick={() => set({ ...config, projects: [...new Set([...config.projects, currentProject])] })}>添加当前项目</button>}
-    <div className="wl-projects">
-    {projects.map(id => <label className="wl-check" key={id}><input type="checkbox" checked={config.projects.includes(id)} onChange={e => set({ ...config, projects: e.target.checked ? [...config.projects, id] : config.projects.filter(p => p !== id) })} /><span title={id}>{id}</span></label>)}
-    </div>
-    <label>添加项目路径<input value={project} onChange={e => setProject(e.target.value)} placeholder="例如 /workspace/my-project" /></label>
-    <button type="button" disabled={!project.trim()} onClick={() => { set({ ...config, projects: [...new Set([...config.projects, project.trim()])] }); setProject('') }}>添加项目</button>
+    {config.scope !== 'all' && <>
+    <label className="wl-check"><input type="checkbox" checked={config.recursiveProjects ?? false} onChange={e => set({ ...config, recursiveProjects: e.target.checked })} />包含所选目录的子目录</label>
+    <ProjectTree projects={projects} selected={visibleSelected} recursive={config.recursiveProjects ?? false} currentProject={currentProject} defaultProject={state.defaultProject} onSelectCurrent={() => set({ ...config, projects: [...new Set([...config.projects, currentProject])] })} onChange={projects => set({ ...config, projects: [...projects, ...otherSelected] })} />
+    {!!otherSelected.length && <details className="wl-saved-paths"><summary>其他已保存目录（{otherSelected.length}）</summary><p className="wl-muted">尚无本机会话依据，可能是手动填写或旧版保存的路径。保留原有配置，不作为本机目录推荐；取消勾选可移除。</p>{otherSelected.map(path => <label className="wl-check" key={path}><input type="checkbox" checked onChange={() => set({ ...config, projects: config.projects.filter(value => value !== path) })} />{path}</label>)}</details>}
+    <div className="wl-directory-add"><label>手动添加目录<input value={project} onChange={e => setProject(e.target.value)} placeholder="例如 /workspace/my-project" /></label>
+    <button type="button" aria-label="添加并勾选目录" disabled={!project.trim()} onClick={() => { setAddedProjects([...new Set([...addedProjects, project.trim()])]); set({ ...config, projects: [...new Set([...config.projects, project.trim()])] }); setProject('') }}>添加</button></div>
     </>}
     <label>排除会话（每行一个会话 ID）<textarea rows={3} value={config.excludedSessions.join('\n')} onChange={e => set({ ...config, excludedSessions: e.target.value.split('\n').filter(Boolean) })} /></label>
     {state.remote && saveCapture && <button type="button" disabled={busy} onClick={() => saveCapture(config)}>仅保存本机采集</button>}
-    <h3>中央整理</h3>
-    <p className="wl-muted">时区、模型与定时任务由中央统一管理。所有连接此中央的实例查看同一份日报；不会在本机额外调用模型整理。</p>
+    <h3 className="wl-setting-heading">中央整理<HelpTip label="中央整理"><span>时区、模型和定时任务由中央管理。素材按接收时的时区归档；更改时区不移动已有日报。</span><span>模型来自中央 DSH，不使用上传端模型 ID；只有远端素材或补记时，须指定中央模型。</span><span>定时按所选时区调用模型，无需打开页面；重启只补最近一次。无新素材或正文有手工修改则跳过；到点后的新素材请手动整理，关闭定时不取消已入队任务。</span></HelpTip></h3>
     {state.remote && !state.canManage && <p className="wl-muted">当前令牌没有管理员权限，中央配置仅可查看；本机采集仍可修改。</p>}
     {state.centralUnavailable ? <p role="status">中央暂不可用，中央配置不能读取或修改；本机采集仍可单独保存。</p> : <fieldset className="wl-central-settings" disabled={state.remote && !state.canManage}>
-    <label>日期时区<input value={config.timezone} onChange={e => set({ ...config, timezone: e.target.value })} placeholder="Asia/Shanghai" /></label>
-    <p className="wl-muted">以中央接收时的时区归档来源；更改时区不移动已有日报。</p>
+    <div className="wl-setting-heading"><label htmlFor="wl-timezone">日期时区</label></div>
+    <input id="wl-timezone" className="wl-setting-input" value={config.timezone} onChange={e => set({ ...config, timezone: e.target.value })} placeholder="Asia/Shanghai" />
     <ModelPicker central={state.remote} provider={config.provider} model={config.model} onChange={(provider, model) => set({ ...config, provider, model })} />
     <section aria-label="定时整理设置">
-      <h3>定时整理</h3>
+      <h3 className="wl-setting-heading wl-setting-subheading">定时整理</h3>
       <label className="wl-check"><input type="checkbox" checked={config.scheduleEnabled ?? false} onChange={e => set({ ...config, scheduleEnabled: e.target.checked })} />每日定时整理</label>
       {config.scheduleEnabled && <>
-        <label>每日整理时间<input type="time" required step="60" value={config.scheduleTime ?? '23:00'} onChange={e => set({ ...config, scheduleTime: e.target.value })} aria-describedby="wl-schedule-help" /></label>
-        <p id="wl-schedule-help" className="wl-muted">按上方时区 {config.timezone}，整理当天截至执行时已有的素材。保存后从下一个设定时间开始；由服务端执行，无需打开页面。会调用所选模型。</p>
-        <p className="wl-muted">重启后只补最近一次错过的日期，不批量回填历史。无新素材或正文有手工修改时跳过；当天到点后新增的素材请手动整理。关闭定时不会取消已入队任务。</p>
+        <label>每日整理时间<input type="time" required step="60" value={config.scheduleTime ?? '23:00'} onChange={e => set({ ...config, scheduleTime: e.target.value })} /></label>
       </>}
       {state.scheduleLast && <p className="wl-muted" role="status">最近定时检查 · {state.scheduleLast.day}：{state.scheduleLast.message}{state.scheduleLast.status === 'failed' && ' 请修正设置后，在对应日期点击整理日报重试。'}</p>}
     </section>

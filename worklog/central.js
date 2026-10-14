@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { dayOf, fail, text, validDay } from './domain.js'
 
 export const sharedKeys = ['timezone', 'provider', 'model', 'scheduleEnabled', 'scheduleTime']
-export const captureKeys = ['enabled', 'scope', 'projects', 'excludedSessions']
+export const captureKeys = ['enabled', 'scope', 'projects', 'recursiveProjects', 'excludedSessions']
 export const pick = (value, keys) => Object.fromEntries(keys.map(key => [key, value[key]]))
 export const sharedRevision = config => createHash('sha256').update(JSON.stringify(pick(config, sharedKeys))).digest('hex')
 export function sourceKey(sourceId, id) { return `source-${createHash('sha256').update(JSON.stringify([sourceId, id])).digest('hex')}` }

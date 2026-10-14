@@ -12,6 +12,7 @@ export function Workspace({ close, openSession, embedded = false, currentProject
   const [state, setState] = useState(null), [day, setDay] = useState(''), [detail, setDetail] = useState(null)
   const [error, setError] = useState(''), [message, setMessage] = useState(''), [busy, setBusy] = useState(false)
   const [modal, setModal] = useState(''), [draft, setDraft] = useState(''), [revision, setRevision] = useState(0)
+  const [settingsDirty, setSettingsDirty] = useState(false)
   const [evidence, setEvidence] = useState(null)
   const [search, setSearch] = useState(''), [project, setProject] = useState(''), [dates, setDates] = useState(false)
   const [version, setVersion] = useState(0), scroll = useRef(null), positions = useRef({})
@@ -39,7 +40,7 @@ export function Workspace({ close, openSession, embedded = false, currentProject
           setError(e.message)
           try {
             const collector = await api('/collector-state', undefined, controller.signal)
-            if (!controller.signal.aborted && collector.remote) setState(previous => ({ ...(previous || {}), days: previous?.days || [], today: previous?.today || '', config: { ...defaults, ...previous?.config, ...collector.capture }, projects: collector.projects, remote: true, centralUnavailable: true, canManage: false }))
+            if (!controller.signal.aborted && collector.remote) setState(previous => ({ ...(previous || {}), days: previous?.days || [], today: previous?.today || '', config: { ...defaults, ...previous?.config, ...collector.capture }, projects: collector.projects, defaultProject: collector.defaultProject, remote: true, centralUnavailable: true, canManage: false }))
           } catch { /* Original central error remains visible; never substitute local reports. */ }
         }
       }
@@ -76,7 +77,7 @@ export function Workspace({ close, openSession, embedded = false, currentProject
     {error && <div className="wl-error" role="alert">{error}<button onClick={() => { setError(''); setVersion(v => v + 1) }}>重新加载</button></div>}
     <div className="wl-body"><aside>{dayList}</aside><main ref={scroll} onScroll={e => { positions.current[day] = e.currentTarget.scrollTop }}>
       {!state || !detail ? <p className="wl-empty">{state?.centralUnavailable ? '中央日报暂不可用，本机待上传素材仍保留。' : '正在读取工作记录…'}</p> : <>
-        {!state.config.enabled && <div className="wl-notice">采集尚未开启。可先补记，或在采集设置中选择项目后启用。</div>}
+        {!state.config.enabled && <div className="wl-notice">采集尚未开启。可先补记，或在采集设置中选择工作目录后启用。</div>}
         <div className="wl-heading"><div><span className="wl-eyebrow">工作日报</span><h2>{day}</h2><p className="wl-muted">{detail.report.updated ? `整理于 ${time(detail.report.updated)}` : '尚未整理日报'}{detail.pending > 0 && ` · ${detail.pending} 条待整理`}</p></div>
           <div className="wl-actions"><button className="wl-primary" disabled={busy || active || !detail.records.some(r => !r.excluded)} onClick={generate}>{active ? '整理中…' : detail.report.markdown ? '更新日报' : '整理日报'}</button>
             <button onClick={() => { setDraft(''); setModal('note') }}>补记一条</button>
@@ -98,9 +99,9 @@ export function Workspace({ close, openSession, embedded = false, currentProject
     {message && <div className="wl-feedback" role="status">{message}</div>}
     {dates && <Dialog title="选择日期" close={() => setDates(false)}>{dayList}</Dialog>}
     {evidence && <Dialog title="工作记录 · 查看依据" close={() => setEvidence(null)}><p className="wl-muted">{time(evidence.time)} · {evidence.project || '手工补记'}</p><h3>用户需求</h3><pre className="wl-source-text">{evidence.user}</pre><h3>会话结论</h3><pre className="wl-source-text">{evidence.answer}</pre>{evidence.truncated && <p>此来源为节选，请打开会话查看完整内容。</p>}{evidence.sessionId && localSource(evidence) && openSession && <button onClick={() => visit(evidence.sessionId)}>打开来源会话 · 第 {evidence.turn} 轮</button>}</Dialog>}
-    {modal && <Dialog title={{ settings: '工作记录 · 采集设置', note: '补记一条', edit: '编辑日报', history: '历史版本', replace: '重新整理日报' }[modal]} close={() => !busy && setModal('')}>
+    {modal && <Dialog key={modal} title={{ settings: '工作记录 · 采集设置', note: '补记一条', edit: '编辑日报', history: '历史版本', replace: '重新整理日报' }[modal]} busy={busy} protectChanges={['settings', 'note', 'edit'].includes(modal)} dirty={modal === 'settings' ? settingsDirty : modal === 'edit' ? draft !== detail.report.markdown : modal === 'note' ? !!draft.trim() : undefined} close={() => !busy && setModal('')}>
       {error && <p className="wl-error" role="alert">{error}</p>}
-      {modal === 'settings' && <Settings state={state} currentProject={currentProject} busy={busy} saveCapture={config => act('/capture-settings', config)} save={config => act('/settings', config)} />}
+      {modal === 'settings' && <Settings state={state} currentProject={currentProject} busy={busy} onDirtyChange={setSettingsDirty} saveCapture={config => act('/capture-settings', config)} save={config => act('/settings', config)} />}
       {['note', 'edit'].includes(modal) && <form onSubmit={e => { e.preventDefault(); act(modal === 'note' ? '/note' : '/save', modal === 'note' ? { day, text: draft } : { day, markdown: draft, revision }) }}><label>{modal === 'note' ? '记录实际完成的工作、决定或待办' : 'Markdown 正文'}<textarea autoFocus rows={14} value={draft} onChange={e => setDraft(e.target.value)} required /></label><footer><button disabled={busy || !draft.trim()} className="wl-primary">{busy ? '保存中…' : '保存'}</button></footer></form>}
       {modal === 'replace' && <><p>日报包含手工修改。重新整理会替换正文，原版本保留在历史版本中。新整理期间的任何编辑都会阻止覆盖。</p><footer><button disabled={busy} onClick={() => setModal('')}>保留正文</button><button disabled={busy} onClick={() => act('/generate', { day, allowReplace: true })}>确认重新整理</button></footer></>}
       {modal === 'history' && detail.history.map(h => <details key={h.id}><summary>{time(h.updated)} · {h.sourceId ? '迁入历史' : '版本'} {h.revision}</summary><Markdown text={h.markdown} /><button onClick={() => { setDraft(h.markdown); setRevision(detail.report.revision); setModal('edit') }}>作为编辑草稿</button></details>)}

@@ -28,7 +28,7 @@ async function central(t) {
   const store = new Store(join(root, 'journal.sqlite')); store.configure(config)
   let calls = 0
   const worker = new Worker(store, {}, async () => { calls++; return '# 中央日报' })
-  const service = new JournalService(store, worker, async () => [{ id: 'central', models: [{ id: 'central-model' }] }])
+  const service = new JournalService(store, worker, async () => [{ id: 'central', models: [{ id: 'central-model' }] }], undefined, undefined, '/central/default')
   let route
   registerKnowledgeApi({ webServer: { register(value) { route = value.handler; return () => {} } }, get() {} }, provider, '/knowledge-api/v1', {
     worklog: (...args) => service.serveCentral(...args),
@@ -39,11 +39,11 @@ async function central(t) {
   t.after(async () => { await service.close(); store.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await provider.close(); rmSync(root, { recursive: true, force: true }) })
   return { connection, tokens, store, worker, service, calls: () => calls }
 }
-function client(t, connection, path = ':memory:', request) {
+function client(t, connection, path = ':memory:', request, defaultProject = '') {
   const store = new Store(path); store.configure({ ...defaults, enabled: true, scope: 'all' })
   let calls = 0
   const worker = new Worker(store, {}, async () => { calls++; return '# 不应本地生成' })
-  const service = new JournalService(store, worker, async () => [], () => connection, request)
+  const service = new JournalService(store, worker, async () => [], () => connection, request, defaultProject)
   t.after(async () => { await service.close(); store.close() })
   return { store, service, worker, calls: () => calls }
 }
@@ -64,6 +64,28 @@ test('multiple collectors share central records, model catalog and report; never
   await a.worker.tick(); await b.worker.tick()
   assert.equal(a.calls() + b.calls(), 0); assert.equal(c.calls(), 1)
   assert.equal(a.service.outbox.status(destination(c.connection)).pending, 0)
+  assert.deepEqual((await c.service.browser('GET', '/state')).projects, [], 'central uploads never become local choices')
+  assert.deepEqual((await a.service.browser('GET', '/state')).projects, ['/local/project'])
+  assert.deepEqual(a.service.collectorState().projects, ['/local/project'], 'offline fallback keeps only local choices')
+  c.service.collect(session('central-local'), 1)
+  assert.deepEqual((await c.service.browser('GET', '/state')).projects, ['/local/project'], 'same path on both machines is valid after local discovery')
+})
+
+test('default directory is local Host metadata, never remote or capture authorization', async t => {
+  const c = await central(t)
+  const a = client(t, c.connection, ':memory:', undefined, '/local/default')
+  const b = client(t, c.connection)
+  const before = a.store.config()
+  a.service.collect(session('different-cwd'), 1)
+  assert.equal((await c.service.browser('GET', '/state')).defaultProject, '/central/default')
+  assert.equal((await a.service.browser('GET', '/state')).defaultProject, '/local/default')
+  assert.equal((await a.service.browser('GET', '/collector-state')).defaultProject, '/local/default')
+  assert.equal((await b.service.browser('GET', '/state')).defaultProject, '', 'missing local default cannot fall back to the central default')
+  assert.equal((await requestCentral(c.connection, 'GET', '/state')).defaultProject, undefined, 'central API never exports its local default')
+  assert.deepEqual(a.store.config(), before, 'metadata does not select or persist capture paths')
+  const spoofed = client(t, c.connection, ':memory:', async () => ({ config: {}, projects: ['/foreign'], defaultProject: '/foreign' }), '/own/default')
+  assert.equal((await spoofed.service.browser('GET', '/state')).defaultProject, '/own/default')
+  assert.deepEqual((await spoofed.service.browser('GET', '/state')).projects, [])
 })
 
 test('central settings are shared while local capture scope stays local', async t => {
@@ -71,11 +93,16 @@ test('central settings are shared while local capture scope stays local', async 
   const state = await a.service.browser('GET', '/state')
   const publicState = await requestCentral(c.connection, 'GET', '/state')
   assert.equal(publicState.config.enabled, undefined, 'central API must not disclose central local capture settings')
-  await a.service.browser('POST', '/settings', { ...state.config, sharedRevision: state.sharedRevision, enabled: false, projects: ['/only-a'], timezone: 'UTC', scheduleEnabled: true, scheduleTime: '22:30' })
+  assert.equal(publicState.config.recursiveProjects, undefined)
+  await a.service.browser('POST', '/settings', { ...state.config, sharedRevision: state.sharedRevision, enabled: false, projects: ['/only-a'], recursiveProjects: true, timezone: 'UTC', scheduleEnabled: true, scheduleTime: '22:30' })
   const bs = await b.service.browser('GET', '/state')
   assert.equal(bs.config.timezone, 'UTC'); assert.equal(bs.config.scheduleTime, '22:30')
   assert.equal(bs.config.enabled, true); assert.deepEqual(bs.config.projects, [])
   assert.equal(a.store.config().enabled, false)
+  assert.equal(a.store.config().recursiveProjects, true)
+  assert.equal((await a.service.browser('GET', '/state')).config.recursiveProjects, true)
+  assert.equal(bs.config.recursiveProjects, false)
+  assert.equal(c.store.config().recursiveProjects, false)
   assert.equal(a.store.config().scheduleEnabled, false, 'central scheduler is not installed locally')
   assert.equal(c.store.config().enabled, true, 'remote UI cannot alter central collection authorization')
   await assert.rejects(b.service.browser('POST', '/settings', { ...state.config, sharedRevision: state.sharedRevision, scheduleTime: '21:00' }), e => e.status === 409)
@@ -93,10 +120,38 @@ test('central APIs enforce bearer auth and read/write/admin permissions', async 
   await assert.rejects(requestCentral(write, 'POST', '/settings', config), e => e.status === 403)
   await assert.rejects(requestCentral(write, 'POST', '/archive', {}), e => e.status === 403)
   const a = client(t, write), state = await a.service.browser('GET', '/state')
-  await a.service.browser('POST', '/settings', { ...state.config, enabled: false })
+  await a.service.browser('POST', '/settings', { ...state.config, enabled: false, recursiveProjects: true })
   assert.equal(a.store.config().enabled, false, 'capture-only update must not require central admin')
+  assert.equal(a.store.config().recursiveProjects, true)
   await assert.rejects(a.service.browser('POST', '/ingest', {}), e => e.status === 404)
   await assert.rejects(a.service.browser('POST', '/migrate', { confirm: true }), e => e.status === 403)
+})
+
+test('recursive capture can be saved offline, only collects future turns and stays local', async t => {
+  const c = await central(t)
+  let offline = true
+  const a = client(t, c.connection, ':memory:', (...args) => {
+    if (offline) throw new Error('offline')
+    return requestCentral(...args)
+  })
+  a.store.configure({ ...a.store.config(), scope: 'selected', projects: ['/local'] })
+  a.service.collect(session('before-enable'), 1)
+  await a.service.browser('POST', '/capture-settings', { ...a.store.config(), recursiveProjects: true, excludedSessions: ['excluded'] })
+  assert.equal(a.service.collectorState().capture.recursiveProjects, true)
+  assert.equal(a.service.collectorState().sync.pending, 0, 'saving does not backfill past turns')
+  a.service.collect(session('after-enable'), 1)
+  a.service.collect(session('excluded'), 1)
+  const outside = session('outside'); outside.header.cwd = '/local-other/project'
+  a.service.collect(outside, 1)
+  assert.equal(a.service.collectorState().sync.pending, 1)
+  offline = false
+  await a.service.outbox.tick()
+  const records = c.store.records(dayOf(Date.now(), config.timezone))
+  assert.deepEqual(records.map(r => r.sessionId), ['after-enable'])
+  assert.equal(c.store.config().recursiveProjects, false)
+  await a.service.browser('POST', '/capture-settings', { ...a.store.config(), recursiveProjects: false })
+  a.service.collect(session('after-disable'), 1)
+  assert.equal(a.service.collectorState().sync.pending, 0)
 })
 
 test('lost ACK and restart replay are deduplicated without undoing central exclusions', async t => {

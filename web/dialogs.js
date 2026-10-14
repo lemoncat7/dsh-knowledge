@@ -65,7 +65,14 @@ export function createDialogPresenter({ element, actionButton, interfaceIcon, sh
       element('footer', { class: 'dialog-footer' }, cancel, primary),
     )
     backdrop.append(dialog)
-    backdrop.addEventListener('mousedown', (event) => { if (event.target === backdrop) close() })
+    let backdropPointer = null
+    backdrop.addEventListener('pointerdown', event => { backdropPointer = event.button === 0 && event.target === backdrop ? event.pointerId : null })
+    backdrop.addEventListener('pointerup', event => {
+      const dismiss = backdropPointer === event.pointerId && event.target === backdrop && stack.at(-1) === dialog
+      backdropPointer = null
+      if (dismiss) close()
+    })
+    backdrop.addEventListener('pointercancel', () => { backdropPointer = null })
     if (body.matches?.('form') || body.querySelector?.('form')) {
       body.addEventListener('input', () => { formDirty = true })
       body.addEventListener('change', () => { formDirty = true })

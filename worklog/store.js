@@ -24,6 +24,8 @@ export class Store {
       CREATE UNIQUE INDEX IF NOT EXISTS active_day ON jobs(day) WHERE status IN ('queued','running');`)
     this.db.exec('PRAGMA user_version=1')
     this.db.exec('CREATE TABLE IF NOT EXISTS journal_imports (id TEXT PRIMARY KEY)')
+    this.db.exec('CREATE TABLE IF NOT EXISTS local_projects (id TEXT PRIMARY KEY)')
+    this.migrateLocalProjects()
     this.db.prepare("UPDATE jobs SET status='queued' WHERE status='running'").run()
   }
   config() { return { ...defaults, ...JSON.parse(this.db.prepare("SELECT value FROM meta WHERE key='settings'").get()?.value || '{}') } }
@@ -47,7 +49,6 @@ export class Store {
   importRecord(record) {
     // First receipt wins. Retrying an upload must not undo subsequent exclusions.
     this.db.prepare('INSERT OR IGNORE INTO records(id,day,project,excluded,body) VALUES (?,?,?,?,?)').run(record.id, record.day, record.project, +record.excluded, JSON.stringify(record))
-    this.observe(record.project)
   }
   importArchive(id, report) {
     this.db.exec('BEGIN IMMEDIATE')
@@ -81,12 +82,40 @@ export class Store {
       this.db.exec('COMMIT')
     } catch (e) { this.db.exec('ROLLBACK'); throw e }
   }
-  observe(project) { if (project) this.db.prepare('INSERT OR IGNORE INTO projects VALUES (?)').run(project) }
+  migrateLocalProjects() {
+    if (this.db.prepare("SELECT 1 FROM meta WHERE key='localProjectsV1'").get()) return
+    const origin = this.originId(), local = new Set(), uncertain = new Set()
+    // The legacy catalog mixed local observations, imported records and notes.
+    // Preserve observation-only paths, but require local session evidence for
+    // paths also mentioned by remote sources or manual notes. Never infer a
+    // machine from its path spelling or change saved capture authorization.
+    for (const row of this.db.prepare(`SELECT project,
+      json_extract(body,'$.sessionId') AS sessionId,
+      json_extract(body,'$.sourceId') AS sourceId,
+      json_extract(body,'$.originalId') AS originalId FROM records`).iterate()) {
+      if (row.sessionId && !row.originalId && (!row.sourceId || row.sourceId === origin)) local.add(row.project)
+      else uncertain.add(row.project)
+    }
+    if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='journal_outbox'").get()) {
+      for (const row of this.db.prepare("SELECT body FROM journal_outbox WHERE path='/ingest' AND body<>''").iterate()) {
+        const item = JSON.parse(row.body), record = item.record
+        if (item.sourceId === origin && record?.sessionId && !record.originalId && (!record.sourceId || record.sourceId === origin)) local.add(record.project)
+      }
+    }
+    for (const { id } of this.db.prepare('SELECT id FROM projects').iterate()) if (!uncertain.has(id)) local.add(id)
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const project of local) this.observe(project)
+      this.setMeta('localProjectsV1', true)
+      this.db.exec('COMMIT')
+    } catch (error) { this.db.exec('ROLLBACK'); throw error }
+  }
+  observe(project) { if (project) this.db.prepare('INSERT OR IGNORE INTO local_projects VALUES (?)').run(project) }
   insert(record) { this.db.prepare('INSERT OR IGNORE INTO records(id,day,project,body) VALUES (?,?,?,?)').run(record.id, record.day, record.project, JSON.stringify(record)) }
   records(day, includeExcluded = false) { return this.db.prepare(`SELECT body,excluded FROM records WHERE day=? ${includeExcluded ? '' : 'AND excluded=0'} ORDER BY rowid`).all(day).map(r => ({ ...JSON.parse(r.body), excluded: !!r.excluded })) }
   report(day) { const row = this.db.prepare('SELECT * FROM reports WHERE day=?').get(day); return row ? { ...JSON.parse(row.body), revision: row.revision } : { revision: 0, markdown: '', covered: [], edited: false } }
   overview() {
-    return { config: this.config(), scheduleLast: this.scheduleState().last || null, today: null, projects: this.db.prepare('SELECT id FROM projects ORDER BY id').all().map(p => p.id),
+    return { config: this.config(), scheduleLast: this.scheduleState().last || null, today: null, projects: this.db.prepare('SELECT id FROM local_projects ORDER BY id').all().map(p => p.id),
       days: this.db.prepare('SELECT day FROM records UNION SELECT day FROM reports UNION SELECT day FROM history ORDER BY day DESC').all().map(d => d.day) }
   }
   detail(day) {
@@ -108,7 +137,7 @@ export class Store {
       this.db.exec('COMMIT')
     } catch (e) { this.db.exec('ROLLBACK'); throw e }
   }
-  note(day, body, project = '') { validDay(day); this.observe(project); this.insert({ id: randomUUID(), day, project, time: Date.now(), user: '手工补记', answer: text(body, 16000), sessionId: null, route: null, truncated: false }) }
+  note(day, body, project = '') { validDay(day); this.insert({ id: randomUUID(), day, project, time: Date.now(), user: '手工补记', answer: text(body, 16000), sessionId: null, route: null, truncated: false }) }
   exclude(id, excluded) {
     if (typeof excluded !== 'boolean') throw fail('排除状态无效')
     if (!this.db.prepare('UPDATE records SET excluded=? WHERE id=?').run(+excluded, id).changes) throw fail('记录不存在', 404)
