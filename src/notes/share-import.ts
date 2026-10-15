@@ -185,6 +185,10 @@ async function requestPublicUrl(url: URL, maximumBytes: number, policy: NoteShar
   const request = url.protocol === 'https:' ? requestHttps : requestHttp
   return await new Promise<Buffer>((resolve, reject) => {
     const req = request(url, {
+      // The environment proxy's Agent may resolve the hostname itself and bypass
+      // our pinned lookup. Use a fresh direct Agent for every validated hop;
+      // this also prevents reuse of a socket pinned by an earlier DNS check.
+      agent: false,
       headers: { accept: 'application/json, application/octet-stream;q=0.9', 'user-agent': 'dsh-knowledge-share-import/1' },
       lookup: createPinnedLookup(target),
     }, response => {
