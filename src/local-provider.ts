@@ -68,6 +68,7 @@ import {
   type NoteVersion,
 } from './notes/domain.js'
 import { compareNames } from './collation.js'
+import { decodePageCursor, encodePageCursor } from './page-cursor.js'
 
 type SqlRow = Record<string, unknown>
 
@@ -109,6 +110,9 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     this.db = new DatabaseSync(path)
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
     migrateKnowledgeDatabase(this.db, this.notes)
+    if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_candidates'").get()) {
+      this.db.exec('CREATE INDEX IF NOT EXISTS knowledge_candidates_page ON knowledge_candidates(status, created_at DESC, id DESC);')
+    }
     this.db.exec('CREATE TABLE IF NOT EXISTS note_excerpt_receipts (request_id TEXT PRIMARY KEY, input_hash TEXT NOT NULL, knowledge_id TEXT NOT NULL);')
     this.db.exec('CREATE TABLE IF NOT EXISTS writeback_receipts (source_key TEXT NOT NULL, proposal_hash TEXT NOT NULL, result_json TEXT NOT NULL, PRIMARY KEY(source_key, proposal_hash));')
     this.documentsReady = this.enqueueDocumentSync(() => this.syncAllDocuments())
@@ -1318,6 +1322,29 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
           return candidate
         }
       })
+  }
+
+  candidatePage(status: 'pending' | 'approved' | 'rejected', limit: number, cursor?: string) {
+    this.assertOpen()
+    const scope = `candidates:${status}`
+    const after = decodePageCursor(cursor, scope, ['string', 'string'])
+    const size = Math.max(1, Math.min(limit, 100))
+    const rows = this.db.prepare(`SELECT * FROM knowledge_candidates WHERE status = ?
+      ${after ? 'AND (created_at, id) < (?, ?)' : ''}
+      ORDER BY created_at DESC, id DESC LIMIT ?`).all(status, ...(after || []), size + 1) as SqlRow[]
+    const items = rows.slice(0, size).map(rowToCandidate).map(candidate => {
+      if (candidate.status !== 'pending' || !candidate.targetId || candidate.change?.kind !== 'revise') return candidate
+      try {
+        const applied = applyCandidateToTarget(this.activeEntry(candidate.targetId), candidate, true)
+        return applied.ok ? { ...candidate, draft: applied.draft } : candidate
+      } catch { return candidate }
+    })
+    const counts = { pending: 0, approved: 0, rejected: 0 }
+    for (const row of this.db.prepare('SELECT status, count(*) AS count FROM knowledge_candidates GROUP BY status').all() as SqlRow[]) {
+      if (row.status === 'pending' || row.status === 'approved' || row.status === 'rejected') counts[row.status] = Number(row.count)
+    }
+    const last = items.at(-1)
+    return { items, counts, total: counts[status], nextCursor: rows.length > size && last ? encodePageCursor(scope, [last.createdAt, last.id]) : undefined }
   }
 
   async review(id: string, decision: ReviewDecision): Promise<KnowledgeCandidate> {

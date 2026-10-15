@@ -17,7 +17,11 @@ export function registerWritebackControl(ctx: RuntimeContextLike, queue: Writeba
           if (!Number.isSafeInteger(offset) || offset < 0) throw Object.assign(new Error('无效分页参数'), { status: 400 })
           const status = url.searchParams.get('status') || undefined
           if (status !== undefined && status !== 'failed') throw Object.assign(new Error('无效状态筛选'), { status: 400 })
-          result = queue.list(url.searchParams.get('sessionId')?.trim(), offset, 50, status)
+          const watch = url.searchParams.getAll('watch')
+          if (watch.length > 30 || watch.some(key => key.length > 512)) throw Object.assign(new Error('无效任务订阅参数'), { status: 400 })
+          result = url.searchParams.get('paged') === '1'
+            ? queue.listPage(url.searchParams.get('sessionId')?.trim(), status, url.searchParams.get('cursor') || undefined, watch)
+            : queue.list(url.searchParams.get('sessionId')?.trim(), offset, 50, status)
         } else if (req.method === 'POST') {
           const key = url.searchParams.get('sourceKey')
           const action = url.searchParams.get('action')

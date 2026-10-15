@@ -424,49 +424,70 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     path: string,
     options: RemoteRequestOptions = {},
   ): Promise<T> {
-    const response = await this.fetchResponse(path, options)
-    const text = await readBoundedResponse(response, MAX_RESPONSE_BYTES)
-    if (!response.ok) {
-      let payload: unknown
-      try { payload = text.length === 0 ? undefined : JSON.parse(text) } catch { /* Proxy errors may be HTML or plain text. */ }
-      throw remoteResponseError(path, response.status, payload, text)
-    }
-    const payload = text.length === 0 ? undefined : safeJson(text)
-    return payload as T
+    return this.withResponse(path, options, async response => {
+      const text = await readBoundedResponse(response, MAX_RESPONSE_BYTES)
+      if (!response.ok) {
+        let payload: unknown
+        try { payload = text.length === 0 ? undefined : JSON.parse(text) } catch { /* Proxy errors may be HTML or plain text. */ }
+        throw remoteResponseError(path, response.status, payload, text)
+      }
+      const payload = text.length === 0 ? undefined : safeJson(text)
+      return payload as T
+    })
   }
 
   private async requestBytes(path: string, options: RemoteRequestOptions = {}): Promise<Uint8Array> {
-    const response = await this.fetchResponse(path, { ...options, accept: options.accept ?? 'application/octet-stream' })
-    if (!response.ok) {
-      const text = await readBoundedResponse(response, MAX_RESPONSE_BYTES)
-      let payload: unknown
-      try { payload = text.length === 0 ? undefined : safeJson(text) } catch { payload = undefined }
-      throw remoteResponseError(path, response.status, payload, text)
-    }
-    return readBoundedBytes(response, MAX_NOTE_RESPONSE_BYTES)
+    return this.withResponse(path, { ...options, accept: options.accept ?? 'application/octet-stream' }, async response => {
+      if (!response.ok) {
+        const text = await readBoundedResponse(response, MAX_RESPONSE_BYTES)
+        let payload: unknown
+        try { payload = text.length === 0 ? undefined : safeJson(text) } catch { payload = undefined }
+        throw remoteResponseError(path, response.status, payload, text)
+      }
+      return readBoundedBytes(response, MAX_NOTE_RESPONSE_BYTES)
+    })
   }
 
-  private async fetchResponse(path: string, options: RemoteRequestOptions): Promise<Response> {
+  private async withResponse<T>(path: string, options: RemoteRequestOptions, consume: (response: Response) => Promise<T>): Promise<T> {
     if (options.body !== undefined && options.binaryBody !== undefined) throw new Error('remote request cannot contain both JSON and binary bodies')
     const timeout = AbortSignal.timeout(this.options.timeoutMs)
     const signal = options.signal === undefined ? timeout : AbortSignal.any([options.signal, timeout])
+    let phase: 'headers' | 'body' = 'headers'
     try {
-      return await fetch(new URL(path, this.baseUrl), {
-        method: options.method ?? 'GET',
-        headers: {
-          accept: options.accept ?? 'application/json',
-          authorization: `Bearer ${this.options.token}`,
-          ...options.body === undefined ? {} : { 'content-type': 'application/json' },
-          ...options.binaryBody === undefined ? {} : { 'content-type': 'application/octet-stream' },
-        },
-        ...options.body !== undefined
-          ? { body: JSON.stringify(options.body) }
-          : options.binaryBody !== undefined ? { body: Buffer.from(options.binaryBody) } : {},
-        signal,
-      })
+      const response = await this.fetchResponse(path, { ...options, signal })
+      phase = 'body'
+      return await consume(response)
     } catch (error) {
-      throw new RemoteProviderError(`knowledge server request failed: ${error instanceof Error ? error.message : String(error)}`, 0)
+      if (error instanceof RemoteProviderError) throw error
+      // Report the first abort reason and the failed phase, never the URL,
+      // query, token or an arbitrary upstream error message. Do not retry writes.
+      const route = path.split(/[/?]/u)[0] || 'request'
+      const operation = /^[a-z-]+$/u.test(route) ? route : 'request'
+      const stage = phase === 'headers' ? '等待响应头' : '接收响应内容'
+      const kind = signal.aborted && signal.reason === timeout.reason ? 'timeout'
+        : options.signal?.aborted ? 'cancelled' : 'network'
+      const detail = kind === 'timeout'
+        ? `知识库请求超时（${operation}，${this.options.timeoutMs} ms，${stage}）；请检查知识库服务和网络链路。这不表示没有搜索结果，也无法据此确认服务端是否已完成操作。`
+        : kind === 'cancelled' ? `知识库请求已取消（${operation}，${stage}）。`
+        : `知识库连接失败（${operation}，${stage}）；请检查服务可用性和网络链路。`
+      throw new RemoteProviderError(`knowledge server request failed: ${detail}`, 0, kind, phase)
     }
+  }
+
+  private async fetchResponse(path: string, options: RemoteRequestOptions): Promise<Response> {
+    return await fetch(new URL(path, this.baseUrl), {
+      method: options.method ?? 'GET',
+      headers: {
+        accept: options.accept ?? 'application/json',
+        authorization: `Bearer ${this.options.token}`,
+        ...options.body === undefined ? {} : { 'content-type': 'application/json' },
+        ...options.binaryBody === undefined ? {} : { 'content-type': 'application/octet-stream' },
+      },
+      ...options.body !== undefined
+        ? { body: JSON.stringify(options.body) }
+        : options.binaryBody !== undefined ? { body: Buffer.from(options.binaryBody) } : {},
+      signal: options.signal ?? null,
+    })
   }
 }
 
@@ -532,7 +553,7 @@ async function readBoundedResponse(response: Response, maximumBytes: number): Pr
 }
 
 export class RemoteProviderError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(message: string, readonly status: number, readonly kind?: 'timeout' | 'cancelled' | 'network', readonly phase?: 'headers' | 'body') {
     super(message)
     this.name = 'RemoteProviderError'
   }

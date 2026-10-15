@@ -3,26 +3,32 @@ const AUTH_MODE = document.querySelector('meta[name="dsh-knowledge-auth-mode"]')
 const WEB_PATH = document.querySelector('meta[name="dsh-knowledge-web"]')?.content || '/knowledge'
 const ASSET_VERSION = document.querySelector('meta[name="dsh-knowledge-asset-version"]')?.content || ''
 const moduleUrl = name => `./${name}.js${ASSET_VERSION ? `?v=${encodeURIComponent(ASSET_VERSION)}` : ''}`
-const { createDocumentGroupField, renderDocumentGroups, openDocumentGroupOrganizer } = await import(moduleUrl('document-groups'))
-const [apiModule, themeModule, uiModule, modelCatalogModule, dialogModule, selectModule, documentActionsModule] = await Promise.all([
+const [apiModule, themeModule, uiModule, dialogModule, selectModule, documentActionsModule, groupsModule, baseGroupsModule, syncModule, lazyModule, infiniteModule] = await Promise.all([
   import(moduleUrl('api-client')),
   import(moduleUrl('host-theme')),
   import(moduleUrl('ui-primitives')),
-  import(moduleUrl('model-catalog')),
   import(moduleUrl('dialogs')),
   import(moduleUrl('select-control')),
   import(moduleUrl('document-actions')),
+  import(moduleUrl('document-groups')),
+  import(moduleUrl('base-groups')),
+  import(moduleUrl('document-sync')),
+  import(moduleUrl('lazy-resources')),
+  import(moduleUrl('infinite-scroll')),
 ])
 const { createApiClient } = apiModule
 const { installHostThemeBridge } = themeModule
 const { actionButton, badge, createToastPresenter, element, interfaceIcon, paneToggleButton } = uiModule
 const { renderMenu: renderDocumentMenu, closeMenus: closeDocumentMenus } = documentActionsModule.createDocumentMenuPresenter(uiModule)
-const readModelCatalog = modelCatalogModule.createModelCatalogLoader()
-const { createWritebackWorkspace } = await import(moduleUrl('writeback-workspace'))
-const { createWorklogWorkspace } = await import(moduleUrl('worklog-workspace'))
-const { createDocumentSync } = await import(moduleUrl('document-sync'))
-const { openNoteExcerpt } = await import(moduleUrl('note-excerpt'))
-const { createBaseGroups, knowledgeBasePathLabel, sortKnowledgeBasesByGroup } = await import(moduleUrl('base-groups'))
+const { createDocumentGroupField, renderDocumentGroups, openDocumentGroupOrganizer } = groupsModule
+const { createBaseGroups, knowledgeBasePathLabel, sortKnowledgeBasesByGroup } = baseGroupsModule
+const { createDocumentSync } = syncModule
+const resources = lazyModule.createLazyResources({ moduleUrl, scriptUrl: name => `${WEB_PATH.replace(/\/$/, '')}/${name}.js${ASSET_VERSION ? `?v=${encodeURIComponent(ASSET_VERSION)}` : ''}` })
+const loadMarkdownPreview = () => resources.script('markdown-preview', 'DshKnowledgeMarkdown')
+const loadChangeReview = () => resources.script('change-review', 'DshKnowledgeReview')
+let readModelCatalog
+let createWritebackWorkspace
+let createWorklogWorkspace
 let baseGroups
 let writebackWorkspace
 let worklogWorkspace
@@ -58,7 +64,7 @@ function createDocumentViewState(overrides = {}) {
   return {
     knowledgeBaseId: '', documentId: '', query: '', mode: 'preview', treeOpen: false,
     expandedBases: new Set(), documentPages: new Map(),
-    collapsedGroups: new Set(),
+    collapsedGroups: new Set(), knownGroups: new Set(),
     searchResults: [], searchNextCursor: '', searchTotal: 0, searchLoading: false, searchError: '', searchRequest: 0,
     editor: null, editorLoading: false, loadingDocumentId: '', ...overrides,
   }
@@ -101,6 +107,7 @@ const state = {
   candidates: [],
   candidateTargets: new Map(),
   candidateStatus: 'pending',
+  candidatePage: { nextCursor: '', total: 0, counts: null, loading: false, error: '' },
   candidateBatchRunning: false,
   settings: { writebackPolicy: 'conservative', updatedAt: '' },
   modelCatalog: null,
@@ -140,6 +147,9 @@ let noteTransferSequence = 0
 let noteSelectionRequest = 0
 let knowledgeDocumentDrag = null
 let movingDocumentId = ''
+let disposeInfiniteScroll = () => {}
+const notePages = new Map()
+let noteSearchPage = { nextCursor: '', total: 0, loading: false, error: '' }
 
 function readDocumentLayout() {
   const fallback = {
@@ -170,6 +180,9 @@ function clampNumber(value, minimum, maximum, fallback) {
 }
 
 function captureScrollPosition() {
+  // A fast response can render again before the previous frame restores the scroll.
+  // Do not replace that saved position with the newly mounted container's zero.
+  if (scrollRestoreFrame) return
   const shell = app.querySelector('.app-shell[data-view]')
   if (!shell || shell.dataset.loading === 'true') return
   const regions = {}
@@ -184,14 +197,16 @@ function captureScrollPosition() {
 }
 
 function currentScrollState() {
+  if (state.view === 'candidates') return `candidates:${state.candidateStatus}`
   return state.view === 'bases' ? `bases:${state.knowledgeBaseView}` : state.view
 }
 
 function restoreScrollPosition(view) {
+  if (scrollRestoreFrame) window.cancelAnimationFrame(scrollRestoreFrame)
+  scrollRestoreFrame = 0
   if (state.loading) return
   const saved = state.scrollPositions.get(view)
   if (!saved) return
-  if (scrollRestoreFrame) window.cancelAnimationFrame(scrollRestoreFrame)
   scrollRestoreFrame = window.requestAnimationFrame(() => {
     window.scrollTo(saved.window.left, saved.window.top)
     app.querySelectorAll('[data-scroll-key]').forEach(node => {
@@ -213,11 +228,12 @@ const { api, binaryRequest, binaryUploadRequest } = createApiClient({
 async function boot() {
   if (AUTH_MODE === 'same-origin') {
     state.token = ''
-    await Promise.all([
-      api('service').then(service => { state.service = service }).catch(() => {}),
-      navigate(initialView),
-    ])
-    renderShell()
+    // Connection chrome must not block or remount the active workspace.
+    void api('service').then(service => {
+      state.service = service
+      document.querySelector('.sidebar')?.replaceWith(renderSidebar())
+    }).catch(() => {})
+    await navigate(initialView)
     return
   }
   if (!state.token) {
@@ -225,7 +241,7 @@ async function boot() {
     return
   }
   try {
-    await api('entries?limit=1')
+    state.knowledgeBases = await api('knowledge-bases')
     await navigate(initialView)
   } catch (error) {
     sessionStorage.removeItem(TOKEN_KEY)
@@ -278,6 +294,7 @@ function renderLogin(message = '') {
 }
 
 function signOut() {
+  notePages.clear()
   cancelPendingSearches()
   releaseNoteEditors()
   releaseNoteAsset()
@@ -308,6 +325,10 @@ async function navigate(view) {
   state.error = ''
   renderShell()
   try {
+    if (view === 'writeback') ({ createWritebackWorkspace } = await resources.module('writeback-workspace'))
+    if (view === 'worklog') ({ createWorklogWorkspace } = await resources.module('worklog-workspace'))
+    if (view === 'candidates') await Promise.all([loadChangeReview(), loadMarkdownPreview()])
+    if (controller.signal.aborted) return
     if (view === 'overview') await loadOverview(controller.signal)
     if (view === 'bases') await loadKnowledgeBasesPage(controller.signal)
     if (view === 'entries') await loadDocuments(controller.signal, (label, progress) => updateLoadingPhase(request, label, progress))
@@ -400,7 +421,6 @@ async function loadKnowledgeBasesPage(signal) {
   state.settings = settings
   state.service = service
   state.resolvedMounts = resolved
-  await refreshStats(signal)
 }
 
 async function loadOverview(signal) {
@@ -443,31 +463,30 @@ async function loadEntries(cursor = '') {
 async function loadDocuments(signal, onPhase = () => {}) {
   onPhase('正在读取可用知识库', .24)
   const options = { signal }
-  const requests = [api('knowledge-bases', options)]
+  const requests = [ensureKnowledgeBases(true, signal)]
   if (state.mountContext.sessionId) {
     const params = new URLSearchParams({ sessionId: state.mountContext.sessionId })
     if (state.mountContext.projectId) params.set('projectId', state.mountContext.projectId)
     requests.push(api(`mounts/resolve?${params}`, options))
   }
-  const [results, stats] = await Promise.all([
-    Promise.all(requests),
-    state.stats ? Promise.resolve(state.stats) : api('stats', options),
-  ])
-  const [bases, resolved = []] = results
+  const [bases, resolved = []] = await Promise.all(requests)
   state.knowledgeBases = bases
   state.resolvedMounts = resolved
-  state.stats = stats
-  onPhase('正在建立文档索引', .56)
+  onPhase('正在准备知识目录', .56)
   const visibleBaseIds = new Set(documentKnowledgeBases(bases).map(base => base.id))
   state.documents = state.documents.filter(document => visibleBaseIds.has(document.knowledgeBaseId))
   const workspace = sessionDocumentWorkspace()
   const view = workspace.view
   const availableBaseIds = visibleBaseIds
-  if (!view.knowledgeBaseId || !availableBaseIds.has(view.knowledgeBaseId)) {
-    view.knowledgeBaseId = state.entryFilters.knowledgeBaseId && availableBaseIds.has(state.entryFilters.knowledgeBaseId)
-      ? state.entryFilters.knowledgeBaseId
-      : documentKnowledgeBases(bases)[0]?.id || ''
+  if (view.knowledgeBaseId && !availableBaseIds.has(view.knowledgeBaseId)) {
+    view.knowledgeBaseId = ''
+    view.documentId = ''
+    view.editor = null
   }
+  // Only an explicit document link/previous selection opens content. A plain
+  // launcher visit leaves every base collapsed and requests no document index.
+  if (!view.documentId) return
+  if (view.editor?.id === view.documentId) return
   if (view.knowledgeBaseId) {
     view.expandedBases.add(view.knowledgeBaseId)
     await loadDocumentPage(workspace, view.knowledgeBaseId, { signal })
@@ -485,9 +504,8 @@ async function loadDocuments(signal, onPhase = () => {}) {
       view.documentId = ''
     }
   }
-  selectDefaultDocument(workspace)
   if (view.documentId) {
-    onPhase('正在打开最近文档', .82)
+    onPhase('正在打开指定文档', .82)
     await loadDocumentEditor(workspace, view.documentId, signal)
   }
   else view.editor = null
@@ -495,12 +513,7 @@ async function loadDocuments(signal, onPhase = () => {}) {
 
 async function loadNotes(signal, onPhase = () => {}) {
   onPhase('正在读取顶层目录', .36)
-  const [rootNodes] = await Promise.all([
-    api('notes?limit=500', { signal }),
-    loadNoteShares(signal),
-  ])
-  state.notes.children.set('root', rootNodes)
-  state.notes.loadedFolders.add('root')
+  await loadNoteChildren(null, true, { signal })
   if (state.notes.selectedId) {
     onPhase('正在恢复上次打开的笔记', .74)
     const selected = state.notes.selectedNode?.id === state.notes.selectedId
@@ -553,7 +566,15 @@ function mergeDocumentSummaries(workspace, items, knowledgeBaseId, reset) {
   const current = documentWorkspaceDocuments(workspace)
   const retained = reset ? current.filter(document => document.knowledgeBaseId !== knowledgeBaseId) : current
   const merged = new Map(retained.map(document => [document.id, document]))
-  for (const item of items) merged.set(item.id, item)
+  for (const item of items) {
+    merged.set(item.id, item)
+    const key = JSON.stringify([knowledgeBaseId, item.group || ''])
+    if (!workspace.view.knownGroups.has(key)) {
+      workspace.view.knownGroups.add(key)
+      workspace.view.collapsedGroups.add(key)
+    }
+    if (item.id === workspace.view.documentId) workspace.view.collapsedGroups.delete(key)
+  }
   setDocumentWorkspaceDocuments(workspace, [...merged.values()])
 }
 
@@ -569,6 +590,7 @@ async function loadDocumentPage(workspace, knowledgeBaseId, options = {}) {
     const params = new URLSearchParams({ knowledgeBaseId, limit: '60' })
     if (cursor) params.set('cursor', cursor)
     const result = await api(`document-index?${params}`, { signal: options.signal })
+    if (options.signal?.aborted || (workspace.kind === 'library' && workspace.view !== state.libraryDetail.view)) return
     mergeDocumentSummaries(workspace, result.items, knowledgeBaseId, !options.append)
     page.loaded = true
     page.nextCursor = result.nextCursor || ''
@@ -592,13 +614,23 @@ async function toggleDocumentBase(workspace, baseId) {
   }
   view.expandedBases.add(baseId)
   const page = documentPageState(workspace, baseId)
-  if (!page.loaded) page.loading = true
-  renderShell()
-  if (!page.loaded) {
-    page.loading = false
-    await loadDocumentPage(workspace, baseId)
+  if (!page.loaded && !page.loading) {
+    const route = navigationRequest
+    const pending = loadDocumentPage(workspace, baseId, { signal: navigationController?.signal })
+    renderShell()
+    try { await pending } catch (error) { if (error.name !== 'AbortError') throw error }
+    if (route === navigationRequest) renderShell()
+  } else {
     renderShell()
   }
+}
+
+async function loadMoreDocumentPage(workspace, baseId) {
+  const route = navigationRequest
+  const pending = loadDocumentPage(workspace, baseId, { append: true, signal: navigationController?.signal })
+  renderShell()
+  try { await pending } catch (error) { if (error.name !== 'AbortError') showToast(friendlyError(error), 'error') }
+  if (route === navigationRequest) renderShell()
 }
 
 function resetDocumentSearch(view) {
@@ -630,13 +662,14 @@ function renderDocumentSearchState(workspace) {
   renderShell()
   window.requestAnimationFrame(() => {
     const input = document.querySelector(`.note-tree-search[data-document-scope="${workspace.kind}"]`)
-    input?.focus()
+    input?.focus({ preventScroll: true })
     input?.setSelectionRange(input.value.length, input.value.length)
   })
 }
 
 async function loadDocumentSearch(workspace, reset = false) {
   const view = workspace.view
+  if (!reset && (view.searchLoading || !view.searchNextCursor)) return
   const query = view.query.trim()
   if (!query) return resetDocumentSearch(view)
   const request = ++view.searchRequest
@@ -676,7 +709,8 @@ async function loadDocumentSearch(workspace, reset = false) {
     if (documentSearchController === controller) documentSearchController = null
     if (request === view.searchRequest) {
       view.searchLoading = false
-      renderDocumentSearchState(workspace)
+      if (reset) renderDocumentSearchState(workspace)
+      else renderShell()
     }
   }
 }
@@ -711,21 +745,13 @@ function documentSummary(document) {
   return summary
 }
 
-function selectDefaultDocument(workspace) {
-  const view = workspace.view
-  const documents = documentWorkspaceDocuments(workspace).filter(document => document.knowledgeBaseId === view.knowledgeBaseId)
-  if (!documents.some(document => document.id === view.documentId)) {
-    view.documentId = documents[0]?.id || ''
-  }
-  if (view.knowledgeBaseId) view.expandedBases.add(view.knowledgeBaseId)
-}
-
 async function loadDocumentEditor(workspace, id, signal) {
   const revision = (workspace.view.loadRevision || 0) + 1
   workspace.view.loadRevision = revision
   const [entry, noteReferences] = await Promise.all([
     api(`entries/${encodeURIComponent(id)}`, { signal }),
     api(`entries/${encodeURIComponent(id)}/note-references`, { signal }),
+    loadMarkdownPreview(),
   ])
   if (workspace.view.loadRevision !== revision || workspace.view.documentId !== id) return false
   workspace.view.mode = 'preview'
@@ -763,6 +789,7 @@ async function startBlankDocument(workspace, baseId, group) {
   const emptyDraft = editor?.isNew && !editor.title.trim() && !editor.body.trim()
   if (editor?.dirty && !emptyDraft && !await saveDocumentEditor(workspace)) return
   if (!baseId) return showToast('请先选择知识库。', 'error')
+  try { await loadMarkdownPreview() } catch (error) { showToast(friendlyError(error), 'error'); return }
   if (group) return createBlankDocument(workspace, baseId, group)
   const field = createDocumentGroupField({ element, api, baseId, required: true })
   openSheet({ title: '新建知识文档', description: '先选择文档分组，优先复用已有分组。', body: field.wrapper, primaryLabel: '开始编写', onPrimary: async () => {
@@ -965,24 +992,63 @@ function updateEditorSaveState(label) {
 }
 
 async function loadCandidates(signal) {
+  const status = state.candidateStatus
   const [payload] = await Promise.all([
-    api(`candidates?status=${state.candidateStatus}&limit=100&includeTargets=1`, { signal }),
+    api(`candidates?status=${status}&limit=20&includeTargets=1&paged=1`, { signal }),
     ensureKnowledgeBases(false, signal),
   ])
+  if (signal?.aborted || status !== state.candidateStatus) return
   const candidates = payload.items
   state.candidates = candidates
   state.candidateTargets = new Map(payload.targets.map(target => [target.id, target]))
-  if (!state.stats) await refreshStats(signal)
+  state.candidatePage = { nextCursor: payload.nextCursor || '', total: payload.total, counts: payload.counts, loading: false, error: '' }
+}
+
+async function loadMoreCandidates() {
+  const page = state.candidatePage, status = state.candidateStatus, route = navigationRequest
+  if (page.loading || !page.nextCursor) return
+  page.loading = true; page.error = ''
+  updateCandidateFooter()
+  try {
+    const params = new URLSearchParams({ status, limit: '20', includeTargets: '1', paged: '1', cursor: page.nextCursor })
+    const payload = await api(`candidates?${params}`, { signal: navigationController?.signal })
+    if (route !== navigationRequest || page !== state.candidatePage) return
+    const ids = new Set(state.candidates.map(item => item.id))
+    const added = payload.items.filter(item => !ids.has(item.id))
+    state.candidates.push(...added)
+    for (const target of payload.targets) state.candidateTargets.set(target.id, target)
+    Object.assign(page, { nextCursor: payload.nextCursor || '', total: payload.total, counts: payload.counts })
+    document.querySelector('.candidate-list')?.append(...added.map(renderCandidateCard))
+    document.querySelectorAll('[data-candidate-count]').forEach(node => { node.textContent = String(page.counts[node.dataset.candidateCount]) })
+  } catch (error) {
+    if (error.name !== 'AbortError' && route === navigationRequest) page.error = friendlyError(error)
+  } finally {
+    page.loading = false
+    if (route === navigationRequest && page === state.candidatePage) updateCandidateFooter()
+  }
+}
+
+function renderCandidateFooter() {
+  const page = state.candidatePage
+  return element('div', { class: 'list-load-footer candidate-load-footer' },
+    element('span', { role: 'status' }, page.error || `已显示 ${state.candidates.length} / ${page.total}`),
+    page.nextCursor ? actionButton(page.loading ? '正在加载…' : page.error ? '重试加载' : '加载更多', loadMoreCandidates, 'ghost small', {
+      disabled: page.loading, 'data-load-more': page.error ? 'manual' : 'auto', 'aria-label': '加载更多审核记录',
+    }) : null)
+}
+
+function updateCandidateFooter() {
+  document.querySelector('.candidate-load-footer')?.replaceWith(renderCandidateFooter())
 }
 
 async function loadTokens(signal) {
   const [tokens, service] = await Promise.all([api('tokens', { signal }), api('service', { signal })])
   state.tokens = tokens
   state.service = service
-  if (!state.stats) await refreshStats(signal)
 }
 
 function renderShell() {
+  disposeInfiniteScroll()
   worklogWorkspace?.dispose()
   worklogWorkspace = undefined
   writebackWorkspace?.dispose()
@@ -1018,7 +1084,7 @@ function renderShell() {
       'aria-label': '关闭导航菜单',
       onClick: () => setMenuOpen(false),
     }),
-    element('main', { class: 'main' },
+    element('main', { class: 'main', 'data-scroll-key': 'main' },
       element('header', { class: 'topbar' },
         element('div', { class: 'topbar-title' },
           actionButton(interfaceIcon('menu'), () => setMenuOpen(!state.menuOpen), 'ghost mobile-menu', {
@@ -1044,6 +1110,7 @@ function renderShell() {
   applySidebarVisibility(shell, state.documentView.sidebarHidden)
   restoreScrollPosition(currentScrollState())
   renderDocumentSyncNotice()
+  disposeInfiniteScroll = infiniteModule.connectInfiniteScroll(shell)
 }
 
 function renderContextPaneToggle() {
@@ -1183,7 +1250,7 @@ function applySidebarVisibility(shell, hidden) {
 }
 
 function renderSidebar() {
-  const pending = state.stats?.candidates.pending
+  const pending = state.candidatePage.counts?.pending ?? state.stats?.candidates.pending
   const navGroups = [
     ['笔记工作区', [['notes', '笔记文档'], ['shares', '已分享']]],
     ['知识工作区', [['entries', '知识文档'], ['candidates', '待审核'], ['writeback', '回写任务'], ['bases', '知识库与挂载']]],
@@ -1367,7 +1434,7 @@ function renderKnowledgeBases() {
 
 async function openKnowledgeBaseDocuments(base) {
   captureScrollPosition()
-  const request = ++libraryDetailRequest
+  libraryDetailRequest += 1
   const detail = state.libraryDetail
   const changingBase = detail.knowledgeBaseId !== base.id
   detail.knowledgeBaseId = base.id
@@ -1378,24 +1445,9 @@ async function openKnowledgeBaseDocuments(base) {
     detail.view.knowledgeBaseId = base.id
   }
   state.knowledgeBaseView = 'detail'
-  state.loading = true
   detail.error = ''
   renderShell()
-  const workspace = libraryDocumentWorkspace()
-  try {
-    if (!await reloadDocumentWorkspace(workspace) || request !== libraryDetailRequest) return
-    selectDefaultDocument(workspace)
-    if (workspace.view.documentId) await loadDocumentEditor(workspace, workspace.view.documentId)
-    else workspace.view.editor = null
-  } catch (error) {
-    if (request !== libraryDetailRequest) return
-    detail.error = friendlyError(error)
-  } finally {
-    if (request !== libraryDetailRequest) return
-    state.loading = false
-    renderShell()
-    window.requestAnimationFrame(() => document.querySelector('.library-detail-back')?.focus())
-  }
+  window.requestAnimationFrame(() => document.querySelector('.library-detail-back')?.focus())
 }
 
 async function closeKnowledgeBaseDetail() {
@@ -1766,7 +1818,8 @@ function renderDocumentWorkspace(workspace, options = {}) {
         document.documentState !== 'open' ? badge(DOCUMENT_STATE_LABELS[document.documentState] || '已结束', 'success') : null) }),
         !query && page.nextCursor ? element('button', {
           type: 'button', class: 'note-tree-more', disabled: page.loading,
-          onClick: () => { void loadDocumentPage(workspace, base.id, { append: true }).then(renderShell) },
+          'data-load-more': page.error ? 'manual' : 'auto',
+          onClick: () => { void loadMoreDocumentPage(workspace, base.id) },
         }, page.loading ? '正在加载…' : `继续加载（已显示 ${documents.length} / ${page.total}）`) : null,
         !query && page.loaded && documents.length === 0 ? element('div', { class: 'note-tree-status' }, '这个知识库还没有文档。') : null,
         !query && !readOnly ? element('button', { type: 'button', class: 'note-tree-new', onClick: () => { void startBlankDocument(workspace, base.id) } },
@@ -1782,6 +1835,7 @@ function renderDocumentWorkspace(workspace, options = {}) {
       !view.searchLoading && !view.searchError && view.searchResults.length === 0 ? element('div', { class: 'note-tree-empty' }, '没有匹配的文档') : null,
       view.searchNextCursor ? element('button', {
         type: 'button', class: 'note-tree-more search-more', disabled: view.searchLoading,
+        'data-load-more': view.searchError ? 'manual' : 'auto',
         onClick: () => { void loadDocumentSearch(workspace, false) },
       }, view.searchLoading ? '正在加载…' : `继续加载搜索结果（${view.searchResults.length} / ${view.searchTotal}）`) : null,
     ]
@@ -2096,8 +2150,6 @@ function confirmDeleteDocument(workspace, editor) {
       workspace.view.editor = null
       state.stats = null
       await reloadDocumentWorkspace(workspace)
-      selectDefaultDocument(workspace)
-      if (workspace.view.documentId) await loadDocumentEditor(workspace, workspace.view.documentId)
       renderShell()
       showToast('文档已删除。')
     },
@@ -2129,7 +2181,7 @@ function renderNotes() {
     }) : null,
     element('aside', { class: 'notes-browser', 'aria-label': '笔记目录' },
       element('header', { class: 'notes-browser-header' },
-        element('div', {}, element('h2', {}, '目录'), element('span', {}, `${rootNodes.length} 个根目录项目`)),
+        element('div', {}, element('h2', {}, '目录'), element('span', {}, `${notePages.get('root')?.total ?? rootNodes.length} 个根目录项目`)),
         element('div', { class: 'notes-browser-actions' },
           actionButton('新建', () => openCreateNoteDocument(), 'primary small'),
           actionButton('目录', () => openCreateNoteFolder(), 'small'),
@@ -2402,19 +2454,15 @@ function openImportNoteShare() {
 
 async function loadShareImportDestinations() {
   const options = [{ value: '', label: '笔记文档（根目录）' }]
-  const queue = [{ id: null, path: '' }]
-  while (queue.length && options.length <= 500) {
-    const batch = queue.splice(0, 4)
-    const groups = await Promise.all(batch.map(async parent => ({ parent, nodes: await loadNoteChildren(parent.id) })))
-    for (const { parent, nodes } of groups) {
-      for (const node of nodes) {
-        if (node.kind !== 'folder') continue
-        const path = parent.path ? `${parent.path}/${node.name}` : node.name
-        options.push({ value: node.id, label: path })
-        queue.push({ id: node.id, path })
-        if (options.length > 500) break
-      }
+  const folders = await api('notes?kind=folder&recursive=1&limit=500')
+  const byId = new Map(folders.map(node => [node.id, node]))
+  for (const node of folders) {
+    const names = [node.name], seen = new Set([node.id])
+    let parent = byId.get(node.parentId)
+    while (parent && !seen.has(parent.id)) {
+      seen.add(parent.id); names.unshift(parent.name); parent = byId.get(parent.parentId)
     }
+    options.push({ value: node.id, label: names.join('/') })
   }
   return options
 }
@@ -2490,15 +2538,21 @@ function renderNoteTreeBranch(parentId, depth = 0) {
         : element('div', { class: 'notes-tree-loading', role: 'status' }, '正在读取…')
       : null
     return element('div', { class: 'notes-tree-node' }, row, children)
-  }))
+  }), renderNotePageFooter(parentId))
 }
 
 function renderNoteSearchResults() {
-  if (!state.notes.searchResults.length) return element('div', { class: 'notes-tree-empty' }, '没有匹配的笔记文档。')
+  if (!state.notes.searchResults.length) return element('div', { class: 'notes-tree-empty' }, noteSearchPage.loading ? '正在搜索…' : noteSearchPage.error || '没有匹配的笔记文档。',
+    noteSearchPage.error ? actionButton('重试', () => loadNoteSearch(false), 'ghost small') : null)
   return element('div', { class: 'notes-search-results' }, state.notes.searchResults.map(node => element('button', {
     type: 'button', class: 'notes-search-row',
     onClick: () => { void selectNoteNode(node) },
-  }, renderNoteIcon(node), element('span', {}, element('strong', {}, node.name), element('small', {}, noteKindLabel(node))))))
+  }, renderNoteIcon(node), element('span', {}, element('strong', {}, node.name), element('small', {}, noteKindLabel(node))))),
+  noteSearchPage.nextCursor ? element('div', { class: 'list-load-footer' },
+    element('span', { role: 'status' }, noteSearchPage.error || `已显示 ${state.notes.searchResults.length} / ${noteSearchPage.total}`),
+    actionButton(noteSearchPage.loading ? '正在加载…' : noteSearchPage.error ? '重试加载' : '加载更多', () => loadNoteSearch(true), 'ghost small', {
+      disabled: noteSearchPage.loading, 'data-load-more': noteSearchPage.error ? 'manual' : 'auto',
+    })) : null)
 }
 
 function renderNoteContent() {
@@ -2527,7 +2581,7 @@ function renderNoteFolderContent(folder) {
   const parentId = folder?.id || null
   const children = state.notes.children.get(parentId || 'root') || []
   return element('main', {
-    class: 'notes-content is-folder',
+    class: 'notes-content is-folder', 'data-scroll-key': `notes-folder:${parentId || 'root'}`,
     onDragOver: event => event.preventDefault(),
     onDrop: event => void dropNoteNode(event, parentId),
   },
@@ -2561,7 +2615,22 @@ function renderNoteFolderContent(folder) {
         element('p', {}, '可以新建笔记文档、建立子目录，或把本地文件拖到这里。'),
         element('div', {}, actionButton('新建文档', () => openCreateNoteDocument(parentId), 'primary small'), actionButton('新建目录', () => openCreateNoteFolder(parentId), 'small')),
       ),
+    renderNotePageFooter(parentId),
   )
+}
+
+function renderNotePageFooter(parentId) {
+  const page = notePages.get(parentId || 'root')
+  if (!page?.nextCursor && !page?.error) return null
+  return element('div', { class: 'list-load-footer' },
+    element('span', { role: 'status' }, page.error || `已显示 ${(state.notes.children.get(parentId || 'root') || []).length} / ${page.total}`),
+    actionButton(page.loading ? '正在加载…' : page.error ? '重试加载' : '加载更多', async () => {
+      const route = navigationRequest
+      const pending = loadNoteChildren(parentId, false, { append: true, signal: navigationController?.signal })
+      renderShell()
+      try { await pending } catch (error) { if (error.name !== 'AbortError') showToast(friendlyError(error), 'error') }
+      if (route === navigationRequest) renderShell()
+    }, 'ghost small', { disabled: page.loading, 'data-load-more': page.error ? 'manual' : 'auto', 'aria-label': '加载更多笔记' }))
 }
 
 function renderNoteContentHeader(folder) {
@@ -2572,7 +2641,7 @@ function renderNoteContentHeader(folder) {
       path.map(node => element('span', {}, element('span', { 'aria-hidden': 'true' }, '/'), element('button', { type: 'button', onClick: () => { void selectNoteNode(node) } }, node.name))),
     ),
     element('div', { class: 'notes-content-title' },
-      element('div', {}, element('h2', {}, folder?.name || '全部笔记'), element('p', {}, folder ? `${(state.notes.children.get(folder.id) || []).length} 个项目` : '你的独立笔记与资料目录')),
+      element('div', {}, element('h2', {}, folder?.name || '全部笔记'), element('p', {}, `${notePages.get(folder?.id || 'root')?.total ?? (state.notes.children.get(folder?.id || 'root') || []).length} 个项目`)),
       element('div', { class: 'notes-content-actions' },
         folder ? actionButton(noteShareForNode(folder.id) ? '分享中' : '分享目录', () => { void openNoteShare(folder) }, 'ghost small') : null,
         actionButton('已分享', () => { void navigate('shares') }, 'ghost small'),
@@ -2754,6 +2823,7 @@ async function excerptSelectedNote(node, text) {
   try {
     if (state.notes.selectedNode?.id !== node.id) return
     if (!await saveNoteDocument()) return
+    const { openNoteExcerpt } = await resources.module('note-excerpt')
     if (state.notes.selectedNode?.id !== node.id) return
     await openNoteExcerpt({ node, text, api, element, openSheet, showToast, friendlyError, formField, selectField, knowledgeBasePathLabel })
   } catch (error) { showToast(friendlyError(error), 'error') }
@@ -2950,15 +3020,35 @@ async function selectNoteNode(node, options = {}) {
   }
 }
 
-async function loadNoteChildren(parentId, force = false) {
+async function loadNoteChildren(parentId, force = false, options = {}) {
   const key = parentId || 'root'
-  if (!force && state.notes.loadedFolders.has(key)) return state.notes.children.get(key) || []
-  const params = new URLSearchParams({ limit: '500' })
+  let page = notePages.get(key)
+  if (!force && page?.loading) return page.promise
+  if (!force && !options.append && state.notes.loadedFolders.has(key)) return state.notes.children.get(key) || []
+  if (options.append && !page?.nextCursor) return state.notes.children.get(key) || []
+  if (!page || force) {
+    page = { nextCursor: '', total: 0, loading: false, error: '' }
+    notePages.set(key, page)
+  }
+  page.loading = true; page.error = ''
+  const params = new URLSearchParams({ limit: '40', paged: '1' })
   if (parentId) params.set('parentId', parentId)
-  const nodes = await api(`notes?${params}`)
-  state.notes.children.set(key, nodes)
-  state.notes.loadedFolders.add(key)
-  return nodes
+  if (options.append) params.set('cursor', page.nextCursor)
+  page.promise = (async () => {
+    try {
+      const result = await api(`notes?${params}`, { signal: options.signal })
+      if (options.signal?.aborted || notePages.get(key) !== page) return []
+      const nodes = options.append ? [...new Map([...(state.notes.children.get(key) || []), ...result.items].map(node => [node.id, node])).values()] : result.items
+      state.notes.children.set(key, nodes)
+      state.notes.loadedFolders.add(key)
+      Object.assign(page, { nextCursor: result.nextCursor || '', total: result.total })
+      return nodes
+    } catch (error) {
+      if (error.name !== 'AbortError') page.error = friendlyError(error)
+      throw error
+    } finally { page.loading = false }
+  })()
+  return page.promise
 }
 
 async function loadNoteBreadcrumbs(node) {
@@ -3005,23 +3095,46 @@ function scheduleNoteSearch(value) {
   window.clearTimeout(noteSearchTimer)
   noteSearchController?.abort()
   noteSearchController = null
-  const request = ++noteSearchRequest
-  noteSearchTimer = window.setTimeout(async () => {
-    const controller = new AbortController()
-    noteSearchController = controller
-    try {
-      const results = value.trim()
-        ? await api(`notes?q=${encodeURIComponent(value.trim())}&limit=200`, { signal: controller.signal })
-        : []
-      if (request !== noteSearchRequest || value !== state.notes.query) return
-      state.notes.searchResults = results
-      renderShell()
-    } catch (error) {
-      if (!controller.signal.aborted && request === noteSearchRequest) showToast(friendlyError(error), 'error')
-    } finally {
-      if (noteSearchController === controller) noteSearchController = null
-    }
-  }, 180)
+  ++noteSearchRequest
+  noteSearchPage = { nextCursor: '', total: 0, loading: false, error: '' }
+  state.notes.searchResults = []
+  noteSearchTimer = window.setTimeout(() => { void loadNoteSearch(false) }, 180)
+}
+
+async function loadNoteSearch(append = false) {
+  const page = noteSearchPage, value = state.notes.query.trim(), request = noteSearchRequest
+  if (page.loading || append && !page.nextCursor) return
+  if (!value) { renderShell(); return }
+  const controller = new AbortController()
+  noteSearchController = controller
+  page.loading = true; page.error = ''
+  const params = new URLSearchParams({ q: value, limit: '40', paged: '1' })
+  if (append) params.set('cursor', page.nextCursor)
+  renderNoteSearchState()
+  try {
+    const result = await api(`notes?${params}`, { signal: controller.signal })
+    if (controller.signal.aborted || request !== noteSearchRequest || page !== noteSearchPage) return
+    state.notes.searchResults = append ? [...new Map([...state.notes.searchResults, ...result.items].map(node => [node.id, node])).values()] : result.items
+    Object.assign(page, { nextCursor: result.nextCursor || '', total: result.total })
+  } catch (error) {
+    if (!controller.signal.aborted && request === noteSearchRequest) page.error = friendlyError(error)
+  } finally {
+    page.loading = false
+    if (noteSearchController === controller) noteSearchController = null
+    if (request === noteSearchRequest) renderNoteSearchState()
+  }
+}
+
+function renderNoteSearchState() {
+  const input = document.querySelector('.notes-search input')
+  const focused = input && document.activeElement === input
+  const selection = focused ? [input.selectionStart, input.selectionEnd] : null
+  renderShell()
+  if (focused) {
+    const next = document.querySelector('.notes-search input')
+    next?.focus({ preventScroll: true })
+    next?.setSelectionRange(...selection)
+  }
 }
 
 function openCreateNoteFolder(parentId = state.notes.currentFolderId) {
@@ -3420,6 +3533,7 @@ async function openNoteHistory(node) {
       showToast('这个文档还没有可查看的保存记录。')
       return
     }
+    await Promise.all([resources.script('note-history', 'DshKnowledgeNoteHistory'), loadChangeReview(), loadMarkdownPreview()])
     let modal
     const view = window.DshKnowledgeNoteHistory.createNoteHistoryView({
       versions,
@@ -3715,7 +3829,7 @@ function formatBytes(value) {
 
 function renderCandidates() {
   const statuses = [['pending', '待审核'], ['approved', '已通过'], ['rejected', '已拒绝']]
-  const pendingCount = state.stats?.candidates.pending ?? state.candidates.filter(candidate => candidate.status === 'pending').length
+  const pendingCount = state.candidatePage.counts?.pending ?? 0
   return element('section', { class: 'candidate-page', 'aria-labelledby': 'candidates-heading' },
     element('div', { class: 'section-heading' },
       element('div', {}, element('h2', { id: 'candidates-heading' }, 'AI 提取候选'), element('p', {}, '审核写入、模型推断、低置信度结果和冲突项会在这里等待确认；只有高置信度且证据明确的结果才能直接写入。')),
@@ -3728,11 +3842,12 @@ function renderCandidates() {
         element('div', { class: 'tabs', role: 'tablist', 'aria-label': '候选状态' }, statuses.map(([value, label]) => element('button', {
           type: 'button', role: 'tab', class: 'tab', 'aria-selected': String(state.candidateStatus === value),
           onClick: async () => { state.candidateStatus = value; await navigate('candidates') },
-        }, label, state.stats ? ` ${state.stats.candidates[value]}` : ''))),
+        }, label, ' ', element('span', { 'data-candidate-count': value }, String(state.candidatePage.counts?.[value] ?? '—'))))),
       ),
     ),
     state.candidates.length ? element('div', { class: 'candidate-list' }, state.candidates.map(renderCandidateCard))
       : emptyState(`没有${STATUS_LABELS[state.candidateStatus]}候选`, state.candidateStatus === 'pending' ? '新的对话结束后，插件会在后台判断是否产生候选。' : '切换其他状态查看历史记录。'),
+    renderCandidateFooter(),
   )
 }
 
@@ -4372,6 +4487,7 @@ function selectField(label, options, value) {
 
 async function loadModelCatalog() {
   try {
+    readModelCatalog ??= (await resources.module('model-catalog')).createModelCatalogLoader()
     state.modelCatalog = await readModelCatalog()
   } catch (error) {
     showToast(`无法读取当前 DSH 的模型目录：${error.message}，重新打开可重试。`, 'error')
@@ -4442,7 +4558,7 @@ async function reviewCandidate(candidate, decision, resolution) {
 
 function openBulkApprove() {
   if (state.candidateBatchRunning) return
-  const pendingCount = state.stats?.candidates.pending ?? state.candidates.length
+  const pendingCount = state.candidatePage.counts?.pending ?? 0
   const summary = element('strong', {}, `准备处理 ${pendingCount} 条待审核候选`)
   const detail = element('p', {}, '开始后会按创建时间分批处理，并实时显示结果。')
   const metrics = element('div', { class: 'bulk-review-metrics' })
@@ -4694,7 +4810,7 @@ async function openDocumentSyncConflict() {
       : { title: target.identity.title, content: target.identity.body }
     const remote = target.kind === 'note' ? { title: snapshot.node.name, content: snapshot.content }
       : { title: snapshot.entry.title, content: snapshot.entry.body }
-    const { openSyncConflict } = await import(moduleUrl('document-sync-ui'))
+    const [{ openSyncConflict }] = await Promise.all([resources.module('document-sync-ui'), loadChangeReview()])
     const stillCurrent = () => {
       if (currentSyncTarget()?.identity !== target.identity) throw new Error('当前文档已切换，请重新打开差异')
       if ((target.kind === 'note' ? state.notes.draft : target.identity.body) !== local.content

@@ -8,7 +8,7 @@ import { LocalKnowledgeProvider } from './local-provider.js'
 import { normalizeFinalizationChange } from './document-lifecycle.js'
 import { normalizeDocumentGroup } from './document-groups.js'
 import type { RuntimeContextLike } from './runtime.js'
-import { isNoteId, type NoteReference } from './notes/domain.js'
+import { isNoteId, type NoteReference, type NoteListRequest } from './notes/domain.js'
 import { renderNoteSharePage } from './notes/share-page.js'
 import { createNoteShareManifest, importNoteShare, inspectNoteShareUrl, type NoteShareRequestPolicy } from './notes/share-import.js'
 
@@ -133,13 +133,16 @@ async function dispatch(
       const parentId = url.searchParams.get('parentId')
       const kind = url.searchParams.get('kind')
       if (kind !== null && kind !== 'document' && kind !== 'folder' && kind !== 'file') throw httpError(400, 'invalid note kind')
-      return sendJson(res, 200, provider.notes.list({
+      const request: NoteListRequest = {
         ...query === null ? {} : { query },
         ...query === null ? { parentId } : {},
         limit: integerParam(url, 'limit', 200, 1, 500),
         ...kind === null ? {} : { kind },
         ...url.searchParams.get('recursive') === '1' ? { recursive: true } : {},
-      }))
+      }
+      return sendJson(res, 200, url.searchParams.get('paged') === '1'
+        ? provider.notes.listPage(request, url.searchParams.get('cursor') || undefined)
+        : provider.notes.list(request))
     }
     if (method === 'POST' && segments[1] === 'folders' && segments.length === 2) {
       requirePermission(actor.permissions, 'write')
@@ -597,7 +600,13 @@ async function dispatch(
       requirePermission(actor.permissions, 'read')
       const status = url.searchParams.get('status')
       if (status !== 'pending' && status !== 'approved' && status !== 'rejected') throw httpError(400, 'invalid candidate status')
-      const candidates = await provider.listCandidates(status, integerParam(url, 'limit', 50, 1, 100))
+      const limit = integerParam(url, 'limit', 50, 1, 100)
+      if (url.searchParams.get('paged') === '1') {
+        const page = provider.candidatePage(status, limit, url.searchParams.get('cursor') || undefined)
+        const targetIds = page.items.flatMap(candidate => candidate.targetId ? [candidate.targetId] : [])
+        return sendJson(res, 200, { ...page, targets: url.searchParams.get('includeTargets') === '1' ? provider.entriesByIds(targetIds) : [] })
+      }
+      const candidates = await provider.listCandidates(status, limit)
       if (url.searchParams.get('includeTargets') !== '1') return sendJson(res, 200, candidates)
       const targetIds = candidates.flatMap(candidate => candidate.targetId === undefined ? [] : [candidate.targetId])
       return sendJson(res, 200, { items: candidates, targets: provider.entriesByIds(targetIds) })

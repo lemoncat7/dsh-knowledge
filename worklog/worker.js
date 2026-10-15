@@ -29,10 +29,12 @@ export class Worker {
     } catch (e) {
       if (this.closed) this.store.status(job.id, 'queued', payload, job.attempts)
       else if (this.store.job(job.id).status !== 'cancelled') {
-        const retry = attempts < 3 && e.status !== 409
+        const retryable = e.status !== 409 && e.worklogDiagnostic?.retryable !== false
+        const retry = attempts < 3 && retryable
         const diagnostic = { ...(e.worklogDiagnostic || { code: this.controller.signal.aborted ? 'timeout' : 'request_error' }), elapsedMs: Date.now() - started, attempt: attempts, httpStatus: Number.isInteger(e.status) ? e.status : null }
         const message = e.worklogDiagnostic || e.status === 409 ? e.message : diagnostic.code === 'timeout' ? '整理超过 180 秒，已中止' : '模型请求或流式读取失败'
-        this.store.status(job.id, retry ? 'queued' : 'failed', { ...payload, diagnostic, error: `${message}（第 ${attempts}/3 次，${diagnostic.code}）` }, attempts, Date.now() + attempts * 10000)
+        const progress = retryable ? `第 ${attempts}/3 次` : `第 ${attempts} 次，已停止自动重试`
+        this.store.status(job.id, retry ? 'queued' : 'failed', { ...payload, diagnostic, error: `${message}（${progress}，${diagnostic.code}）` }, attempts, Date.now() + attempts * 10000)
         this.onError({ jobId: job.id, day: job.day, ...diagnostic })
       }
     } finally { clearTimeout(timeout); this.active = null; this.controller = null }

@@ -2161,3 +2161,14 @@ html,
 .document-group-choice strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .document-group-choice small { color: var(--text-tertiary); font-weight: 400; }
 @media (max-width: 760px) { .document-group-toggle { min-height: 40px; } .document-group-control { max-width: 150px; } }
+.list-load-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}

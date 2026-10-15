@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { chmodSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { decodePageCursor, encodePageCursor } from '../page-cursor.js'
 import type { ExtractionWriteDestination } from '../domain.js'
 import type { ExtractionCheckpoint, PlannedWrite, TurnSnapshot } from '../extraction.js'
 
@@ -127,6 +128,25 @@ export class WritebackQueue {
     const total = (this.db.prepare(`SELECT count(*) AS count FROM queue_jobs ${where}`).get(...args) as { count: number }).count
     const rows = this.db.prepare(`SELECT source_key,session_id,attempts,created_at FROM queue_jobs ${where} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...args, limit, offset) as { source_key: string; session_id: string; attempts: number; created_at: number | null }[]
     return { total, items: rows.map(row => ({ sourceKey: row.source_key, sessionId: row.session_id, attempts: row.attempts, createdAt: row.created_at, ...this.status(row.source_key)! })) }
+  }
+
+  listPage(sessionId = '', status?: WritebackStatus['status'], cursor?: string, watch: string[] = []) {
+    const scope = JSON.stringify(['writeback', sessionId, status || ''])
+    const after = decodePageCursor(cursor, scope, ['number'])
+    const args: (string | number)[] = [], conditions: string[] = []
+    if (sessionId) { conditions.push('session_id=?'); args.push(sessionId) }
+    if (status) { conditions.push('status=?'); args.push(status) }
+    const total = Number((this.db.prepare(`SELECT count(*) AS count FROM queue_jobs ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''}`).get(...args) as { count: number }).count)
+    if (after) { conditions.push('id<?'); args.push(after[0]!) }
+    const rows = this.db.prepare(`SELECT id,source_key,session_id,attempts,created_at FROM queue_jobs
+      ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''} ORDER BY id DESC LIMIT 31`).all(...args) as { id: number; source_key: string; session_id: string; attempts: number; created_at: number | null }[]
+    const items = rows.slice(0, 30).map(row => ({ sourceKey: row.source_key, sessionId: row.session_id, attempts: row.attempts, createdAt: row.created_at, ...this.status(row.source_key)! }))
+    const updates = [...new Set(watch)].slice(0, 30).flatMap(sourceKey => {
+      const row = this.db.prepare('SELECT session_id,attempts,created_at FROM queue_jobs WHERE source_key=?').get(sourceKey) as { session_id: string; attempts: number; created_at: number | null } | undefined
+      if (!row || sessionId && row.session_id !== sessionId) return []
+      return [{ sourceKey, sessionId: row.session_id, attempts: row.attempts, createdAt: row.created_at, ...this.status(sourceKey)! }]
+    })
+    return { total, items, updates, nextCursor: rows.length > 30 ? encodePageCursor(scope, [rows[29]!.id]) : undefined }
   }
 
   cancel(key: string): WritebackStatus {

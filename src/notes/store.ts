@@ -4,6 +4,7 @@ import { open, readFile, rename, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { atomicWriteFile } from '../atomic-file.js'
+import { decodePageCursor, encodePageCursor } from '../page-cursor.js'
 import {
   isEditableNoteNode,
   isNoteId,
@@ -36,6 +37,7 @@ export class NoteStore {
     this.db = new DatabaseSync(join(rootPath, 'notes.sqlite'))
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
     this.migrate()
+    this.db.exec("CREATE INDEX IF NOT EXISTS note_page_order ON note_nodes(parent_key, (CASE kind WHEN 'folder' THEN 0 ELSE 1 END), name COLLATE NOCASE, id);")
   }
 
   list(request: NoteListRequest = {}): NoteNode[] {
@@ -83,6 +85,35 @@ export class NoteStore {
     assertNoteId(id)
     const row = this.db.prepare(`SELECT ${NOTE_COLUMNS} FROM note_nodes WHERE id=?`).get(id) as SqlRow | undefined
     return row === undefined ? undefined : mapNoteNode(row)
+  }
+
+  listPage(request: NoteListRequest = {}, cursor?: string) {
+    this.assertOpen()
+    const query = request.query?.trim() || ''
+    const parentId = normalizeParentId(request.parentId)
+    const scope = JSON.stringify(['notes', query, query || request.recursive ? null : parentId, request.kind || '', Boolean(request.recursive)])
+    const after = decodePageCursor(cursor, scope, ['number', 'string', 'string'])
+    const conditions: string[] = [], args: (string | number)[] = []
+    if (request.kind && !['folder', 'document', 'file'].includes(request.kind)) throw new Error('invalid note kind')
+    if (query) { conditions.push("name LIKE ? ESCAPE '\\'"); args.push(`%${escapeLike(query)}%`) }
+    else if (!request.recursive) {
+      if (parentId !== null) this.assertFolder(parentId)
+      conditions.push('parent_key = ?'); args.push(parentKey(parentId))
+    }
+    if (request.kind) { conditions.push('kind = ?'); args.push(request.kind) }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+    const total = Number((this.db.prepare(`SELECT count(*) AS total FROM note_nodes ${where}`).get(...args) as SqlRow).total)
+    const rank = "CASE kind WHEN 'folder' THEN 0 ELSE 1 END"
+    if (after) {
+      conditions.push(`(${rank}, name COLLATE NOCASE, id) > (?, ?, ?)`)
+      args.push(...after)
+    }
+    const size = normalizeLimit(request.limit)
+    const rows = this.db.prepare(`SELECT ${NOTE_COLUMNS} FROM note_nodes
+      ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''}
+      ORDER BY ${rank}, name COLLATE NOCASE, id LIMIT ?`).all(...args, size + 1) as SqlRow[]
+    const items = rows.slice(0, size).map(mapNoteNode), last = items.at(-1)
+    return { items, total, nextCursor: rows.length > size && last ? encodePageCursor(scope, [last.kind === 'folder' ? 0 : 1, last.name, last.id]) : undefined }
   }
 
   subtree(id: string): NoteNode[] {

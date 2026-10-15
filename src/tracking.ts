@@ -6,6 +6,7 @@ import { resolveKnowledgeMounts } from './retrieval.js'
 import type { AgentLike } from './runtime.js'
 import { mapConcurrent } from './async-pool.js'
 import { compareNames } from './collation.js'
+import { readTrackingSource, type TrackingSourcePage } from './tracking-source.js'
 
 export const KNOWLEDGE_TRACKING_SERVICE = 'dshKnowledgeTracking'
 
@@ -33,12 +34,17 @@ export interface KnowledgeTrackingSource {
 }
 
 export interface KnowledgeTrackingService {
+  /** Internal trusted-plugin bridge; caller validates an exact saved binding. */
+  readBoundSource(agent: AgentLike, binding: {sessionId: string; reference: string}, offset?: number, signal?: AbortSignal): Promise<TrackingSourcePage>
+  readSource(agent: AgentLike, reference: string, offset?: number, signal?: AbortSignal): Promise<TrackingSourcePage>
   record(agent: AgentLike, input: KnowledgeTrackingInput, signal?: AbortSignal): Promise<KnowledgeTrackingResult>
   list(agent: AgentLike, query?: string, limit?: number, signal?: AbortSignal): Promise<KnowledgeTrackingSource[]>
 }
 
 export function createKnowledgeTrackingService(provider: KnowledgeProvider): KnowledgeTrackingService {
   return {
+    readBoundSource: (agent, binding, offset, signal) => readTrackingSource(provider, agent, binding.reference, offset, signal, binding),
+    readSource: (agent, reference, offset, signal) => readTrackingSource(provider, agent, reference, offset, signal),
     async record(agent, input, signal) {
       const mounts = await resolveKnowledgeMounts(provider, agent, signal)
       const selected = selectMount(mounts, input.reference)
