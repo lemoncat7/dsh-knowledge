@@ -21,6 +21,8 @@ import {
 } from './knowledge-activity-api.js'
 import type { KnowledgeActivityController } from './knowledge-activity-controller.js'
 import { KnowledgeActivityNotes } from './knowledge-activity-notes.js'
+import { KnowledgeActivityMarkdown } from './knowledge-activity-markdown.js'
+import { KnowledgeActivityScope } from './knowledge-activity-scope.js'
 import { LatestRequest } from './latest-request.js'
 import { renderMarkdown } from './web-markdown-preview.js'
 import { compareNames } from './collation.js'
@@ -47,26 +49,8 @@ export function KnowledgeActivityPanel(
   const [documentRefresh, setDocumentRefresh] = useState(0)
   const [error, setError] = useState('')
   const [nextCursor, setNextCursor] = useState<string>()
-  const [baseMenuOpen, setBaseMenuOpen] = useState(false)
   const indexRequest = useRef(new LatestRequest())
   const mountRequest = useRef(new LatestRequest())
-  const scopeRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!baseMenuOpen) return
-    const closeOutside = (event: PointerEvent): void => {
-      if (!scopeRef.current?.contains(event.target as Node)) setBaseMenuOpen(false)
-    }
-    const closeOnEscape = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setBaseMenuOpen(false)
-    }
-    document.addEventListener('pointerdown', closeOutside)
-    document.addEventListener('keydown', closeOnEscape)
-    return () => {
-      document.removeEventListener('pointerdown', closeOutside)
-      document.removeEventListener('keydown', closeOnEscape)
-    }
-  }, [baseMenuOpen])
 
   const refreshMounts = useCallback(async (): Promise<void> => {
     const signal = mountRequest.current.start()
@@ -164,7 +148,6 @@ export function KnowledgeActivityPanel(
   }, [documentRefresh, projectId, selectedDocumentId, sessionId])
 
   const selectBase = (knowledgeBaseId: string): void => {
-    setBaseMenuOpen(false)
     setSelectedBaseId(knowledgeBaseId)
     setSelectedDocumentId(undefined)
     setDocumentValue(undefined)
@@ -214,7 +197,6 @@ export function KnowledgeActivityPanel(
 
   const selectMode = (nextMode: 'knowledge' | 'notes'): void => {
     setMode(nextMode)
-    setBaseMenuOpen(false)
     props.controller.select(sessionId, { ...props.controller.selection(sessionId), mode: nextMode })
   }
 
@@ -249,23 +231,7 @@ export function KnowledgeActivityPanel(
           : mountState === 'error' ? <ActivityError message={error} onRetry={() => { void refreshMounts() }} />
             : mounts.length === 0 ? <ActivityEmpty title="当前会话没有挂载知识库" description="在完整工作区中挂载后，就能在这里随手查阅文档。" />
               : <>
-                <div ref={scopeRef} className="dsh-knowledge-activity-scope">
-                  <button type="button" className="dsh-knowledge-activity-scope-trigger" aria-haspopup="listbox" aria-expanded={baseMenuOpen} onClick={() => setBaseMenuOpen(value => !value)}>
-                    <span className="dsh-knowledge-activity-scope-icon"><IconDatabaseOutline16 size={15} /></span>
-                    <span><small>当前知识库</small><strong>{mounts.find(item => item.knowledgeBaseId === selectedBaseId)?.base.name}</strong></span>
-                    <IconChevronDownOutline14 size={14} className={baseMenuOpen ? 'is-open' : ''} />
-                  </button>
-                  {baseMenuOpen && <div className="dsh-knowledge-activity-scope-menu" role="listbox" aria-label="切换知识库">
-                    {mounts.map(mount => <button
-                      type="button"
-                      role="option"
-                      aria-selected={selectedBaseId === mount.knowledgeBaseId}
-                      key={mount.knowledgeBaseId}
-                      className={selectedBaseId === mount.knowledgeBaseId ? 'is-active' : ''}
-                      onClick={() => selectBase(mount.knowledgeBaseId)}
-                    ><IconDataOutline16 size={15} /><span><strong>{mount.base.name}</strong><small>{mount.inheritedFrom === 'project' ? '项目挂载' : '会话挂载'}</small></span></button>)}
-                  </div>}
-                </div>
+                <KnowledgeActivityScope mounts={mounts} selectedId={selectedBaseId} onSelect={selectBase} />
                 <div className="dsh-knowledge-activity-list-heading">
                   <span><strong>{query ? `“${query}” 的结果` : '知识文档'}</strong><small>{query ? '搜索全部已挂载知识库' : `当前显示 ${documents.length} 项`}</small></span>
                   <button type="button" className="dsh-knowledge-activity-icon-button" aria-label="刷新文档" title="刷新" onClick={() => { void loadIndex() }}><IconRefreshOutline14 size={14} /></button>
@@ -290,7 +256,7 @@ export function KnowledgeActivityPanel(
 }
 
 function GroupedDocuments({ documents, mounts, searching, onSelect }: { documents: KnowledgeDocumentSummary[]; mounts: ResolvedKnowledgeMount[]; searching: boolean; onSelect(value: KnowledgeDocumentSummary): void }): JSX.Element {
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
+  const [opened, setOpened] = useState<Set<string>>(() => new Set())
   const groups = useMemo(() => {
     const result = new Map<string, KnowledgeDocumentSummary[]>()
     for (const doc of documents) { const key = JSON.stringify([doc.knowledgeBaseId, doc.group || '']); const list = result.get(key) ?? []; list.push(doc); result.set(key, list) }
@@ -302,14 +268,14 @@ function GroupedDocuments({ documents, mounts, searching, onSelect }: { document
   return <>{groups.map(([key, members]) => {
     const first = members[0]!
     const name = first.group || '未分组'
-    const expanded = searching || !collapsed.has(key)
-    return <section key={key} className="dsh-knowledge-activity-document-group"><button type="button" className="dsh-knowledge-activity-group-toggle" aria-expanded={expanded} onClick={() => setCollapsed(previous => { const next = new Set(previous); if (expanded) next.add(key); else next.delete(key); return next })}><IconChevronDownOutline14 size={14} /><strong>{name}</strong><small>{members.length}</small></button>{expanded && members.map(document => <DocumentRow key={document.id} document={document} baseName={searching ? mounts.find(item => item.knowledgeBaseId === document.knowledgeBaseId)?.base.name : undefined} onClick={() => onSelect(document)} />)}</section>
+    const expanded = searching || opened.has(key)
+    return <section key={key} className="dsh-knowledge-activity-document-group"><button type="button" className="dsh-knowledge-activity-group-toggle" aria-expanded={expanded} onClick={() => setOpened(previous => { const next = new Set(previous); if (expanded) next.delete(key); else next.add(key); return next })}><IconChevronDownOutline14 size={14} /><strong>{name}</strong><small>{members.length}</small></button>{expanded && members.map(document => <DocumentRow key={document.id} document={document} baseName={searching ? mounts.find(item => item.knowledgeBaseId === document.knowledgeBaseId)?.base.name : undefined} onClick={() => onSelect(document)} />)}</section>
   })}</>
 }
 
 function DocumentRow({ document, baseName, onClick }: { document: KnowledgeDocumentSummary; baseName: string | undefined; onClick(): void }): JSX.Element {
   const stateLabel = document.documentState === 'resolved' ? '已解决' : document.documentState === 'complete' ? '已完成' : undefined
-  return <button type="button" className="dsh-knowledge-activity-row" onClick={onClick}>
+  return <button type="button" className="dsh-knowledge-activity-row" title={`${document.title}\n${document.relPath}`} onClick={onClick}>
     <span className="dsh-knowledge-activity-row-icon"><IconDataOutline16 size={16} /></span>
     <span className="dsh-knowledge-activity-row-copy"><strong>{document.title}</strong><small>{baseName ? `${baseName} · ${document.relPath}` : document.relPath}</small></span>
     <span className="dsh-knowledge-activity-row-meta">{stateLabel && <em>{stateLabel}</em>}<time dateTime={document.updatedAt}>{formatDate(document.updatedAt)}</time></span>
@@ -334,9 +300,9 @@ function DocumentReader({ value, state, error, onBack, onRetry }: {
         : value === undefined ? <ActivityState label="正在准备文档…" />
           : <><div className="dsh-knowledge-activity-document-heading">
             <span className="dsh-knowledge-activity-document-icon"><IconDataOutline16 size={18} /></span>
-            <div><h2>{value.title}</h2><p>{value.relPath}</p></div>
+            <div><h2 title={value.title}>{value.title}</h2><p title={value.relPath}>{value.relPath}</p></div>
           </div>
-          <article className="dsh-knowledge-activity-markdown" dangerouslySetInnerHTML={{ __html: html }} /></>}
+          <KnowledgeActivityMarkdown html={html} /></>}
   </div>
 }
 

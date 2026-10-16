@@ -1324,6 +1324,15 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       })
   }
 
+  candidateCounts(): { pending: number; approved: number; rejected: number } {
+    this.assertOpen()
+    const counts = { pending: 0, approved: 0, rejected: 0 }
+    for (const row of this.db.prepare('SELECT status, count(*) AS count FROM knowledge_candidates GROUP BY status').all() as SqlRow[]) {
+      if (row.status === 'pending' || row.status === 'approved' || row.status === 'rejected') counts[row.status] = Number(row.count)
+    }
+    return counts
+  }
+
   candidatePage(status: 'pending' | 'approved' | 'rejected', limit: number, cursor?: string) {
     this.assertOpen()
     const scope = `candidates:${status}`
@@ -1339,10 +1348,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
         return applied.ok ? { ...candidate, draft: applied.draft } : candidate
       } catch { return candidate }
     })
-    const counts = { pending: 0, approved: 0, rejected: 0 }
-    for (const row of this.db.prepare('SELECT status, count(*) AS count FROM knowledge_candidates GROUP BY status').all() as SqlRow[]) {
-      if (row.status === 'pending' || row.status === 'approved' || row.status === 'rejected') counts[row.status] = Number(row.count)
-    }
+    const counts = this.candidateCounts()
     const last = items.at(-1)
     return { items, counts, total: counts[status], nextCursor: rows.length > size && last ? encodePageCursor(scope, [last.createdAt, last.id]) : undefined }
   }

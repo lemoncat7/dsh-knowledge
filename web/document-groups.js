@@ -49,7 +49,7 @@ export function createDocumentGroupField({ element, api, baseId, value = '', req
   return { wrapper, ready, value: () => current, validate }
 }
 
-export function renderDocumentGroups({ element, documents, baseId, collapsed, searching, renderRow, onDrop, onNew }) {
+export function renderDocumentGroups({ element, documents, baseId, collapsed, searching, renderRow, onDrop, onNew, activateDropRegion, leaveDropRegion }) {
   const groups = new Map()
   for (const doc of documents) { const name = doc.group || ''; if (!groups.has(name)) groups.set(name, []); groups.get(name).push(doc) }
   return [...groups].sort(([a], [b]) => !a ? 1 : !b ? -1 : a.localeCompare(b, 'zh-CN')).map(([name, members]) => {
@@ -65,7 +65,8 @@ export function renderDocumentGroups({ element, documents, baseId, collapsed, se
     return element('section', { class: 'document-tree-group', 'data-document-group': name, onDragOver: event => {
       if (!onDrop || !event.dataTransfer.types.includes('application/x-dsh-knowledge-document-id')) return
       event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'move'
-    }, onDrop: event => { if (onDrop) { event.stopPropagation(); onDrop(event, name) } } },
+      activateDropRegion?.(event, `松开以移入「${name || '未分组'}」分组`)
+    }, onDragLeave: leaveDropRegion, onDrop: event => { if (onDrop && Array.from(event.dataTransfer?.types || []).includes('application/x-dsh-knowledge-document-id')) { event.stopPropagation(); onDrop(event, name) } } },
     element('div', { class: 'document-group-heading' }, toggle, name && onNew ? element('button', { type: 'button', class: 'button ghost small document-group-add', 'aria-label': `在${name}新建文档`, title: '在此分组新建文档', onClick: () => onNew(name) }, '+') : null), body)
   })
 }

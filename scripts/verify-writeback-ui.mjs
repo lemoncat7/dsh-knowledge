@@ -52,9 +52,12 @@ try {
   await page.getByRole('button', { name: '取消回写', exact: true }).click()
   await page.getByRole('dialog').getByRole('button', { name: '取消回写', exact: true }).click()
   await page.locator('.writeback-job strong').filter({ hasText: '已取消' }).waitFor()
-  // Without clicking refresh, a backend change must reach the mounted view.
+  // New jobs notify without reordering the history currently being read.
   queue.completeEmpty('ui:2', 'ui')
-  await page.locator('.writeback-job-key').filter({ hasText: 'ui:2' }).waitFor({ timeout: 3000 })
+  await page.getByText('有新任务，点击刷新查看；当前记录状态继续更新', { exact: true }).waitFor({ timeout: 8000 })
+  assert.equal(await page.locator('.writeback-job-key').first().textContent(), 'ui:1')
+  await page.getByRole('button', { name: '刷新', exact: true }).click()
+  await page.locator('.writeback-job-key').filter({ hasText: 'ui:2' }).waitFor()
   assert.equal(await page.locator('.writeback-job-key').first().textContent(), 'ui:2')
   assert.deepEqual(errors, [])
   console.log('writeback UI: desktop/mobile/tablet, cancellation and no page errors passed')

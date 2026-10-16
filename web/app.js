@@ -3,7 +3,7 @@ const AUTH_MODE = document.querySelector('meta[name="dsh-knowledge-auth-mode"]')
 const WEB_PATH = document.querySelector('meta[name="dsh-knowledge-web"]')?.content || '/knowledge'
 const ASSET_VERSION = document.querySelector('meta[name="dsh-knowledge-asset-version"]')?.content || ''
 const moduleUrl = name => `./${name}.js${ASSET_VERSION ? `?v=${encodeURIComponent(ASSET_VERSION)}` : ''}`
-const [apiModule, themeModule, uiModule, dialogModule, selectModule, documentActionsModule, groupsModule, baseGroupsModule, syncModule, lazyModule, infiniteModule] = await Promise.all([
+const [apiModule, themeModule, uiModule, dialogModule, selectModule, documentActionsModule, groupsModule, baseGroupsModule, syncModule, lazyModule, infiniteModule, stepsModule, shellModule] = await Promise.all([
   import(moduleUrl('api-client')),
   import(moduleUrl('host-theme')),
   import(moduleUrl('ui-primitives')),
@@ -15,12 +15,15 @@ const [apiModule, themeModule, uiModule, dialogModule, selectModule, documentAct
   import(moduleUrl('document-sync')),
   import(moduleUrl('lazy-resources')),
   import(moduleUrl('infinite-scroll')),
+  import(moduleUrl('dialog-steps')),
+  import(moduleUrl('workspace-shell')),
 ])
 const { createApiClient } = apiModule
 const { installHostThemeBridge } = themeModule
-const { actionButton, badge, createToastPresenter, element, interfaceIcon, paneToggleButton } = uiModule
+const { actionButton, badge, createToastPresenter, element, interfaceIcon, paneToggleButton, activateDropRegion, clearDropRegions, leaveDropRegion } = uiModule
 const { renderMenu: renderDocumentMenu, closeMenus: closeDocumentMenus } = documentActionsModule.createDocumentMenuPresenter(uiModule)
-const { createDocumentGroupField, renderDocumentGroups, openDocumentGroupOrganizer } = groupsModule
+const { createDocumentGroupField, renderDocumentGroups: renderRawDocumentGroups, openDocumentGroupOrganizer } = groupsModule
+const renderDocumentGroups = options => renderRawDocumentGroups({ ...options, activateDropRegion, leaveDropRegion })
 const { createBaseGroups, knowledgeBasePathLabel, sortKnowledgeBasesByGroup } = baseGroupsModule
 const { createDocumentSync } = syncModule
 const resources = lazyModule.createLazyResources({ moduleUrl, scriptUrl: name => `${WEB_PATH.replace(/\/$/, '')}/${name}.js${ASSET_VERSION ? `?v=${encodeURIComponent(ASSET_VERSION)}` : ''}` })
@@ -56,7 +59,8 @@ const mountContext = {
 const app = document.querySelector('#app')
 const toastRegion = document.querySelector('#toast-region')
 const showToast = createToastPresenter(toastRegion)
-const { openConfirm, openSheet, openModal } = dialogModule.createDialogPresenter({ element, actionButton, interfaceIcon, showToast, friendlyError })
+let fieldSequence = 0
+const { openConfirm, openSheet, openModal } = dialogModule.createDialogPresenter({ element, actionButton, interfaceIcon, showToast, friendlyError, createDialogSteps: stepsModule.createDialogSteps })
 selectModule.installSelectControls()
 const savedDocumentLayout = readDocumentLayout()
 
@@ -105,6 +109,7 @@ const state = {
     view: createDocumentViewState(),
   },
   candidates: [],
+  candidateCounts: null,
   candidateTargets: new Map(),
   candidateStatus: 'pending',
   candidatePage: { nextCursor: '', total: 0, counts: null, loading: false, error: '' },
@@ -130,6 +135,9 @@ const state = {
 let scrollRestoreFrame = 0
 let navigationController = null
 let navigationRequest = 0
+let candidateCountController = null
+let candidateCountUpdatedAt = 0
+let candidateCountAttemptAt = 0
 let navigationSave = Promise.resolve(true)
 let libraryDetailRequest = 0
 let documentSearchTimer = 0
@@ -150,6 +158,7 @@ let movingDocumentId = ''
 let disposeInfiniteScroll = () => {}
 const notePages = new Map()
 let noteSearchPage = { nextCursor: '', total: 0, loading: false, error: '' }
+let routeFeedbackTimer = 0
 
 function readDocumentLayout() {
   const fallback = {
@@ -294,6 +303,23 @@ function renderLogin(message = '') {
 }
 
 function signOut() {
+  candidateCountController?.abort()
+  candidateCountController = null
+  candidateCountUpdatedAt = 0
+  candidateCountAttemptAt = 0
+  state.candidateCounts = null
+  state.candidatePage = { nextCursor: '', total: 0, counts: null, loading: false, error: '' }
+  navigationRequest += 1
+  navigationController?.abort()
+  navigationController = null
+  window.clearTimeout(routeFeedbackTimer)
+  routeFeedbackTimer = 0
+  state.loading = false
+  worklogWorkspace?.dispose()
+  worklogWorkspace = undefined
+  writebackWorkspace?.dispose()
+  writebackWorkspace = undefined
+  disposeInfiniteScroll()
   notePages.clear()
   cancelPendingSearches()
   releaseNoteEditors()
@@ -314,6 +340,7 @@ async function navigate(view) {
   const controller = new AbortController()
   navigationController = controller
   const previousView = state.view
+  captureScrollPosition()
   if (view === 'bases' && previousView !== 'bases' && state.knowledgeBaseView === 'detail') {
     state.knowledgeBaseView = 'libraries'
   }
@@ -324,6 +351,7 @@ async function navigate(view) {
   state.loadingProgress = .12
   state.error = ''
   renderShell()
+  if (view !== 'candidates') void refreshCandidateCount()
   try {
     if (view === 'writeback') ({ createWritebackWorkspace } = await resources.module('writeback-workspace'))
     if (view === 'worklog') ({ createWorklogWorkspace } = await resources.module('worklog-workspace'))
@@ -374,6 +402,8 @@ function updateLoadingPhase(request, label, progress) {
   if (request !== navigationRequest || !state.loading) return
   state.loadingPhase = label
   state.loadingProgress = Math.max(0, Math.min(1, progress))
+  const pendingLabel = app.querySelector('.route-pending-label')
+  if (pendingLabel) pendingLabel.textContent = label
   const progressNode = document.querySelector('.route-progress')
   progressNode?.setAttribute('aria-label', label)
   progressNode?.setAttribute('aria-valuenow', String(Math.round(state.loadingProgress * 100)))
@@ -400,6 +430,46 @@ async function saveBeforeLeavingDocument() {
 
 async function refreshStats(signal) {
   state.stats = await api('stats', { signal })
+}
+
+// Counts never load candidate bodies, target documents or review UI assets.
+// Patch only the badge: background completion must not remount an editor.
+function setCandidateCounts(counts) {
+  if (!counts || !['pending', 'approved', 'rejected'].every(key => Number.isSafeInteger(counts[key]) && counts[key] >= 0)) return
+  candidateCountController?.abort()
+  candidateCountController = null
+  state.candidateCounts = counts
+  candidateCountUpdatedAt = Date.now()
+  updateCandidateCountBadge()
+}
+
+function updateCandidateCountBadge() {
+  const badge = app.querySelector('[data-review-pending-count]')
+  if (!badge) return
+  const pending = state.candidateCounts?.pending
+  badge.hidden = false
+  badge.textContent = pending === undefined ? '—' : String(pending)
+  badge.setAttribute('aria-label', pending === undefined ? '待审核数量暂未获取' : `${pending} 条待审核`)
+  badge.title = pending === undefined ? '待审核数量暂未获取；进入审核时重试' : `${pending} 条待审核`
+}
+
+async function refreshCandidateCount() {
+  if (document.hidden || (AUTH_MODE === 'bearer' && !state.token) || candidateCountController) return
+  if (Date.now() - Math.max(candidateCountUpdatedAt, candidateCountAttemptAt) < 30000) return
+  const controller = new AbortController()
+  candidateCountController = controller
+  candidateCountAttemptAt = Date.now()
+  const timeout = window.setTimeout(() => controller.abort(), 10000)
+  try {
+    const counts = await api('candidates/counts', { signal: controller.signal })
+    if (candidateCountController === controller && !controller.signal.aborted) setCandidateCounts(counts)
+  } catch {
+    // Optional navigation metadata must not fail the active page or clear a known count.
+    if (candidateCountController === controller) updateCandidateCountBadge()
+  } finally {
+    window.clearTimeout(timeout)
+    if (candidateCountController === controller) candidateCountController = null
+  }
 }
 
 async function ensureKnowledgeBases(force = false, signal) {
@@ -434,6 +504,7 @@ async function loadOverview(signal) {
   state.stats = stats
   state.knowledgeBases = bases
   state.overview = { recent: recent.items, pending }
+  setCandidateCounts(stats.candidates)
 }
 
 async function loadEntries(cursor = '') {
@@ -748,21 +819,32 @@ function documentSummary(document) {
 async function loadDocumentEditor(workspace, id, signal) {
   const revision = (workspace.view.loadRevision || 0) + 1
   workspace.view.loadRevision = revision
-  const [entry, noteReferences] = await Promise.all([
-    api(`entries/${encodeURIComponent(id)}`, { signal }),
-    api(`entries/${encodeURIComponent(id)}/note-references`, { signal }),
-    loadMarkdownPreview(),
-  ])
+  const references = api(`entries/${encodeURIComponent(id)}/note-references`, { signal })
+    .then(value => ({ value }), error => ({ error }))
+  const entry = await api(`entries/${encodeURIComponent(id)}`, { signal })
+  if (entry.documentState !== 'open' || documentWorkspaceReadOnly(workspace)) await loadMarkdownPreview()
   if (workspace.view.loadRevision !== revision || workspace.view.documentId !== id) return false
   workspace.view.mode = 'preview'
   workspace.view.editor = {
     ...entry,
-    noteReferences,
+    noteReferences: [], referencesLoading: true,
     tagsText: entry.tags.join(', '),
     dirty: false,
     isNew: false,
     saveState: '已保存',
   }
+  const editor = workspace.view.editor
+  void references.then(result => {
+    if (signal?.aborted || workspace.view.loadRevision !== revision || workspace.view.editor !== editor) return
+    editor.referencesLoading = false
+    editor.referencesError = result.error ? friendlyError(result.error) : ''
+    if (result.value) editor.noteReferences = result.value
+    // Ancillary metadata must not remount an editor or discard a selection/draft.
+    if (activeDocumentWorkspace()?.view === workspace.view) {
+      const bar = document.querySelector('.document-reference-bar')
+      if (bar) bar.replaceWith(renderDocumentReferenceBar(workspace, editor, !documentWorkspaceReadOnly(workspace) && editor.documentState === 'open'))
+    }
+  })
   return true
 }
 
@@ -803,6 +885,8 @@ async function startBlankDocument(workspace, baseId, group) {
 }
 
 async function selectDocument(workspace, id) {
+  void loadMarkdownNoteEditor().catch(() => {})
+  void loadMarkdownPreview().catch(() => {})
   const editor = workspace.view.editor
   const emptyDraft = editor?.isNew && !editor.title.trim() && !editor.body.trim()
   if (editor?.dirty && !emptyDraft && !await saveDocumentEditor(workspace)) return
@@ -888,8 +972,10 @@ async function saveDocumentEditor(workspace = activeDocumentWorkspace()) {
 
 function activateKnowledgeBaseDropTarget(event, workspace, baseId) {
   const drag = knowledgeDocumentDrag
-  if (!drag || drag.workspaceKind !== workspace.kind || drag.sourceBaseId === baseId) return
+  if (documentWorkspaceReadOnly(workspace) || movingDocumentId) return
+  if (drag && (drag.workspaceKind !== workspace.kind || drag.sourceBaseId === baseId)) return
   if (!hasDragType(event, KNOWLEDGE_DOCUMENT_DRAG_TYPE)) return
+  activateDropRegion(event, '松开以移入此知识库')
   event.preventDefault()
   event.stopPropagation()
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
@@ -901,13 +987,15 @@ function activateKnowledgeBaseDropTarget(event, workspace, baseId) {
 
 function clearKnowledgeDocumentDragState() {
   knowledgeDocumentDrag = null
+  clearDropRegions()
   document.querySelectorAll('.note-tree-group[data-drop-target="true"]').forEach(node => { node.dataset.dropTarget = 'false' })
   document.querySelectorAll('.note-tree-document[data-dragging="true"]').forEach(node => { node.dataset.dragging = 'false' })
 }
 
 function dropKnowledgeDocument(event, workspace, targetBaseId) {
+  if (documentWorkspaceReadOnly(workspace) || movingDocumentId) return
   const documentId = event.dataTransfer?.getData(KNOWLEDGE_DOCUMENT_DRAG_TYPE) || ''
-  const source = documentWorkspaceDocuments(workspace).find(document => document.id === documentId)
+  const source = [...documentWorkspaceDocuments(workspace), ...workspace.view.searchResults].find(document => document.id === documentId)
   if (!documentId || !source || source.knowledgeBaseId === targetBaseId) return
   event.preventDefault()
   event.stopPropagation()
@@ -919,7 +1007,7 @@ async function moveKnowledgeDocument(workspace, documentId, targetBaseId) {
   const bases = documentWorkspaceBases(workspace)
   const target = bases.find(base => base.id === targetBaseId && base.status === 'active')
   const summaries = documentWorkspaceDocuments(workspace)
-  const current = summaries.find(document => document.id === documentId)
+  const current = [...summaries, ...workspace.view.searchResults].find(document => document.id === documentId)
   const sourceBaseId = current?.knowledgeBaseId
     || (workspace.view.editor?.id === documentId ? workspace.view.editor.knowledgeBaseId : '')
   if (!target || !sourceBaseId || sourceBaseId === targetBaseId || movingDocumentId) return false
@@ -1002,6 +1090,7 @@ async function loadCandidates(signal) {
   state.candidates = candidates
   state.candidateTargets = new Map(payload.targets.map(target => [target.id, target]))
   state.candidatePage = { nextCursor: payload.nextCursor || '', total: payload.total, counts: payload.counts, loading: false, error: '' }
+  setCandidateCounts(payload.counts)
 }
 
 async function loadMoreCandidates() {
@@ -1018,6 +1107,7 @@ async function loadMoreCandidates() {
     state.candidates.push(...added)
     for (const target of payload.targets) state.candidateTargets.set(target.id, target)
     Object.assign(page, { nextCursor: payload.nextCursor || '', total: payload.total, counts: payload.counts })
+    setCandidateCounts(payload.counts)
     document.querySelector('.candidate-list')?.append(...added.map(renderCandidateCard))
     document.querySelectorAll('[data-candidate-count]').forEach(node => { node.textContent = String(page.counts[node.dataset.candidateCount]) })
   } catch (error) {
@@ -1048,6 +1138,12 @@ async function loadTokens(signal) {
 }
 
 function renderShell() {
+  // Switch route chrome immediately, but do not rebuild its pending body for
+  // repeated background updates while the same request is still loading.
+  if (state.loading && shellModule.isPendingShell(app.querySelector('.app-shell'), state.view)) return
+  window.clearTimeout(routeFeedbackTimer)
+  routeFeedbackTimer = 0
+  const navigationHadFocus = document.activeElement?.closest?.('[data-nav-view]') != null
   disposeInfiniteScroll()
   worklogWorkspace?.dispose()
   worklogWorkspace = undefined
@@ -1069,7 +1165,7 @@ function renderShell() {
   }
   const [title, subtitle] = titles[state.view]
   const viewIndexes = { overview: '00', notes: '01', shares: '02', entries: '03', candidates: '04', writeback: '05', bases: '06', worklog: '07', tokens: '08' }
-  const shell = element('div', {
+  const nextShell = element('div', {
     class: 'app-shell', 'data-menu-open': String(state.menuOpen),
     'data-view': state.view, 'data-loading': String(state.loading),
     'data-scroll-state': currentScrollState(),
@@ -1098,19 +1194,36 @@ function renderShell() {
             element('h1', {}, title),
             element('p', {}, subtitle)),
         ),
-        state.loading ? element('div', {
-          class: 'route-progress', role: 'progressbar', 'aria-label': state.loadingPhase || '正在加载',
-          'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': String(Math.round(state.loadingProgress * 100)),
-        }, element('span', { style: `--route-progress: ${state.loadingProgress}` })) : null,
       ),
-      element('div', { class: 'page', 'data-scroll-key': 'page' }, element('div', { class: 'view-stage', 'data-view-stage': state.view }, renderCurrentView())),
+      element('div', { class: 'page', 'data-scroll-key': 'page' }, element('div', { class: 'view-stage', 'data-view-stage': state.view, 'aria-busy': String(state.loading) }, renderCurrentView())),
     ),
   )
-  app.replaceChildren(shell)
+  const shell = shellModule.commitWorkspaceShell(app, nextShell)
+  if (navigationHadFocus) [...shell.querySelectorAll('[data-nav-view]')].find(button => button.dataset.navView === state.view)?.focus({ preventScroll: true })
   applySidebarVisibility(shell, state.documentView.sidebarHidden)
   restoreScrollPosition(currentScrollState())
   renderDocumentSyncNotice()
-  disposeInfiniteScroll = infiniteModule.connectInfiniteScroll(shell)
+  if (state.loading) showPendingNavigation()
+  else disposeInfiniteScroll = infiniteModule.connectInfiniteScroll(shell)
+}
+
+function showPendingNavigation() {
+  const shell = app.querySelector('.app-shell')
+  if (!shell) return
+  // Keep navigation and the main sidebar toggle usable while content loads.
+  shell.querySelectorAll('.topbar-title [data-pane="library"]').forEach(button => { button.disabled = true })
+  shell.querySelectorAll('[data-nav-view]').forEach(button => {
+    button.toggleAttribute('data-pending', button.dataset.navView === state.view)
+    button.setAttribute('aria-busy', String(button.dataset.navView === state.view))
+  })
+  shell.querySelector('.route-pending-label')?.remove()
+  window.clearTimeout(routeFeedbackTimer)
+  routeFeedbackTimer = window.setTimeout(() => {
+    if (!state.loading || !shell.isConnected) return
+    shell.querySelector('.topbar')?.append(element('span', {
+      class: 'route-pending-label', role: 'status',
+    }, state.loadingPhase || '正在准备工作区'))
+  }, 180)
 }
 
 function renderContextPaneToggle() {
@@ -1250,7 +1363,7 @@ function applySidebarVisibility(shell, hidden) {
 }
 
 function renderSidebar() {
-  const pending = state.candidatePage.counts?.pending ?? state.stats?.candidates.pending
+  const pending = state.candidateCounts?.pending
   const navGroups = [
     ['笔记工作区', [['notes', '笔记文档'], ['shares', '已分享']]],
     ['知识工作区', [['entries', '知识文档'], ['candidates', '待审核'], ['writeback', '回写任务'], ['bases', '知识库与挂载']]],
@@ -1266,10 +1379,10 @@ function renderSidebar() {
     element('nav', { class: 'nav' }, navGroups.map(([group, items]) => element('div', { class: 'nav-group' },
       element('div', { class: 'nav-group-label' }, group),
       items.map(([id, label]) => element('button', {
-        type: 'button', class: 'nav-button', 'aria-current': state.view === id ? 'page' : undefined,
+        type: 'button', class: 'nav-button', 'data-nav-view': id, 'aria-current': state.view === id ? 'page' : undefined,
         onClick: () => navigate(id),
       }, element('span', { class: 'nav-index', 'aria-hidden': 'true' }, String(++navIndex).padStart(2, '0')), element('span', { class: 'nav-label' }, label),
-      id === 'candidates' && pending ? element('span', { class: 'nav-count', 'aria-label': `${pending} 条待审核` }, pending) : null))))),
+      id === 'candidates' ? element('span', { class: 'nav-count', 'data-review-pending-count': '', hidden: pending === undefined, 'aria-label': `${pending ?? 0} 条待审核` }, pending ?? '') : null))))),
     element('div', { class: 'sidebar-footer' },
       element('div', { class: 'connection' }, element('span', { class: 'status-dot', 'aria-hidden': 'true' }), state.service.remote ? '中央知识库已连接' : '本地知识库已连接'),
       AUTH_MODE === 'bearer' ? actionButton('退出当前会话', signOut, 'ghost small') : null,
@@ -1278,7 +1391,8 @@ function renderSidebar() {
 }
 
 function renderCurrentView() {
-  if (state.loading) return loadingView(state.view, state.loadingPhase, state.loadingProgress)
+  if (state.loading) return element('div', { class: 'route-placeholder', 'aria-hidden': 'true' },
+    element('div', { class: 'route-placeholder-lines' }, ...Array.from({ length: 3 }, () => element('span', {}))))
   if (state.error) return errorView(state.error, () => navigate(state.view))
   if (state.view === 'worklog') {
     worklogWorkspace = createWorklogWorkspace({ element, actionButton })
@@ -1718,7 +1832,9 @@ function renderEntries() {
 async function applyDocumentGroup(workspace, baseId, ids, group) {
   if (workspace.view.editor?.dirty && !await saveDocumentEditor(workspace)) throw new Error('请先保存当前文档，再调整分组。')
   await api('document-groups', { method: 'POST', body: { knowledgeBaseId: baseId, ids, group } })
-  await reloadDocumentWorkspace(workspace)
+  // The drop target need not be the selected library. Refresh the library we changed.
+  await loadDocumentPage(workspace, baseId, { reset: true, throwOnError: true })
+  if (workspace.view.query.trim()) await loadDocumentSearch(workspace, true)
   if (workspace.view.documentId) await loadDocumentEditor(workspace, workspace.view.documentId)
   workspace.view.collapsedGroups.delete(JSON.stringify([baseId, group]))
   renderShell()
@@ -1726,11 +1842,17 @@ async function applyDocumentGroup(workspace, baseId, ids, group) {
 }
 
 async function dropDocumentIntoGroup(event, workspace, baseId, group) {
+  if (!hasDragType(event, KNOWLEDGE_DOCUMENT_DRAG_TYPE)) return
   event.preventDefault()
-  const drag = knowledgeDocumentDrag
+  event.stopPropagation()
+  const documentId = event.dataTransfer?.getData(KNOWLEDGE_DOCUMENT_DRAG_TYPE)
+  const source = [...documentWorkspaceDocuments(workspace), ...workspace.view.searchResults].find(document => document.id === documentId)
   clearKnowledgeDocumentDragState()
-  if (!drag || drag.sourceBaseId !== baseId) return showToast('分组内拖动仅用于同一知识库；跨库请拖到知识库名称。', 'error')
-  try { await applyDocumentGroup(workspace, baseId, [drag.documentId], group) }
+  if (documentWorkspaceReadOnly(workspace) || movingDocumentId) return
+  if (!source) return showToast('无法识别拖动的文档，请刷新目录后重试。', 'error')
+  if (source.knowledgeBaseId !== baseId) return showToast('分组内拖动仅用于同一知识库；跨库请拖到知识库名称。', 'error')
+  if ((source.group || '') === group) return
+  try { await applyDocumentGroup(workspace, baseId, [documentId], group) }
   catch (error) { showToast(friendlyError(error), 'error') }
 }
 
@@ -1780,7 +1902,7 @@ function renderDocumentWorkspace(workspace, options = {}) {
       'data-base-id': base.id, 'data-drop-target': 'false',
       onDragEnter: event => activateKnowledgeBaseDropTarget(event, workspace, base.id),
       onDragOver: event => activateKnowledgeBaseDropTarget(event, workspace, base.id),
-      onDragLeave: event => { if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.dataset.dropTarget = 'false' },
+      onDragLeave: event => { leaveDropRegion(event); if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.dataset.dropTarget = 'false' },
       onDrop: event => dropKnowledgeDocument(event, workspace, base.id),
     },
       element('button', {
@@ -1968,11 +2090,17 @@ function renderDocumentEditorLoading(base) {
 
 function renderDocumentReferenceBar(workspace, editor, editable) {
   const references = editor.noteReferences || []
+  editable = editable && !editor.referencesLoading && !editor.referencesError
   return element('section', { class: 'document-reference-bar', 'aria-label': '关联笔记' },
     element('div', { class: 'document-reference-heading' },
       element('span', { class: 'document-reference-mark', 'aria-hidden': 'true' }),
       element('strong', {}, '关联笔记'),
-      element('small', {}, references.length ? `${references.length} 项` : '未关联')),
+      element('small', { role: 'status' }, editor.referencesLoading ? '正在读取…' : editor.referencesError ? '读取失败' : references.length ? `${references.length} 项` : '未关联')),
+    editor.referencesError ? actionButton('重试', async () => {
+      try { editor.noteReferences = await api(`entries/${encodeURIComponent(editor.id)}/note-references`); editor.referencesError = '' }
+      catch (error) { editor.referencesError = friendlyError(error); showToast(editor.referencesError, 'error') }
+      if (activeDocumentWorkspace()?.view === workspace.view && workspace.view.editor === editor) document.querySelector('.document-reference-bar')?.replaceWith(renderDocumentReferenceBar(workspace, editor, !documentWorkspaceReadOnly(workspace) && editor.documentState === 'open'))
+    }, 'ghost small', { title: editor.referencesError }) : null,
     element('div', { class: 'document-reference-list' }, references.length
       ? references.map(reference => element('span', { class: 'document-reference-chip' },
         element('button', {
@@ -1984,7 +2112,7 @@ function renderDocumentReferenceBar(workspace, editor, editable) {
           onClick: () => { void removeDocumentNoteReference(workspace, editor, reference) },
         }, '×') : null,
       ))
-      : element('span', { class: 'document-reference-empty' }, editor.isNew ? '保存文档后可以关联笔记或资料文件' : '这篇知识还没有关联笔记')),
+      : element('span', { class: 'document-reference-empty' }, editor.referencesLoading ? '正文已可使用，正在读取关联资料' : editor.referencesError ? '正文仍可阅读和编辑' : editor.isNew ? '保存文档后可以关联笔记或资料文件' : '这篇知识还没有关联笔记')),
     editable && !editor.isNew ? actionButton('+ 添加', () => { void openDocumentNoteReferencePicker(workspace, editor) }, 'ghost small document-reference-add') : null,
   )
 }
@@ -2168,12 +2296,7 @@ function renderNotes() {
     'data-browser-open': String(state.notes.browserOpen),
     onDragEnter: noteWorkspaceDragEnter, onDragOver: noteWorkspaceDragEnter,
     onDragLeave: noteWorkspaceDragLeave,
-    onDrop: event => {
-      clearNoteDragState()
-      if (!hasDragType(event, 'Files')) return
-      event.preventDefault()
-      void importDroppedNotes(event.dataTransfer, state.notes.currentFolderId)
-    },
+    onDrop: event => { void dropNoteNode(event, state.notes.currentFolderId) },
   },
     state.notes.browserOpen ? element('button', {
       type: 'button', class: 'notes-browser-scrim', 'aria-label': '关闭笔记目录',
@@ -2197,9 +2320,10 @@ function renderNotes() {
       element('div', {
         class: 'notes-tree', role: 'tree', 'data-scroll-key': 'notes-tree',
         onDragOver: event => {
-          if (hasDragType(event, 'application/x-dsh-note-id') || hasDragType(event, 'Files')) event.preventDefault()
+          activateNoteFolderDropTarget(event, { kind: 'folder', name: '笔记根目录' })
         },
-        onDrop: event => { if (event.target === event.currentTarget) void dropNoteNode(event, null) },
+        onDragLeave: leaveDropRegion,
+        onDrop: event => { void dropNoteNode(event, null) },
       }, tree),
     ),
     renderNoteContent(),
@@ -2213,34 +2337,35 @@ function renderNotes() {
 
 function openNoteAgentGuide() {
   const capabilityRows = [
-    ['笔记文档', '创建、追加或替换内容、重命名、移动、删除'],
+    ['笔记文档', '浏览、读取、创建、整篇修改、追加、重命名、移动、删除'],
     ['笔记目录', '创建、重命名、移动、删除'],
   ].map(([label, detail]) => element('div', { class: 'notes-agent-capability' },
     element('strong', {}, label), element('span', {}, detail)))
   const examples = [
     ['创建', '在笔记工作区的「发布资料」目录里，新建笔记文档「上线检查.md」，内容是：……'],
-    ['更新', '把笔记文档「发布资料/上线检查.md」追加以下内容：……'],
+    ['整篇修改', '请整体优化笔记「发布资料/上线检查.md」的结构和表述，把全部修改合成一份预览，说明修改位置和前后差异，等我确认后统一保存。'],
+    ['确认', '确认，按刚才的方案修改。'],
     ['目录', '把笔记目录「发布资料」重命名为「发布归档」。'],
   ].map(([label, text]) => element('li', {}, element('span', {}, label), element('code', {}, text)))
   const body = element('div', { class: 'notes-agent-guide' },
     element('section', { class: 'notes-agent-guide-rule' },
       element('span', { class: 'notes-agent-guide-index', 'aria-hidden': 'true' }, '01'),
       element('div', {},
-        element('h3', {}, '在当前消息里指定笔记文档'),
-        element('p', {}, '只要当前消息明确提到“笔记文档”“笔记目录”或“笔记工作区”，会话就可以按你的要求查看和维护；无需套用固定句式。为了避免误操作，删除仍需明确说出删除，授权也不会从上一轮延续。'))),
+        element('h3', {}, '用名称、路径或 @ 引用指定笔记'),
+        element('p', {}, '会话可以浏览和读取笔记，不需要为每次查看单独授权。用 @ 引用选择目标最准确；也可以写名称，重名时补全“目录/子目录/文档名”，无需填写内部编号。'))),
     element('section', { class: 'notes-agent-guide-rule' },
       element('span', { class: 'notes-agent-guide-index', 'aria-hidden': 'true' }, '02'),
       element('div', {},
-        element('h3', {}, '名称足够，重名时补全路径'),
-        element('p', {}, '不需要填写内部编号。会话会先浏览笔记目录定位目标；如果有重名，请写成“目录/子目录/文档名”。'))),
+        element('h3', {}, '同一篇笔记，一份完整预览，一次确认'),
+        element('p', {}, '创建、修改或移动前，会话先给出完整变更方案；修改预览应说明受影响的位置和具体前后差异，不应逐章逐段重复询问。你在下一轮确认后，才执行刚才的方案。若改变要求、插入其他对话，或方案过期、服务重启，需要重新预览。'))),
     element('div', { class: 'notes-agent-capabilities', 'aria-label': '会话可执行的笔记操作' }, capabilityRows),
     element('section', { class: 'notes-agent-examples' },
       element('h3', {}, '可以直接这样说'),
       element('ul', {}, examples)),
-    element('p', { class: 'notes-agent-guide-note' }, '只说“新建 Markdown”或“创建本地目录”仍不会获得笔记权限；在当前消息中带上“笔记文档”即可。'))
+    element('p', { class: 'notes-agent-guide-note' }, '请区分笔记工作区与本地文件。删除仍需明确提出删除要求；修改后的内容可以在笔记的历史版本中查看。'))
   return openModal({
     title: '让会话整理笔记',
-    description: '会话可以操作笔记工作区，但每次写入都需要当前用户消息明确授权。',
+    description: '自然描述需求，先检查完整预览，再确认保存。',
     body,
     cancelLabel: '知道了',
     className: 'notes-agent-guide-dialog',
@@ -2512,10 +2637,6 @@ function renderNoteTreeBranch(parentId, depth = 0) {
         event.currentTarget.dataset.dragging = 'true'
       },
       onDragEnd: () => clearNoteDragState(),
-      onDragEnter: event => activateNoteFolderDropTarget(event, node),
-      onDragOver: event => activateNoteFolderDropTarget(event, node),
-      onDragLeave: event => { if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.dataset.dropTarget = 'false' },
-      onDrop: event => { if (node.kind === 'folder') void dropNoteNode(event, node.id) },
     },
       element('button', {
         type: 'button', class: 'notes-tree-row', role: 'treeitem',
@@ -2537,7 +2658,12 @@ function renderNoteTreeBranch(parentId, depth = 0) {
         ? renderNoteTreeBranch(node.id, depth + 1)
         : element('div', { class: 'notes-tree-loading', role: 'status' }, '正在读取…')
       : null
-    return element('div', { class: 'notes-tree-node' }, row, children)
+    return element('div', { class: 'notes-tree-node', 'data-note-folder': node.kind === 'folder' ? node.id : undefined,
+      onDragEnter: event => activateNoteFolderDropTarget(event, node),
+      onDragOver: event => activateNoteFolderDropTarget(event, node),
+      onDragLeave: event => { leaveDropRegion(event); if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.dataset.dropTarget = 'false' },
+      onDrop: event => { if (node.kind === 'folder') void dropNoteNode(event, node.id) },
+    }, row, children)
   }), renderNotePageFooter(parentId))
 }
 
@@ -2582,7 +2708,8 @@ function renderNoteFolderContent(folder) {
   const children = state.notes.children.get(parentId || 'root') || []
   return element('main', {
     class: 'notes-content is-folder', 'data-scroll-key': `notes-folder:${parentId || 'root'}`,
-    onDragOver: event => event.preventDefault(),
+    onDragOver: event => activateNoteFolderDropTarget(event, { kind: 'folder', name: folder?.name || '笔记根目录' }),
+    onDragLeave: leaveDropRegion,
     onDrop: event => void dropNoteNode(event, parentId),
   },
     renderNoteContentHeader(folder),
@@ -2591,8 +2718,12 @@ function renderNoteFolderContent(folder) {
         element('div', { class: 'notes-file-columns', 'aria-hidden': 'true' },
           element('span', {}, '名称'), element('span', {}, '更新时间'), element('span', {}, '大小'), element('span', {}, '操作')),
         element('div', { class: 'notes-file-list', role: 'list' }, children.map(node => element('div', {
-        class: 'notes-file-row', role: 'listitem', draggable: 'true',
+        class: 'notes-file-row', role: 'listitem', draggable: 'true', 'data-note-id': node.id, 'data-kind': node.kind,
         onDragStart: event => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-dsh-note-id', node.id) },
+        onDragEnter: event => activateNoteFolderDropTarget(event, node),
+        onDragOver: event => activateNoteFolderDropTarget(event, node),
+        onDragLeave: event => { leaveDropRegion(event); if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.dataset.dropTarget = 'false' },
+        onDrop: event => { if (node.kind === 'folder') void dropNoteNode(event, node.id) },
         onDblClick: () => { void selectNoteNode(node, { toggleFolder: node.kind === 'folder' }) },
       },
         element('button', { type: 'button', class: 'notes-file-main', onClick: () => { void selectNoteNode(node) } },
@@ -2872,6 +3003,7 @@ function renderNoteDocumentBreadcrumb(node) {
   return element('nav', { class: 'notes-breadcrumb', 'aria-label': '当前位置' },
     element('button', { type: 'button', onClick: () => { void openNoteRoot() } }, '笔记文档'),
     state.notes.breadcrumbs.map(parent => element('span', {}, element('span', { 'aria-hidden': 'true' }, '/'), element('button', { type: 'button', onClick: () => { void selectNoteNode(parent) } }, parent.name))),
+    state.notes.breadcrumbsLoading ? element('small', { role: 'status' }, '正在读取路径…') : null,
     element('span', {}, element('span', { 'aria-hidden': 'true' }, '/'), element('strong', {}, node.name)),
   )
 }
@@ -2967,6 +3099,7 @@ function noteFilePreviewKind(node) {
 }
 
 async function selectNoteNode(node, options = {}) {
+  if (node.editable) void loadMarkdownNoteEditor().catch(() => {})
   if (state.notes.titleDirty || state.notes.renaming) return showToast('请先保存标题；若要放弃标题修改，请在标题中按 Escape。', 'error')
   if (state.notes.dirty && !await saveNoteDocument()) return
   const request = ++noteSelectionRequest
@@ -2974,13 +3107,28 @@ async function selectNoteNode(node, options = {}) {
   state.notes.selectedId = node.id
   state.notes.selectedNode = node
   state.notes.browserOpen = false
-  Object.assign(state.notes, { content: '', draft: '', dirty: false })
+  Object.assign(state.notes, { content: '', draft: '', dirty: false, breadcrumbs: [], breadcrumbsLoading: true })
   state.notes.loadingNodeId = node.id
   renderShell()
-  try {
-    const breadcrumbs = await loadNoteBreadcrumbs(node)
+  // Directory ancestry is secondary metadata; never make the body wait for it.
+  void loadNoteBreadcrumbs(node).then(breadcrumbs => {
     if (request !== noteSelectionRequest || state.notes.selectedId !== node.id) return
     state.notes.breadcrumbs = breadcrumbs
+    state.notes.breadcrumbsLoading = false
+    if (state.view !== 'notes' || state.notes.loadingNodeId) return
+    if (node.kind === 'folder') document.querySelector('.notes-content-header')?.replaceWith(renderNoteContentHeader(state.notes.selectedNode))
+    else document.querySelector('.notes-document-toolbar .notes-breadcrumb')?.replaceWith(renderNoteDocumentBreadcrumb(state.notes.selectedNode))
+  }).catch(error => {
+    if (request !== noteSelectionRequest || state.notes.selectedId !== node.id) return
+    state.notes.breadcrumbsLoading = false
+    if (state.view !== 'notes') return
+    document.querySelector('.notes-document-toolbar .notes-breadcrumb')?.replaceWith(renderNoteDocumentBreadcrumb(state.notes.selectedNode))
+    showToast(`目录路径读取失败，正文仍可使用：${friendlyError(error)}`, 'error')
+  })
+  try {
+    // Start content and path resolution together; editor code downloads alongside both.
+    const snapshotRequest = node.editable ? readNoteSnapshot(node.id, undefined, node).then(value => ({ value }), error => ({ error })) : null
+    const folderRequest = node.kind === 'folder' ? loadNoteChildren(node.id).then(value => ({ value }), error => ({ error })) : null
     if (node.kind === 'folder') {
       Object.assign(state.notes, { content: '', draft: '', dirty: false })
       state.notes.currentFolderId = node.id
@@ -2988,9 +3136,12 @@ async function selectNoteNode(node, options = {}) {
         if (state.notes.expandedFolders.has(node.id)) state.notes.expandedFolders.delete(node.id)
         else state.notes.expandedFolders.add(node.id)
       }
-      await loadNoteChildren(node.id)
+      const result = await folderRequest
+      if (result.error) throw result.error
     } else if (node.editable) {
-      const snapshot = await readNoteSnapshot(node.id)
+      const result = await snapshotRequest
+      if (result.error) throw result.error
+      const snapshot = result.value
       const content = snapshot.content
       if (request !== noteSelectionRequest || state.notes.selectedId !== node.id) return
       state.notes.content = content
@@ -3195,6 +3346,7 @@ async function copyNoteNode(node) {
 }
 
 async function dropNoteNode(event, parentId) {
+  if (!hasDragType(event, 'application/x-dsh-note-id') && !hasDragType(event, 'Files')) return
   event.preventDefault()
   event.stopPropagation()
   clearNoteDragState()
@@ -3525,59 +3677,82 @@ async function saveNoteDocument() {
 
 async function openNoteHistory(node) {
   if (state.notes.selectedNode?.id === node.id && state.notes.dirty && !await saveNoteDocument()) return
-  try {
-    const current = state.notes.selectedNode?.id === node.id ? state.notes.selectedNode : await api(`notes/${encodeURIComponent(node.id)}`)
-    if (!current?.editable) throw new Error('只有可编辑的笔记文档支持页面历史。')
-    const versions = await api(`notes/${encodeURIComponent(node.id)}/versions?limit=100`)
-    if (!versions.length) {
-      showToast('这个文档还没有可查看的保存记录。')
-      return
+  const controller = new AbortController()
+  let closed = false, view
+  const body = element('div', { class: 'note-history-container', 'aria-busy': 'true' })
+  const pending = element('div', { class: 'note-history-pending', role: 'status' })
+  body.append(pending)
+  let feedbackTimer = 0
+  const modal = openModal({
+    title: `${node.name} · 页面历史`,
+    description: '每次内容保存都会形成不可变快照；恢复历史不会删除当前版本。',
+    className: 'note-history-dialog', body, cancelLabel: '关闭',
+    onClose: () => { closed = true; window.clearTimeout(feedbackTimer); controller.abort(); view?.destroy() },
+  })
+  async function loadHistory() {
+    body.setAttribute('aria-busy', 'true')
+    pending.replaceChildren()
+    feedbackTimer = window.setTimeout(() => { if (!closed) pending.textContent = '正在读取页面历史…' }, 180)
+    try {
+      const [current, versions] = await Promise.all([
+        state.notes.selectedNode?.id === node.id ? state.notes.selectedNode : api(`notes/${encodeURIComponent(node.id)}`, { signal: controller.signal }),
+        api(`notes/${encodeURIComponent(node.id)}/versions?limit=100`, { signal: controller.signal }),
+        resources.script('note-history', 'DshKnowledgeNoteHistory'), loadChangeReview(), loadMarkdownPreview(),
+      ])
+      if (closed) return
+      if (!current?.editable) throw new Error('只有可编辑的笔记文档支持页面历史。')
+      if (!versions.length) {
+        pending.textContent = '这个文档还没有可查看的保存记录。'
+        return
+      }
+      const currentContent = state.notes.selectedNode?.id === node.id && state.notes.contentVersion === current.version
+        ? state.notes.content
+        : await binaryRequest(`notes/${encodeURIComponent(node.id)}/versions/${current.version}/content`, {
+          responseType: 'blob', accept: current.mediaType || 'text/plain', signal: controller.signal,
+        }).then(blob => blob.text())
+      if (closed) return
+      view = window.DshKnowledgeNoteHistory.createNoteHistoryView({
+        versions,
+        currentVersion: current.version,
+        currentContent, currentContentKnown: true,
+        loadContent: async (version, signal) => {
+          const blob = await binaryRequest(`notes/${encodeURIComponent(node.id)}/versions/${version.version}/content`, {
+            responseType: 'blob', accept: version.mediaType || 'text/plain', signal,
+          })
+          return blob.text()
+        },
+        renderPreview: content => renderHistoricalNotePreview(content, isMarkdownNote(current)),
+        renderDiff: renderNoteHistoryDiff,
+        formatDate,
+        formatBytes,
+        onRestore: async (version, content) => {
+          const updated = await api(`notes/${encodeURIComponent(node.id)}/versions/${version.version}/restore`, {
+            method: 'POST', body: { expectedVersion: current.version },
+          })
+          if (state.notes.selectedNode?.id === node.id) {
+            state.notes.selectedNode = updated
+            state.notes.content = content
+            state.notes.contentVersion = updated.version
+            state.notes.draft = content
+            state.notes.dirty = false
+            await loadNoteChildren(updated.parentId, true)
+          }
+          modal?.close(true)
+          renderShell()
+          showToast(`已将版本 ${version.version} 恢复为新的版本 ${updated.version}。`)
+        },
+        onError: error => showToast(friendlyError(error), 'error'),
+      })
+      body.replaceChildren(view.element)
+    } catch (error) {
+      if (closed || controller.signal.aborted) return
+      pending.replaceChildren(element('p', {}, friendlyError(error)), actionButton('重试', () => { void loadHistory() }, 'small'))
+    } finally {
+      window.clearTimeout(feedbackTimer)
+      body.removeAttribute('aria-busy')
     }
-    await Promise.all([resources.script('note-history', 'DshKnowledgeNoteHistory'), loadChangeReview(), loadMarkdownPreview()])
-    let modal
-    const view = window.DshKnowledgeNoteHistory.createNoteHistoryView({
-      versions,
-      currentVersion: current.version,
-      currentContent: state.notes.selectedNode?.id === node.id ? state.notes.content : '',
-      loadContent: async (version, signal) => {
-        const blob = await binaryRequest(`notes/${encodeURIComponent(node.id)}/versions/${version.version}/content`, {
-          responseType: 'blob', accept: version.mediaType || 'text/plain', signal,
-        })
-        return blob.text()
-      },
-      renderPreview: content => renderHistoricalNotePreview(content, isMarkdownNote(current)),
-      renderDiff: renderNoteHistoryDiff,
-      formatDate,
-      formatBytes,
-      onRestore: async (version, content) => {
-        const updated = await api(`notes/${encodeURIComponent(node.id)}/versions/${version.version}/restore`, {
-          method: 'POST', body: { expectedVersion: current.version },
-        })
-        if (state.notes.selectedNode?.id === node.id) {
-          state.notes.selectedNode = updated
-          state.notes.content = content
-          state.notes.draft = content
-          state.notes.dirty = false
-          await loadNoteChildren(updated.parentId, true)
-        }
-        modal?.close(true)
-        renderShell()
-        showToast(`已将版本 ${version.version} 恢复为新的版本 ${updated.version}。`)
-      },
-      onError: error => showToast(friendlyError(error), 'error'),
-    })
-    modal = openModal({
-      title: `${current.name} · 页面历史`,
-      description: '每次内容保存都会形成不可变快照；恢复历史不会删除当前版本。',
-      body: view.element,
-      cancelLabel: '关闭',
-      onClose: () => view.destroy(),
-    })
-    modal.dialog.classList.add('note-history-dialog')
-    modal.dialog.classList.remove('narrow')
-  } catch (error) {
-    showToast(friendlyError(error), 'error')
   }
+  void loadHistory()
 }
 
 function renderHistoricalNotePreview(content, markdown) {
@@ -3754,6 +3929,11 @@ async function confirmDeleteNoteNode(node) {
 }
 
 function noteWorkspaceDragEnter(event) {
+  if (hasDragType(event, 'application/x-dsh-note-id')) {
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+    return
+  }
   if (!hasDragType(event, 'Files')) return
   event.preventDefault()
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
@@ -3769,12 +3949,13 @@ function activateNoteFolderDropTarget(event, node) {
   if (node.kind !== 'folder') return
   const hasFiles = hasDragType(event, 'Files')
   if (!hasFiles && !hasDragType(event, 'application/x-dsh-note-id')) return
+  activateDropRegion(event, `${hasFiles ? '松开以导入' : '松开以移入'}「${node.name}」`)
   event.preventDefault()
   event.stopPropagation()
   if (event.dataTransfer) event.dataTransfer.dropEffect = hasFiles ? 'copy' : 'move'
   const workspace = document.querySelector('.notes-workspace')
   if (workspace) workspace.dataset.dropActive = 'false'
-  document.querySelectorAll('.notes-tree-item[data-drop-target="true"]').forEach(target => {
+  document.querySelectorAll('.notes-workspace [data-drop-target="true"]').forEach(target => {
     if (target !== event.currentTarget) target.dataset.dropTarget = 'false'
   })
   event.currentTarget.dataset.dropTarget = 'true'
@@ -3785,9 +3966,10 @@ function hasDragType(event, type) {
 }
 
 function clearNoteDragState() {
+  clearDropRegions()
   const workspace = document.querySelector('.notes-workspace')
   if (workspace) workspace.dataset.dropActive = 'false'
-  document.querySelectorAll('.notes-tree-item[data-drop-target="true"]').forEach(node => { node.dataset.dropTarget = 'false' })
+  document.querySelectorAll('.notes-workspace [data-drop-target="true"]').forEach(node => { node.dataset.dropTarget = 'false' })
   document.querySelectorAll('.notes-tree-item[data-dragging="true"]').forEach(node => { node.dataset.dragging = 'false' })
 }
 
@@ -3796,7 +3978,8 @@ function installDragRecovery() {
     clearNoteDragState()
     clearKnowledgeDocumentDragState()
   }
-  window.addEventListener('drop', clear, true)
+  // Capture runs before the target's drop handler. Let it consume the payload first.
+  window.addEventListener('drop', () => window.setTimeout(clear, 0), true)
   window.addEventListener('dragend', clear, true)
   window.addEventListener('blur', clear)
   document.addEventListener('dragleave', event => {
@@ -4137,10 +4320,35 @@ async function openKnowledgeBaseEditor(base) {
     name.wrapper, group.wrapper, groupOptions, description.wrapper, tags.wrapper, instructions.wrapper, policy.wrapper,
     routeToggle, route.provider.wrapper, route.model.wrapper,
   )
-  openSheet({
+  let steps
+  if (!base) {
+    const basics = element('section', { class: 'form-grid' }, name.wrapper, group.wrapper, groupOptions, description.wrapper)
+    const rules = element('section', { class: 'form-grid' }, tags.wrapper, instructions.wrapper, policy.wrapper, routeToggle, route.provider.wrapper, route.model.wrapper)
+    const review = element('section', { class: 'dialog-step-review' })
+    form.classList.remove('form-grid')
+    form.replaceChildren(basics, rules, review)
+    steps = [
+      { title: '基本信息', body: basics },
+      { title: '收录规则', body: rules },
+      { title: '确认创建', body: review, onEnter: () => {
+        const rows = [
+          ['名称', name.input.value.trim()], ['分组', group.input.value.trim() || '未分组'],
+          ['匹配描述', description.input.value.trim() || '未填写'],
+          ['默认标签', parseTags(tags.input.value).join('、') || '无'],
+          ['提取要求', instructions.input.value.trim() || '使用默认提取要求'],
+          ['回写策略', policy.input.selectedOptions[0]?.textContent || '严谨'],
+          ['回写模型', dedicatedModel.checked ? `${route.provider.input.value} / ${route.model.input.value}` : '跟随本机覆盖或当前会话模型'],
+        ]
+        review.replaceChildren(element('p', { class: 'field-hint' }, '确认后创建知识库。创建完成后可继续挂载到项目或会话。'),
+          element('dl', {}, rows.map(([label, value]) => element('div', {}, element('dt', {}, label), element('dd', {}, value)))))
+      } },
+    ]
+  }
+  ;(base ? openSheet : openModal)({
     title: base ? '编辑知识库' : '创建知识库',
     description: '匹配描述先判断对话是否属于该库；提取要求再规定应该收录什么。',
     body: form,
+    steps,
     primaryLabel: base ? '保存修改' : '创建',
     onPrimary: async () => {
       if (!form.reportValidity()) return false
@@ -4245,6 +4453,7 @@ async function bulkRemoveMounts() {
 }
 
 function openMountEditor(base, targetKind, targetId, explicit, inherited) {
+  let modal
   const source = explicit || inherited || {
     enabled: true, recallEnabled: true, writeMode: 'audit', includeTags: [], excludeTags: [], extractionInstructions: '',
   }
@@ -4276,7 +4485,7 @@ function openMountEditor(base, targetKind, targetId, explicit, inherited) {
       actionButton('删除当前配置', async () => {
         try {
           await api(`mounts/${encodeURIComponent(explicit.id)}`, { method: 'DELETE' })
-          document.querySelector('.dialog-backdrop')?.remove()
+          modal.close(true)
           showToast(targetKind === 'session' ? '会话覆盖已删除，已恢复项目继承。' : '项目挂载已删除。')
           await navigate('bases')
         } catch (error) { showToast(friendlyError(error), 'error') }
@@ -4288,7 +4497,7 @@ function openMountEditor(base, targetKind, targetId, explicit, inherited) {
   }
   enabled.addEventListener('change', updateAvailability)
   updateAvailability()
-  openSheet({
+  modal = openSheet({
     title: `${targetKind === 'project' ? '项目' : '会话'}挂载 · ${knowledgeBasePathLabel(base)}`,
     description: targetId,
     body: form,
@@ -4476,13 +4685,15 @@ function openEntryEditor(entry, candidate) {
 
 function formField(label, kind, value, attributes = {}) {
   const input = element(kind === 'textarea' ? 'textarea' : 'input', { class: kind === 'textarea' ? 'textarea' : 'input', value, ...attributes })
+  input.id ||= `knowledge-field-${++fieldSequence}`
   if (kind === 'textarea') input.value = value
-  return { input, wrapper: element('div', { class: 'field' }, element('label', {}, label), input) }
+  return { input, wrapper: element('div', { class: 'field' }, element('label', { for: input.id }, label), input) }
 }
 
 function selectField(label, options, value) {
   const input = element('select', { class: 'select' }, options.map(option => element('option', { value: option.value, selected: option.value === value }, option.label)))
-  return { input, wrapper: element('div', { class: 'field' }, element('label', {}, label), input) }
+  input.id = `knowledge-field-${++fieldSequence}`
+  return { input, wrapper: element('div', { class: 'field' }, element('label', { for: input.id }, label), input) }
 }
 
 async function loadModelCatalog() {
@@ -4752,10 +4963,15 @@ function currentSyncTarget() {
     busy: () => editor.dirty || editor.saving || focused() }
 }
 
-async function readNoteSnapshot(id, signal) {
+async function readNoteSnapshot(id, signal, knownNode) {
+  // Version-addressed content is immutable. Revalidate metadata concurrently;
+  // if a newer version exists, read that version before exposing editable text.
+  const earlyContent = knownNode?.version ? binaryRequest(`notes/${encodeURIComponent(id)}/versions/${knownNode.version}/content`, { responseType: 'blob', signal })
+    .then(value => ({ value }), error => ({ error })) : null
   const node = await api(`notes/${encodeURIComponent(id)}`, { signal })
   if (!node.editable) throw new Error('该文件不再支持文本编辑')
-  const blob = await binaryRequest(`notes/${encodeURIComponent(id)}/versions/${node.version}/content`, { responseType: 'blob', signal })
+  const early = node.version === knownNode?.version ? await earlyContent : null
+  const blob = early?.value || await binaryRequest(`notes/${encodeURIComponent(id)}/versions/${node.version}/content`, { responseType: 'blob', signal })
   return { node, content: await blob.text() }
 }
 
@@ -4847,9 +5063,12 @@ const documentSync = createDocumentSync({
   },
 })
 document.addEventListener('visibilitychange', () => { if (document.hidden) documentSync.pause(); else documentSync.wake() })
+document.addEventListener('visibilitychange', () => { if (!document.hidden) void refreshCandidateCount() })
+window.addEventListener('focus', () => { void refreshCandidateCount() })
 window.addEventListener('focus', () => documentSync.wake())
 window.addEventListener('online', () => documentSync.wake())
 window.addEventListener('pagehide', () => documentSync.pause())
+window.addEventListener('pagehide', () => { candidateCountController?.abort(); candidateCountController = null })
 window.addEventListener('pageshow', () => documentSync.wake())
 
 window.addEventListener('beforeunload', event => {

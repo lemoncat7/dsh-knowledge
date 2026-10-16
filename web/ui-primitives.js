@@ -72,13 +72,49 @@ export function badge(label, variant = '') {
   return element('span', { class: `badge ${variant}`.trim() }, label)
 }
 
+/** One nearest drop region at a time; the overlay never intercepts the pointer. */
+export function clearDropRegions(root = document) {
+  root.querySelectorAll('[data-drop-region="true"]').forEach(node => {
+    node.dataset.dropRegion = 'false'
+    if ('dropTarget' in node.dataset) node.dataset.dropTarget = 'false'
+    node.removeAttribute('data-drop-label')
+  })
+}
+
+export function activateDropRegion(event, label) {
+  event.preventDefault()
+  event.stopPropagation()
+  const target = event.currentTarget
+  if (target.dataset.dropRegion !== 'true') clearDropRegions()
+  target.dataset.dropRegion = 'true'
+  target.dataset.dropLabel = label
+}
+
+export function leaveDropRegion(event) {
+  if (event.currentTarget.contains(event.relatedTarget)) return
+  event.currentTarget.dataset.dropRegion = 'false'
+  if ('dropTarget' in event.currentTarget.dataset) event.currentTarget.dataset.dropTarget = 'false'
+  event.currentTarget.removeAttribute('data-drop-label')
+}
+
 export function createToastPresenter(region) {
   return (message, kind = '') => {
+    let timer
+    const dismiss = () => { window.clearTimeout(timer); toast.remove() }
+    const pause = () => window.clearTimeout(timer)
+    const resume = () => {
+      pause()
+      if (!toast.matches(':hover') && !toast.contains(document.activeElement)) timer = window.setTimeout(dismiss, kind === 'error' ? 8000 : 4200)
+    }
     const toast = element('div', { class: `toast ${kind}`.trim(), role: kind === 'error' ? 'alert' : 'status' },
       element('span', {}, message),
-      kind === 'error' ? actionButton('关闭', () => toast.remove(), 'ghost small toast-close', { 'aria-label': '关闭错误提示' }) : null,
+      kind === 'error' ? actionButton('关闭', dismiss, 'ghost small toast-close', { 'aria-label': '关闭错误提示' }) : null,
     )
     region.append(toast)
-    if (kind !== 'error') window.setTimeout(() => toast.remove(), 4200)
+    toast.addEventListener('mouseenter', pause)
+    toast.addEventListener('mouseleave', resume)
+    toast.addEventListener('focusin', pause)
+    toast.addEventListener('focusout', () => queueMicrotask(resume))
+    resume()
   }
 }

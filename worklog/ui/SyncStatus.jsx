@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from './api.js'
-import { Dialog } from './Dialog.jsx'
+import { Dialog, DialogActions } from './Dialog.jsx'
 
 export function SyncStatus() {
   const [state, setState] = useState(null), [confirm, setConfirm] = useState(false)
@@ -32,7 +32,7 @@ export function SyncStatus() {
       <p>将上传本机原有素材及日报历史至当前连接的中央知识库。历史对话可能包含敏感信息，请确认当前中央服务可信且已授权。</p>
       <p>来源会去重；旧日报保存在中央的历史版本中，不覆盖中央正文。本地原始数据继续保留，不迁移本地定时配置或未完成的整理任务。</p>
       {error && <p role="alert">{error}</p>}
-      <footer><button disabled={busy} onClick={() => setConfirm(false)}>取消</button><button disabled={busy} onClick={() => act('/migrate')}>{busy ? '加入队列…' : '确认上传历史'}</button></footer>
+      <DialogActions><button disabled={busy} onClick={() => setConfirm(false)}>取消</button><button className="wl-primary" disabled={busy} onClick={() => act('/migrate')}>{busy ? '加入队列…' : '确认上传历史'}</button></DialogActions>
     </Dialog>}
   </>
 }

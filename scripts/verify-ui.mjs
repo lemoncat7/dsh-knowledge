@@ -217,8 +217,10 @@ try {
   await page.evaluate(() => window.openDismissFixture(true))
   await page.getByLabel('测试修改').fill('保留未保存的内容')
   await page.mouse.click(4, 4)
+  await page.getByRole('alertdialog').getByRole('button', { name: '继续编辑', exact: true }).click()
   assert.equal(await page.getByRole('dialog').count(), 1, 'outside click cannot discard a dirty regular form')
   await page.getByRole('button', { name: '取消', exact: true }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: '放弃修改', exact: true }).click()
   assert.equal(await page.getByRole('dialog').count(), 0)
   assert.deepEqual(errors, [])
   console.log(JSON.stringify({ result: 'passed', screenshots: root, checks: ['desktop/mobile/tablet portrait and landscape', 'light/dark material parity', 'no horizontal overflow', 'consistent document action groups', 'menu hit targets above outline', 'menu keyboard/outside dismissal/dialog action', 'menu and resize preserve editor', 'pointer and keyboard resize', 'stable hover bounds and shadows', 'static skeleton/reduced motion', 'select keyboard/reset/validation/dynamic options/form data'] }))
@@ -241,7 +243,7 @@ async function verifyPrivateShareConfirmation(browser) {
   })
   try {
     await page.goto(`${base}/knowledge/?view=notes`)
-    await page.getByRole('button', { name: '已分享', exact: true }).first().click()
+    await page.locator('.notes-content').getByRole('button', { name: '已分享', exact: true }).click()
     await page.getByRole('button', { name: '从分享导入', exact: true }).click()
     const input = page.locator('.share-import-form input[type="url"]')
     await input.fill(url)
@@ -324,7 +326,8 @@ async function verifyKnowledgeActions(browser) {
     const noteSource = page.locator(`.notes-tree-item[data-note-id="${note.id}"]`)
     const noteTarget = page.locator(`.notes-tree-item[data-note-id="${folder.id}"]`)
     await noteSource.waitFor()
-    const notesFeedback = await dragFeedback(page, noteSource, noteTarget, noteSource.locator('.notes-tree-row'), noteTarget)
+    const folderRegion = page.locator(`.notes-tree-node[data-note-folder="${folder.id}"]`)
+    const notesFeedback = await dragFeedback(page, noteSource, folderRegion, noteSource.locator('.notes-tree-row'), folderRegion)
     const movedNote = page.waitForResponse(response => response.url().endsWith(`/notes/${note.id}`) && response.request().method() === 'PATCH')
     await noteSource.dragTo(noteTarget.locator('.notes-tree-row'))
     assert.equal((await movedNote).status(), 200, 'native notes drag must still move documents')
@@ -353,7 +356,7 @@ async function verifyKnowledgeActions(browser) {
     await page.setViewportSize({ width: 1280, height: 850 })
     const knowledgeSource = page.locator(`.note-tree-document[data-document-id="${document.id}"]`)
     const knowledgeTarget = page.locator(`.note-tree-group[data-base-id="${targetBase.id}"]`)
-    assert.deepEqual(await dragFeedback(page, knowledgeSource, knowledgeTarget, knowledgeSource, knowledgeTarget.locator('.note-tree-base')), notesFeedback, 'knowledge and notes must share cursor and drag feedback')
+    assert.deepEqual(await dragFeedback(page, knowledgeSource, knowledgeTarget, knowledgeSource, knowledgeTarget), notesFeedback, 'knowledge and notes must share cursor and drag feedback')
     const moved = page.waitForResponse(response => response.url().endsWith(`/documents/${document.id}/move`) && response.request().method() === 'POST')
     await knowledgeSource.dragTo(knowledgeTarget.locator('.note-tree-base'))
     assert.equal((await moved).status(), 200, 'native drag must still move documents')
@@ -367,8 +370,8 @@ async function dragFeedback(page, source, target, cursorNode, highlightNode) {
   await target.dispatchEvent('dragover', { dataTransfer: transfer })
   assert.equal(await target.getAttribute('data-drop-target'), 'true')
   const feedback = await highlightNode.evaluate(node => {
-    const style = getComputedStyle(node)
-    const label = getComputedStyle(node, '::after')
+    const style = getComputedStyle(node, '::after')
+    const label = getComputedStyle(node, '::before')
     return { background: style.backgroundColor, outline: style.outline, labelBackground: label.backgroundColor, labelFont: label.fontSize }
   })
   const opacity = await source.evaluate(node => getComputedStyle(node).opacity)
@@ -419,6 +422,8 @@ async function verifyRestrainedMotion(page) {
     for (const selector of ['.button', '.base-card', '.knowledge-card', '.metric', '.note-tree-document', '.notes-tree-item']) {
       const node = page.locator(selector).first()
       await page.mouse.move(0, 0)
+      // Settle palette transitions before comparing stationary hover geometry/shadow.
+      await node.evaluate(async node => { await Promise.all(node.getAnimations().map(a => a.finished.catch(() => {}))) })
       const before = await node.boundingBox()
       const shadow = await node.evaluate(node => getComputedStyle(node).boxShadow)
       await node.hover()
@@ -475,7 +480,10 @@ async function verifyMaterialParity(browser, outputDirectory) {
       assert.equal(activity.background, scheme === 'light' ? 'rgba(255, 255, 255, 0.14)' : 'rgba(29, 36, 38, 0.24)')
       assert.equal(workspace.background, scheme === 'light' ? 'rgba(255, 255, 255, 0.08)' : 'rgba(16, 23, 25, 0.18)', 'sidebar tint must not change workspace material')
       assert.equal(await page.locator('.dsh-knowledge-activity-header').evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(0, 0, 0, 0)')
-      assert.equal(await page.locator('.dsh-knowledge-activity-tabs').evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(0, 0, 0, 0)')
+      assert.deepEqual(await page.locator('.dsh-knowledge-activity-tabs').evaluate(node => {
+        const style = getComputedStyle(node)
+        return { radius: style.borderRadius, filter: style.backdropFilter }
+      }), { radius: '14px', filter: 'none' }, 'tabs use an inset track, not another frosted pane')
       const control = await page.locator('.dsh-knowledge-activity-search').evaluate(node => getComputedStyle(node).backgroundColor)
       assert.equal(control, await frame.locator('.input').evaluate(node => getComputedStyle(node).backgroundColor))
       await page.screenshot({ path: join(outputDirectory, `material-${scheme}.png`) })

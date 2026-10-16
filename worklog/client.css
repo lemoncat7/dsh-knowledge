@@ -6,8 +6,6 @@ body[data-ds-dark-theme] .dsh-worklog{--wl-text:#e4e7eb;--wl-muted:#b1b8c0;--wl-
 .dsh-worklog.wl-dialog>header h2{min-width:0;overflow-wrap:anywhere}
 .dsh-worklog.wl-dialog>header button{flex-shrink:0}
 .dsh-worklog .wl-dialog-content{min-height:0;overflow:auto;overscroll-behavior:contain}
-.wl-discard{flex-shrink:0;padding:12px 24px;border-bottom:1px solid var(--wl-line);background:var(--wl-solid)}
-.dsh-worklog .wl-discard p{margin:0 0 8px}
 .dsh-worklog .wl-setting-heading{display:flex;align-items:center;gap:6px;margin-top:16px;margin-bottom:8px}
 .dsh-worklog form>.wl-setting-heading:first-child{margin-top:0}
 .dsh-worklog.wl-dialog .wl-setting-heading>label{margin:0}

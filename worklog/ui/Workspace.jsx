@@ -1,14 +1,16 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { api } from './api.js'
-import { Dialog } from './Dialog.jsx'
+import { Dialog, DialogActions } from './Dialog.jsx'
 import { Settings } from './Settings.jsx'
 import { Markdown } from './Markdown.jsx'
 import { copyText } from './clipboard.js'
 import { SyncStatus } from './SyncStatus.jsx'
+import { ActionMenu } from './ActionMenu.jsx'
 import { defaults } from '../domain.js'
 
 const statuses = { queued: '等待整理', running: '正在整理', failed: '整理失败', cancelled: '已取消', done: '整理完成' }
 export function Workspace({ close, openSession, embedded = false, currentProject = '' }) {
+  const editFormId = useId()
   const [state, setState] = useState(null), [day, setDay] = useState(''), [detail, setDetail] = useState(null)
   const [error, setError] = useState(''), [message, setMessage] = useState(''), [busy, setBusy] = useState(false)
   const [modal, setModal] = useState(''), [draft, setDraft] = useState(''), [revision, setRevision] = useState(0)
@@ -81,7 +83,7 @@ export function Workspace({ close, openSession, embedded = false, currentProject
         <div className="wl-heading"><div><span className="wl-eyebrow">工作日报</span><h2>{day}</h2><p className="wl-muted">{detail.report.updated ? `整理于 ${time(detail.report.updated)}` : '尚未整理日报'}{detail.pending > 0 && ` · ${detail.pending} 条待整理`}</p></div>
           <div className="wl-actions"><button className="wl-primary" disabled={busy || active || !detail.records.some(r => !r.excluded)} onClick={generate}>{active ? '整理中…' : detail.report.markdown ? '更新日报' : '整理日报'}</button>
             <button onClick={() => { setDraft(''); setModal('note') }}>补记一条</button>
-            <details className="wl-more"><summary aria-label="更多日报操作">更多</summary><div><button disabled={!detail.report.markdown} onClick={edit}>编辑日报</button><button disabled={!detail.report.markdown} onClick={copyReport}>复制 Markdown</button><button disabled={!detail.report.markdown} onClick={exportReport}>导出 Markdown</button><button disabled={!detail.history.length} onClick={() => setModal('history')}>历史版本</button></div></details>
+            <ActionMenu label="更多日报操作"><button disabled={!detail.report.markdown} onClick={edit}>编辑日报</button><button disabled={!detail.report.markdown} onClick={copyReport}>复制 Markdown</button><button disabled={!detail.report.markdown} onClick={exportReport}>导出 Markdown</button><button disabled={!detail.history.length} onClick={() => setModal('history')}>历史版本</button></ActionMenu>
           </div>
         </div>
         {detail.job && <div className="wl-job" role="status"><span>{statuses[detail.job.status]}{JSON.parse(detail.job.body).error && ` · ${JSON.parse(detail.job.body).error}`}</span>
@@ -102,8 +104,8 @@ export function Workspace({ close, openSession, embedded = false, currentProject
     {modal && <Dialog key={modal} title={{ settings: '工作记录 · 采集设置', note: '补记一条', edit: '编辑日报', history: '历史版本', replace: '重新整理日报' }[modal]} busy={busy} protectChanges={['settings', 'note', 'edit'].includes(modal)} dirty={modal === 'settings' ? settingsDirty : modal === 'edit' ? draft !== detail.report.markdown : modal === 'note' ? !!draft.trim() : undefined} close={() => !busy && setModal('')}>
       {error && <p className="wl-error" role="alert">{error}</p>}
       {modal === 'settings' && <Settings state={state} currentProject={currentProject} busy={busy} onDirtyChange={setSettingsDirty} saveCapture={config => act('/capture-settings', config)} save={config => act('/settings', config)} />}
-      {['note', 'edit'].includes(modal) && <form onSubmit={e => { e.preventDefault(); act(modal === 'note' ? '/note' : '/save', modal === 'note' ? { day, text: draft } : { day, markdown: draft, revision }) }}><label>{modal === 'note' ? '记录实际完成的工作、决定或待办' : 'Markdown 正文'}<textarea autoFocus rows={14} value={draft} onChange={e => setDraft(e.target.value)} required /></label><footer><button disabled={busy || !draft.trim()} className="wl-primary">{busy ? '保存中…' : '保存'}</button></footer></form>}
-      {modal === 'replace' && <><p>日报包含手工修改。重新整理会替换正文，原版本保留在历史版本中。新整理期间的任何编辑都会阻止覆盖。</p><footer><button disabled={busy} onClick={() => setModal('')}>保留正文</button><button disabled={busy} onClick={() => act('/generate', { day, allowReplace: true })}>确认重新整理</button></footer></>}
+      {['note', 'edit'].includes(modal) && <form id={editFormId} onSubmit={e => { e.preventDefault(); act(modal === 'note' ? '/note' : '/save', modal === 'note' ? { day, text: draft } : { day, markdown: draft, revision }) }}><label>{modal === 'note' ? '记录实际完成的工作、决定或待办' : 'Markdown 正文'}<textarea autoFocus rows={14} value={draft} onChange={e => setDraft(e.target.value)} required /></label><DialogActions><button type="submit" form={editFormId} disabled={busy || !draft.trim()} className="wl-primary">{busy ? '保存中…' : '保存'}</button></DialogActions></form>}
+      {modal === 'replace' && <><p>日报包含手工修改。重新整理会替换正文，原版本保留在历史版本中。新整理期间的任何编辑都会阻止覆盖。</p><DialogActions><button disabled={busy} onClick={() => setModal('')}>保留正文</button><button className="wl-primary" disabled={busy} onClick={() => act('/generate', { day, allowReplace: true })}>确认重新整理</button></DialogActions></>}
       {modal === 'history' && detail.history.map(h => <details key={h.id}><summary>{time(h.updated)} · {h.sourceId ? '迁入历史' : '版本'} {h.revision}</summary><Markdown text={h.markdown} /><button onClick={() => { setDraft(h.markdown); setRevision(detail.report.revision); setModal('edit') }}>作为编辑草稿</button></details>)}
     </Dialog>}
   </section>

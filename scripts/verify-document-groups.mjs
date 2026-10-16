@@ -38,6 +38,8 @@ try {
   const baseButton = page.locator('.note-tree-base').filter({ hasText: base.name })
   if (await baseButton.getAttribute('aria-expanded') !== 'true') await baseButton.click()
   const group = page.locator('.document-tree-group[data-document-group="部署运维"]')
+  await group.locator('.document-group-toggle').waitFor()
+  if (await group.locator('.document-group-toggle').getAttribute('aria-expanded') !== 'true') await group.locator('.document-group-toggle').click()
   await group.locator('.note-tree-document').first().waitFor()
   assert.equal(await group.locator('.note-tree-document').count(), 2)
   await group.locator('.document-group-toggle').click(); assert.equal(await group.locator('.note-tree-document').count(), 0)

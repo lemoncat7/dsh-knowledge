@@ -535,13 +535,16 @@ body[data-ds-dark-theme] :is(
   min-height: 34px;
   padding: 7px 13px;
   border: 0;
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--knowledge-hover);
   color: var(--knowledge-text);
   cursor: pointer;
   font: inherit;
   font-size: 13px;
+  box-shadow: inset 0 1px 0 var(--knowledge-glare-light);
+  transition: background-color 160ms ease, transform 160ms cubic-bezier(.22,1,.36,1);
 }
+.dsh-knowledge-settings-actions button:active:not(:disabled) { transform: scale(.97); }
 .dsh-knowledge-settings-actions button.is-primary { background: var(--knowledge-accent); color: var(--knowledge-on-accent); }
 .dsh-knowledge-settings-actions button:disabled { cursor: default; opacity: .45; }
 
@@ -554,7 +557,9 @@ body[data-ds-dark-theme] :is(
 @media (prefers-reduced-motion: reduce) {
   .dsh-knowledge-settings-card,
   .dsh-knowledge-settings-header,
-  .dsh-knowledge-settings-summary i { transition: none; }
+  .dsh-knowledge-settings-summary i,
+  .dsh-knowledge-settings-actions button { transition: none; }
+  .dsh-knowledge-settings-actions button:active:not(:disabled) { transform: none; }
 }
 
 .dsh-knowledge-writeback-notice {
@@ -655,4 +660,20 @@ body[data-ds-dark-theme] :is(
 }
 .dsh-knowledge-panel-right-icon {
   transform: rotate(180deg);
+}
+
+/* Host settings and turn notices follow the same control rhythm as the workspace. */
+.dsh-knowledge-settings-card :is(input, button),
+.dsh-knowledge-writeback-notice button {
+  transition: background-color var(--knowledge-motion-control) ease, border-color var(--knowledge-motion-control) ease, color var(--knowledge-motion-control) ease;
+}
+.dsh-knowledge-settings-card :is(.dsh-knowledge-remote-fields input, .dsh-knowledge-timeout-field input),
+.dsh-knowledge-settings-actions button { border-radius: var(--knowledge-radius-control); }
+.dsh-knowledge-settings-card button:focus-visible,
+.dsh-knowledge-writeback-notice button:focus-visible { outline: 2px solid var(--knowledge-text-secondary); outline-offset: 3px; }
+.dsh-knowledge-writeback-notice button:hover:not(:disabled) { background: var(--knowledge-hover); color: var(--knowledge-text); }
+@media (prefers-reduced-motion: reduce) {
+  .dsh-knowledge-settings-card :is(input, button),
+  .dsh-knowledge-settings-card input::before,
+  .dsh-knowledge-writeback-notice button { transition: none; }
 }

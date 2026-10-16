@@ -596,6 +596,10 @@ async function dispatch(
   }
 
   if (segments[0] === 'candidates') {
+    if (method === 'GET' && segments[1] === 'counts' && segments.length === 2) {
+      requirePermission(actor.permissions, 'read')
+      return sendJson(res, 200, provider.candidateCounts())
+    }
     if (method === 'GET' && segments.length === 1) {
       requirePermission(actor.permissions, 'read')
       const status = url.searchParams.get('status')

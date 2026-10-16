@@ -10,7 +10,7 @@ await mkdir('lib/worklog', { recursive: true })
 await build({ entryPoints: ['worklog/web-entry.jsx'], outfile: 'lib/worklog/workspace.js', bundle: true,
   platform: 'browser', format: 'esm', target: 'es2022', jsx: 'automatic', minify: true,
   define: { 'process.env.NODE_ENV': '"production"' } })
-await writeFile('lib/worklog/workspace.css', await readFile('worklog/client.css', 'utf8') + '\n' + await readFile('worklog/web-embedded.css', 'utf8'))
+await writeFile('lib/worklog/workspace.css', await readFile('worklog/client.css', 'utf8') + '\n' + await readFile('worklog/web-embedded.css', 'utf8') + '\n' + await readFile('web/discard-confirmation.css', 'utf8'))
 
 await build({
   entryPoints: ['src/client.tsx'],

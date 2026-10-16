@@ -1,0 +1,140 @@
+/* Interaction skin: Stepper-inspired framing, using the existing host palette.
+   No global animation observer, perpetual effects, or business-state dependency. */
+:root {
+  --radius-control: var(--knowledge-radius-control, 12px);
+  --radius-small: 9px;
+  --interaction-rim: inset 0 1px 0 var(--surface-highlight);
+  --interaction-tile: var(--surface-raised);
+  --interaction-well: color-mix(in srgb, var(--text) 3%, transparent);
+  --interaction-ease: var(--knowledge-motion-ease, cubic-bezier(.22, 1, .36, 1));
+}
+
+.button {
+  padding-inline: 14px;
+  box-shadow: var(--interaction-rim), 0 2px 4px color-mix(in srgb, var(--text) 4%, transparent);
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease, transform 160ms var(--interaction-ease);
+}
+.button:active:not(:disabled) { transform: scale(.97); }
+.button:disabled { cursor: not-allowed; opacity: .48; }
+.button.ghost:hover:not(:disabled) { background: var(--surface-hover); border-color: transparent; }
+.button:focus-visible, .tab:focus-visible, .knowledge-select-trigger:focus-visible {
+  outline: 2px solid var(--text-secondary); outline-offset: 3px;
+}
+.input, .textarea, .select { transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease; }
+.input:focus, .textarea:focus, .select:focus {
+  border-color: var(--border-strong);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--text) 7%, transparent), var(--interaction-rim);
+}
+.input:focus-visible, .textarea:focus-visible, .select:focus-visible {
+  outline: 2px solid var(--text-secondary); outline-offset: 2px; box-shadow: var(--interaction-rim);
+}
+.check-option {
+  border-radius: 13px; padding: 12px; gap: 10px;
+  background: var(--interaction-well);
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+.check-option:hover { border-color: var(--border-strong); }
+.check-option:has(input:checked) { background: var(--interaction-tile); border-color: var(--border-strong); box-shadow: var(--interaction-rim), var(--shadow-soft); }
+.check-option:has(input:focus-visible) { outline: 2px solid var(--text-secondary); outline-offset: 3px; }
+.check-option:has(input:disabled) { opacity: .55; cursor: not-allowed; }
+.check-option input { flex-shrink: 0; }
+.check-option small { line-height: 1.55; }
+.tabs { gap: 4px; padding: 4px; border-radius: 14px; background: var(--interaction-well); }
+.tab { border-radius: 10px; transition: background-color 160ms ease, color 160ms ease, box-shadow 160ms ease; }
+.tab[aria-selected="true"] { box-shadow: var(--interaction-rim), 0 2px 5px color-mix(in srgb, var(--text) 8%, transparent); }
+.knowledge-select-menu { padding: 5px; border-radius: 15px; animation: knowledge-menu-in 150ms var(--interaction-ease); }
+.knowledge-select-option { position: relative; padding-right: 32px; border-radius: 10px; transition: background-color 120ms ease; }
+.knowledge-select-option[aria-selected="true"] { background: var(--surface-hover); color: var(--text); }
+.knowledge-select-option[aria-selected="true"]::after { content: ''; position: absolute; right: 13px; top: 12px; width: 5px; height: 9px; border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
+
+.dialog-backdrop { place-items: center; padding: 20px; background: rgb(12 18 24 / 14%); }
+.dialog {
+  width: min(640px, 100%); height: auto; max-height: min(800px, calc(100dvh - 48px));
+  padding: 7px; border-radius: var(--knowledge-radius-dialog, 24px);
+  border-color: var(--border-strong);
+  box-shadow: var(--interaction-rim), 0 20px 64px rgb(0 0 0 / 20%);
+  animation: knowledge-dialog-in var(--knowledge-motion-dialog, 220ms) var(--interaction-ease) both;
+}
+.dialog-header { padding: 18px 18px 16px; border: 0; background: transparent; }
+.dialog-header h2 { font-size: 18px; line-height: 1.4; }
+.dialog-header p { max-width: 52ch; margin-top: 6px; line-height: 1.65; }
+.dialog-header .button { width: 34px; min-width: 34px; min-height: 34px; border-radius: 50%; background: var(--interaction-well); }
+.dialog-header .button svg { width: 16px; height: 16px; }
+.dialog-body { padding: 20px; border: 1px solid var(--separator); border-radius: 17px; background: var(--interaction-well); }
+.dialog-footer { padding: 14px 12px 7px; gap: 10px; border: 0; background: transparent; align-items: center; }
+.dialog-footer > .button { min-height: 38px; }
+.dialog-feedback { flex-shrink: 0; margin: 10px 12px 0; padding: 10px 12px; max-height: 110px; overflow: auto; border-radius: 12px; color: var(--danger); background: var(--danger-soft); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.dialog.note-history-dialog { width: min(1040px, calc(100vw - 40px)); height: min(760px, calc(100dvh - 48px)); max-height: min(760px, calc(100dvh - 48px)); }
+.dialog.note-history-dialog .dialog-body { display: flex; flex: 1; min-height: 0; }
+.note-history-workspace { align-items: stretch; overflow: hidden; }
+.note-history-timeline { max-height: none; }
+.note-history-detail { grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
+.note-history-content { max-height: none; }
+.dialog-backdrop.is-closing { pointer-events: none; background: transparent; }
+.dialog-backdrop.is-closing .dialog { animation: knowledge-dialog-out 150ms ease-in both; }
+.dialog[aria-busy="true"] .dialog-footer > .primary { cursor: progress; }
+.dialog-steps { position: relative; display: flex; margin: 0 0 8px; padding: 4px; flex-shrink: 0; border: 1px solid var(--separator); border-radius: 16px; background: var(--interaction-well); }
+.dialog-step-glider { position: absolute; top: 4px; bottom: 4px; left: 4px; width: calc((100% - 8px) / var(--step-count)); border-radius: 12px; background: var(--interaction-tile); box-shadow: var(--interaction-rim), 0 2px 6px color-mix(in srgb, var(--text) 8%, transparent); transition: transform 260ms var(--interaction-ease); pointer-events: none; }
+.dialog-steps .button.dialog-step { z-index: 1; flex: 1; min-width: 0; display: flex; gap: 8px; justify-content: center; align-items: center; min-height: 42px; padding: 7px 8px; border: 0; border-radius: 12px; background: transparent; box-shadow: none; color: var(--text-secondary); white-space: normal; font-size: 12px; }
+.dialog-steps .dialog-step[aria-current="step"] { color: var(--text); }
+.dialog-step-number { flex-shrink: 0; display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid var(--border-strong); border-radius: 50%; font-size: 11px; font-variant-numeric: tabular-nums; }
+.dialog-step[aria-current="step"] .dialog-step-number { border-color: currentColor; }
+.dialog-step[data-complete="true"] .dialog-step-number { background: var(--text-secondary); color: var(--dialog-surface); border-color: transparent; }
+.dialog-step-number svg { width: 13px; height: 13px; }
+.dialog-step-panel[hidden], .dialog-step-back[hidden] { display: none; }
+.dialog-step-panel { min-width: 0; outline: none; }
+.dialog-step-panel:focus-visible { outline: 2px solid var(--border-strong); outline-offset: 7px; border-radius: 8px; }
+.dialog.has-steps .dialog-body { min-height: 0; }
+.dialog-step-status { margin-right: auto; font-size: 11px; color: var(--text-secondary); }
+.dialog-step-review dl { display: grid; gap: 0; margin: 12px 0 0; }
+.dialog-step-review dl > div { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--separator); }
+.dialog-step-review dl > div:last-child { border-bottom: 0; }
+.dialog-step-review dt { color: var(--text-secondary); }
+.dialog-step-review dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+
+@keyframes knowledge-dialog-in { from { opacity: 0; transform: translateY(10px) scale(.985); } to { opacity: 1; transform: none; } }
+@keyframes knowledge-dialog-out { from { opacity: 1; } to { opacity: 0; transform: translateY(5px) scale(.99); } }
+@keyframes knowledge-menu-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+.notes-document-more-menu, .notes-selection-menu {
+  border-radius: var(--knowledge-radius-menu, 15px);
+  animation: knowledge-menu-in var(--knowledge-motion-menu, 150ms) var(--interaction-ease);
+}
+.notes-selection-control, .notes-find-button, .note-history-version { border-radius: 9px; }
+.notes-selection-control:focus-visible, .notes-find-button:focus-visible, .note-history-version:focus-visible {
+  outline: 2px solid var(--text-secondary); outline-offset: -2px;
+}
+@media (max-width: 900px) {
+  .note-history-workspace { grid-template-rows: 126px minmax(0, 1fr); }
+  .note-history-timeline { max-height: 126px; }
+  .note-history-content { max-height: none; }
+}
+/* Keep the outer history frame stable, but let its body scroll on short screens.
+   A fixed timeline plus a shrinking detail track otherwise hides the document. */
+@media (max-height: 600px) {
+  .dialog.note-history-dialog .dialog-body { display: block; }
+  .note-history-container { min-height: 100%; }
+  .note-history-workspace { align-items: start; overflow: visible; }
+  .note-history-timeline { max-height: min(480px, 55dvh); }
+  .note-history-detail { grid-template-rows: auto auto; overflow: visible; }
+  .note-history-content { overflow: visible; }
+}
+@media (max-height: 600px) and (max-width: 900px) {
+  .note-history-workspace { grid-template-rows: auto auto; }
+  .note-history-timeline { max-height: 126px; }
+}
+@media (max-width: 680px) {
+  .dialog-backdrop { padding: 8px; place-items: center; }
+  .dialog, .dialog.narrow, .dialog.note-history-dialog { width: 100%; height: auto; max-height: calc(100dvh - 16px); border: 1px solid var(--border-strong); border-radius: 22px; padding: 6px; }
+  .dialog.note-history-dialog { height: calc(100dvh - 16px); }
+  .dialog-header { padding: 12px; }
+  .dialog-body { padding: 16px; }
+  .dialog-footer { flex-wrap: wrap; padding: 12px 6px max(6px, env(safe-area-inset-bottom)); gap: 8px; }
+  .dialog-footer > .button { flex: 1 1 auto; min-height: 44px; }
+  .dialog-step-status { flex: 1 0 100%; }
+  .dialog-steps .button.dialog-step { gap: 5px; font-size: 11px; padding-inline: 4px; min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .button, .input, .textarea, .select, .tab, .check-option, .knowledge-select-option, .dialog-step-glider { transition: none; }
+  .button:active:not(:disabled) { transform: none; }
+  .dialog, .dialog-backdrop.is-closing .dialog, .knowledge-select-menu, .notes-document-more-menu, .notes-selection-menu { animation: none; }
+}

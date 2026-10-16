@@ -12,6 +12,7 @@ interface NoteHistoryViewOptions {
   versions: NoteHistoryItem[]
   currentVersion: number
   currentContent: string
+  currentContentKnown?: boolean
   loadContent(version: NoteHistoryItem, signal: AbortSignal): Promise<string>
   renderPreview(content: string): HTMLElement
   renderDiff(historical: string, current: string): HTMLElement
@@ -44,7 +45,10 @@ export function createNoteHistoryView(options: NoteHistoryViewOptions): NoteHist
   let request = 0
   let controller: AbortController | undefined
   let destroyed = false
+  let pendingVersion: number | undefined
+  let feedbackTimer: ReturnType<typeof setTimeout> | undefined
   const cache = new Map<number, string>()
+  if (options.currentContentKnown) cache.set(options.currentVersion, options.currentContent)
   const timeline = node('nav', 'note-history-timeline')
   timeline.setAttribute('aria-label', '页面历史版本')
   const timelineHeading = node('div', 'note-history-timeline-heading')
@@ -67,7 +71,10 @@ export function createNoteHistoryView(options: NoteHistoryViewOptions): NoteHist
   detailActions.append(previewButton, diffButton, restoreButton)
   detailHeader.append(detailCopy, detailActions)
   const content = node('div', 'note-history-content')
-  detail.append(detailHeader, content)
+  const feedback = node('div', 'note-history-status')
+  feedback.setAttribute('role', 'status')
+  feedback.hidden = true
+  detail.append(detailHeader, content, feedback)
   root.append(timeline, detail)
 
   function modeButton(label: string, value: 'preview' | 'diff'): HTMLButtonElement {
@@ -111,13 +118,12 @@ export function createNoteHistoryView(options: NoteHistoryViewOptions): NoteHist
     detailTitle.textContent = `版本 ${selected.version}${current ? ' · 当前' : ''}`
     detailMeta.textContent = `${options.formatDate(selected.createdAt)} · ${options.formatBytes(selected.size)}`
     const sameContent = contentLoaded && selectedContent === options.currentContent
-    restoreButton.disabled = current || !contentLoaded || sameContent
+    restoreButton.disabled = pendingVersion !== undefined || current || !contentLoaded || sameContent
     restoreButton.textContent = current ? '当前版本' : sameContent ? '内容相同' : '恢复为新版本'
   }
 
   function renderSelectedContent(): void {
     if (!contentLoaded) {
-      content.replaceChildren(node('div', 'note-history-loading', '正在读取版本内容…'))
       return
     }
     content.replaceChildren(mode === 'preview'
@@ -126,28 +132,48 @@ export function createNoteHistoryView(options: NoteHistoryViewOptions): NoteHist
   }
 
   async function selectVersion(version: NoteHistoryItem): Promise<void> {
-    selected = version
-    selectedContent = ''
-    contentLoaded = false
-    syncVersionButtons()
-    syncDetailHeader()
-    renderSelectedContent()
     const currentRequest = ++request
     controller?.abort()
     controller = new AbortController()
+    clearTimeout(feedbackTimer)
+    feedback.hidden = true
+    pendingVersion = version.version
+    content.setAttribute('aria-busy', 'true')
+    previewButton.disabled = diffButton.disabled = true
+    syncDetailHeader()
+    for (const button of versionList.querySelectorAll<HTMLButtonElement>('[data-note-version]')) {
+      button.setAttribute('aria-busy', String(Number(button.dataset.noteVersion) === pendingVersion))
+    }
+    feedbackTimer = setTimeout(() => {
+      if (destroyed || currentRequest !== request) return
+      feedback.textContent = `正在读取版本 ${version.version}…`
+      feedback.hidden = false
+    }, 180)
     try {
       const cached = cache.get(version.version)
       const loaded = cached ?? await options.loadContent(version, controller.signal)
       if (destroyed || currentRequest !== request) return
+      selected = version
       selectedContent = loaded
       contentLoaded = true
       putCache(version.version, loaded)
-      syncDetailHeader()
+      syncVersionButtons()
       renderSelectedContent()
     } catch (error) {
       if (destroyed || currentRequest !== request || (error instanceof DOMException && error.name === 'AbortError')) return
-      content.replaceChildren(node('div', 'note-history-error', '无法读取这个历史版本。'))
+      feedback.textContent = `无法读取版本 ${version.version}，请点击该版本重试。`
+      feedback.hidden = false
       options.onError(error)
+    } finally {
+      if (!destroyed && currentRequest === request) {
+        clearTimeout(feedbackTimer)
+        pendingVersion = undefined
+        content.removeAttribute('aria-busy')
+        previewButton.disabled = diffButton.disabled = !contentLoaded
+        for (const button of versionList.querySelectorAll('[data-note-version]')) button.removeAttribute('aria-busy')
+        syncDetailHeader()
+        if (selected === version && contentLoaded) feedback.hidden = true
+      }
     }
   }
 
@@ -190,6 +216,7 @@ export function createNoteHistoryView(options: NoteHistoryViewOptions): NoteHist
     destroy: () => {
       destroyed = true
       request += 1
+      clearTimeout(feedbackTimer)
       controller?.abort()
       cache.clear()
     },

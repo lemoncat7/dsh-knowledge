@@ -561,6 +561,16 @@ html,
 .topbar-kicker { display: block; margin-bottom: 2px; color: var(--text-tertiary); font: 8px/1.2 ui-monospace, "SFMono-Regular", Consolas, monospace; font-weight: 700; letter-spacing: .12em; }
 .route-progress { position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; overflow: hidden; background: color-mix(in srgb, var(--accent) 7%, transparent); }
 .route-progress span { display: block; width: 100%; height: 100%; border-radius: 0 99px 99px 0; background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 58%, transparent), var(--accent)); transform: scaleX(var(--route-progress)); transform-origin: left center; transition: transform var(--motion-fast) ease-out; }
+.route-pending-label { position: absolute; right: 16px; bottom: 5px; max-width: calc(100% - 32px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); background: var(--surface-pane); border-radius: 5px; padding: 3px 7px; font-size: 11px; }
+.nav-button[data-pending] { background: var(--surface-hover); }
+.view-stage[aria-busy="true"] { cursor: progress; }
+.route-placeholder { min-height: 180px; padding: 24px; }
+.route-placeholder-lines { display: grid; gap: 14px; max-width: 360px; opacity: 0; animation: route-placeholder-in 120ms ease-out 180ms forwards; }
+.route-placeholder-lines span { height: 8px; border-radius: 4px; background: color-mix(in srgb, var(--text) 6%, transparent); }
+.route-placeholder-lines span:nth-child(2) { width: 84%; }
+.route-placeholder-lines span:nth-child(3) { width: 60%; }
+@keyframes route-placeholder-in { to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .route-placeholder-lines { animation: none; opacity: 1; } }
 .mobile-menu, .app-sidebar-scrim { display: none; }
 .topbar-actions { display: flex; align-items: center; gap: 8px; }
 .pane-toggle-group {
@@ -878,7 +888,7 @@ html,
 .note-tree-base:hover, .note-tree-document:hover, .note-tree-new:hover { background: var(--surface-hover); color: var(--text); }
 .note-tree-group[data-drop-target="true"] > .note-tree-base .tree-count { visibility: hidden; }
 .tree-disclosure { width: 7px; height: 7px; flex: none; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform .16s ease; }
-.note-tree-group[data-expanded="true"] .tree-disclosure { transform: rotate(45deg) translate(-1px, -1px); }
+.note-tree-group[data-expanded="true"] > .note-tree-base > .tree-disclosure { transform: rotate(45deg) translate(-1px, -1px); }
 .tree-folder-icon {
   width: 17px;
   height: 15px;
@@ -890,7 +900,7 @@ html,
   transition: color .15s ease, opacity .15s ease;
 }
 .note-tree-base:hover .tree-folder-icon { opacity: .7; }
-.note-tree-group[data-expanded="true"] .tree-folder-icon { color: var(--text-secondary); opacity: .8; }
+.note-tree-group[data-expanded="true"] > .note-tree-base > .tree-folder-icon { color: var(--text-secondary); opacity: .8; }
 .tree-base-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree-count { min-width: 20px; color: var(--text-tertiary); font-size: 10px; font-variant-numeric: tabular-nums; text-align: right; }
 .note-tree-documents { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 1px; margin: 1px 0 5px 18px; padding-left: 10px; border-left: 1px solid color-mix(in srgb, var(--border-strong) 55%, transparent); }
@@ -972,6 +982,30 @@ html,
 .note-tree-group[data-drop-target="true"] > .note-tree-base::after { content: "放入此目录"; position: absolute; right: 6px; z-index: 2; border-radius: 4px; padding: 2px 5px; background: color-mix(in srgb, var(--surface-raised) 92%, transparent); color: var(--accent); font-size: 8px; font-weight: 620; pointer-events: none; }
 .note-tree-group[data-drop-target="true"] > .note-tree-base::after { content: "移入此知识库"; }
 .notes-tree-item[data-drop-target="true"] .notes-row-actions { opacity: 0; pointer-events: none; }
+.notes-tree-node[data-drop-target="true"] > .notes-tree-item .notes-row-actions { opacity: 0; pointer-events: none; }
+/* Highlight the complete drop boundary, not only its title row. */
+:is(.notes-tree-node, .notes-file-row, .notes-content, .notes-tree, .document-tree-group, .note-tree-group)[data-drop-region="true"] {
+  position: relative;
+  isolation: isolate;
+}
+:is(.notes-tree-node, .notes-file-row, .notes-content, .notes-tree, .document-tree-group, .note-tree-group)[data-drop-region="true"]::after {
+  content: "";
+  position: absolute; inset: 0; z-index: 10; pointer-events: none;
+  border: 1px solid color-mix(in srgb, var(--text-secondary) 35%, transparent);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, .22);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .2);
+}
+:is(.notes-tree-node, .notes-file-row, .notes-content, .notes-tree, .document-tree-group, .note-tree-group)[data-drop-region="true"]::before {
+  content: attr(data-drop-label);
+  position: absolute; top: 7px; right: 7px; z-index: 11; pointer-events: none;
+  max-width: calc(100% - 14px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  border: 1px solid var(--border); border-radius: 7px; padding: 4px 8px;
+  background: var(--surface-raised); color: var(--text); font-size: 11px; font-weight: 600;
+  box-shadow: var(--shadow-soft);
+}
+.note-tree-group[data-drop-region="true"] > .note-tree-base { background: transparent; outline: none; }
+.note-tree-group[data-drop-region="true"] > .note-tree-base::after { display: none; }
 .notes-tree-item[data-dragging="true"], .note-tree-document[data-dragging="true"] { opacity: .45; }
 .notes-tree-row { width: 100%; min-width: 0; min-height: 34px; display: flex; align-items: center; flex: 1 1 0; gap: 7px; overflow: hidden; border: 0; padding: 3px 4px; background: transparent; color: var(--text-secondary); font: inherit; text-align: left; }
 .notes-tree-row:hover, .notes-tree-row[aria-selected="true"] { color: var(--text); }
@@ -1237,6 +1271,12 @@ html,
 .notes-share-dialog-danger small { margin-top: 2px; color: var(--text-tertiary); font-size: 10px; }
 .dialog.note-history-dialog { width: min(1040px, calc(100vw - 40px)); height: min(760px, calc(100dvh - 48px)); max-height: min(760px, calc(100dvh - 48px)); }
 .dialog.note-history-dialog .dialog-body { min-height: 0; display: flex; padding: 0; }
+.note-history-container { display: flex; flex: 1; min-width: 0; min-height: 0; width: 100%; }
+.note-history-pending { flex: 1; display: grid; place-content: center; justify-items: center; gap: 10px; background: var(--surface-editor); color: var(--text-secondary); font-size: 12px; }
+.note-history-detail { position: relative; }
+.note-history-status { position: absolute; z-index: 1; right: 12px; bottom: 12px; max-width: calc(100% - 24px); border: 1px solid var(--separator); border-radius: 7px; padding: 7px 10px; background: var(--surface-pane); color: var(--text-secondary); font-size: 12px; }
+.note-history-status[hidden] { display: none; }
+.note-history-version[aria-busy="true"] { background: var(--surface-hover); }
 .note-history-workspace { min-width: 0; min-height: 0; width: 100%; display: grid; grid-template-columns: 224px minmax(0, 1fr); overflow: hidden; background: var(--surface-editor); }
 .note-history-timeline { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; border-right: 1px solid var(--separator); background: var(--surface-pane); }
 .note-history-timeline-heading { min-height: 54px; display: grid; align-content: center; gap: 2px; border-bottom: 1px solid var(--separator); padding: 9px 12px; }
@@ -1673,20 +1713,6 @@ html,
 }
 @keyframes dialog-enter { from { opacity: 0; } }
 .dialog.narrow { width: min(100%, 460px); }
-.dialog-backdrop.sheet-backdrop {
-  place-items: stretch end;
-  padding: 0;
-  background: transparent;
-}
-.dialog.sheet {
-  width: min(560px, 100vw);
-  max-height: 100dvh;
-  height: 100dvh;
-  border-width: 0 0 0 1px;
-  border-radius: 0;
-  box-shadow: -22px 0 64px rgb(0 0 0 / 18%);
-  animation: dialog-enter var(--motion-fast) ease-out both;
-}
 .dialog-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--separator); padding: 22px 22px 18px; background: var(--surface-raised); }
 .dialog-header h2 { margin: 0; font-size: var(--font-title); font-weight: 650; letter-spacing: -.02em; }
 .dialog-header p { margin: 4px 0 0; color: var(--text-tertiary); font-size: var(--font-caption); }
@@ -1993,7 +2019,7 @@ html,
   .input, .select { height: 44px; min-height: 44px; }
   :where(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea) { font-size: 16px; }
   .dialog-backdrop { place-items: stretch; padding: 0; }
-  .dialog, .dialog.narrow, .dialog.sheet { width: 100%; height: 100svh; height: 100dvh; max-height: none; border-width: 0; border-radius: 0; }
+  .dialog, .dialog.narrow { width: 100%; height: auto; max-height: calc(100dvh - 16px); }
   .dialog-header { padding: max(15px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 14px max(16px, env(safe-area-inset-left)); }
   .dialog-header .button { width: 44px; min-width: 44px; min-height: 44px; }
   .dialog-body { padding: 18px max(16px, env(safe-area-inset-right)) max(24px, calc(16px + env(safe-area-inset-bottom))) max(16px, env(safe-area-inset-left)); }
@@ -2084,18 +2110,18 @@ html,
 
 /* Management pages own one bounded content scroller. The translucent header
    stays outside it, so rows never paint underneath the title. */
-.app-shell:is([data-view="bases"], [data-view="writeback"]) .main {
+.app-shell:is([data-view="bases"], [data-view="writeback"], [data-view="candidates"]) .main {
   height: calc(100dvh - var(--chrome-inset) * 2);
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
-.app-shell:is([data-view="bases"], [data-view="writeback"]) .topbar {
+.app-shell:is([data-view="bases"], [data-view="writeback"], [data-view="candidates"]) .topbar {
   position: relative;
   flex: none;
 }
-.app-shell:is([data-view="bases"], [data-view="writeback"]) .page {
+.app-shell:is([data-view="bases"], [data-view="writeback"], [data-view="candidates"]) .page {
   flex: 1 1 auto;
   min-height: 0;
   contain: layout paint;
@@ -2104,7 +2130,7 @@ html,
   overscroll-behavior-y: contain;
   padding-bottom: max(20px, env(safe-area-inset-bottom));
 }
-.app-shell:is([data-view="bases"], [data-view="writeback"]) .view-stage {
+.app-shell:is([data-view="bases"], [data-view="writeback"], [data-view="candidates"]) .view-stage {
   min-height: 0;
 }
 .writeback-workspace .button[aria-pressed="true"] {
@@ -2113,7 +2139,7 @@ html,
   color: var(--text);
 }
 @media (max-width: 1120px), (hover: none) and (pointer: coarse) and (max-width: 1400px) {
-  .app-shell:is([data-view="bases"], [data-view="writeback"]) .main { height: 100dvh; }
+  .app-shell:is([data-view="bases"], [data-view="writeback"], [data-view="candidates"]) .main { height: 100dvh; }
 }
 
 @media (prefers-reduced-motion: reduce) {

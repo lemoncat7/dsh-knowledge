@@ -15,6 +15,7 @@ import { loadNoteContent, loadNoteIndex, type KnowledgeActivityNoteContent } fro
 import type { KnowledgeActivityController } from './knowledge-activity-controller.js'
 import { LatestRequest } from './latest-request.js'
 import { renderMarkdown } from './web-markdown-preview.js'
+import { KnowledgeActivityMarkdown } from './knowledge-activity-markdown.js'
 
 interface NotesPaneProps {
   sessionId: string
@@ -156,7 +157,7 @@ export function KnowledgeActivityNotes({ sessionId, projectId, controller }: Not
       {listState === 'loading' && nodes.length === 0 ? <ActivityState label="正在读取笔记…" />
         : listState === 'error' ? <ActivityError error={error} onRetry={() => setRefresh(value => value + 1)} />
           : nodes.length === 0 ? <ActivityEmpty query={query} />
-            : nodes.map(node => <button type="button" key={node.id} className="dsh-knowledge-activity-row" disabled={node.kind !== 'folder' && !node.editable} onClick={() => openNode(node)}>
+            : nodes.map(node => <button type="button" key={node.id} className="dsh-knowledge-activity-row" title={node.name} disabled={node.kind !== 'folder' && !node.editable} onClick={() => openNode(node)}>
               <span className="dsh-knowledge-activity-row-icon">{node.kind === 'folder' ? <IconFolderOpenOutline16 size={16} /> : <IconDataOutline16 size={16} />}</span>
               <span className="dsh-knowledge-activity-row-copy"><strong>{node.name}</strong><small>{node.kind === 'folder' ? '目录' : node.editable ? formatSize(node.size) : '暂不支持侧栏预览'}</small></span>
               <span className="dsh-knowledge-activity-row-meta"><time dateTime={node.updatedAt}>{formatDate(node.updatedAt)}</time>{node.kind === 'folder' && <IconChevronRightOutline14 size={13} />}</span>
@@ -183,9 +184,9 @@ function NoteReader({ value, state, error, onBack, onRetry }: {
         : value === undefined ? <ActivityState label="正在准备笔记…" />
           : <><div className="dsh-knowledge-activity-document-heading">
             <span className="dsh-knowledge-activity-document-icon"><IconDataOutline16 size={18} /></span>
-            <div><h2>{value.node.name}</h2><p>笔记文档 · {formatSize(value.node.size)}</p></div>
+            <div><h2 title={value.node.name}>{value.node.name}</h2><p>笔记文档 · {formatSize(value.node.size)}</p></div>
           </div>
-          <article className="dsh-knowledge-activity-markdown" dangerouslySetInnerHTML={{ __html: html }} /></>}
+          <KnowledgeActivityMarkdown html={html} /></>}
   </div>
 }
 

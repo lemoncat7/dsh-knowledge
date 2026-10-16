@@ -38,6 +38,17 @@ export const KNOWLEDGE_FONTS = {
   '--font-mono': '"SFMono-Regular", "Cascadia Code", Menlo, Consolas, monospace',
 }
 
+/** One interaction scale for the management page and host-owned React surfaces. */
+export const KNOWLEDGE_INTERACTION = {
+  '--knowledge-radius-control': '12px',
+  '--knowledge-radius-menu': '15px',
+  '--knowledge-radius-dialog': '24px',
+  '--knowledge-motion-control': '160ms',
+  '--knowledge-motion-menu': '150ms',
+  '--knowledge-motion-dialog': '220ms',
+  '--knowledge-motion-ease': 'cubic-bezier(.22, 1, .36, 1)',
+}
+
 /** SSH-aligned frost for host-side activity and embedded panes; reading tint stays independent. */
 export const KNOWLEDGE_EMBEDDED_MATERIAL: Record<KnowledgeColorScheme, Readonly<Record<string, string>>> = {
   light: {
@@ -58,7 +69,7 @@ function declarations(tokens: Readonly<Record<string, string>>): string {
 
 export function knowledgeDesignCss(scope = ':root', dark = ':root[data-color-scheme="dark"]', systemMode = true): string {
   const themeTokens = (scheme: KnowledgeColorScheme): string => declarations(KNOWLEDGE_PALETTE[scheme]) + declarations(KNOWLEDGE_EMBEDDED_MATERIAL[scheme])
-  const base = scope + '{' + declarations(KNOWLEDGE_FONTS) + themeTokens('light') + '}'
+  const base = scope + '{' + declarations(KNOWLEDGE_FONTS) + declarations(KNOWLEDGE_INTERACTION) + themeTokens('light') + '}'
   const darkRule = dark + '{' + themeTokens('dark') + '}'
   const automatic = systemMode ? '@media(prefers-color-scheme:dark){' + scope + ':not([data-color-scheme]){' + themeTokens('dark') + '}}' : ''
   return base + automatic + darkRule

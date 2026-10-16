@@ -3,7 +3,7 @@ import test from 'node:test'
 import { mergeActivitySelection, availableActivitySession } from '../lib/knowledge-activity-state.js'
 import { LatestRequest } from '../lib/latest-request.js'
 import { createModelCatalogLoader } from '../web/model-catalog.js'
-import { knowledgeDesignCss, KNOWLEDGE_PALETTE } from '../lib/design-tokens.js'
+import { knowledgeDesignCss, KNOWLEDGE_PALETTE, KNOWLEDGE_INTERACTION } from '../lib/design-tokens.js'
 import { readFile } from 'node:fs/promises'
 
 test('blank or not-yet-loaded sessions use the workspace instead of a zero-width details column', () => {
@@ -72,4 +72,11 @@ test('generated design asset uses the canonical palette and scoped host rules st
   assert.ok(css.includes(KNOWLEDGE_PALETTE.dark['--text']))
   assert.ok(!css.includes(':root'))
   assert.ok(!css.includes('@media'))
+})
+
+test('workspace and scoped host surfaces receive the same interaction tokens', () => {
+  for (const [name, value] of Object.entries(KNOWLEDGE_INTERACTION)) {
+    assert.ok(knowledgeDesignCss().includes(`${name}:${value};`))
+    assert.ok(knowledgeDesignCss('.plugin', '.dark .plugin', false).includes(`${name}:${value};`))
+  }
 })

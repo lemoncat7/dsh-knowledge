@@ -1,15 +1,17 @@
 import { readFileSync } from 'node:fs'
 import { createHash, timingSafeEqual } from 'node:crypto'
+import { gzipSync } from 'node:zlib'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { RuntimeContextLike } from './runtime.js'
 
 interface Asset {
   body: Buffer
   contentType: string
+  gzip?: Buffer
 }
 
 const STATIC_ASSETS = new Map<string, Asset>([
-  ...['infinite-scroll', 'lazy-resources', 'model-catalog', 'dialogs', 'select-control', 'document-actions', 'document-sync', 'document-sync-ui', 'writeback-workspace', 'writeback-live', 'worklog-workspace', 'base-groups', 'document-groups'].map(name => [
+  ...['workspace-shell', 'infinite-scroll', 'lazy-resources', 'model-catalog', 'dialogs', 'dialog-steps', 'discard-confirmation', 'select-control', 'document-actions', 'document-sync', 'document-sync-ui', 'writeback-workspace', 'writeback-live', 'worklog-workspace', 'base-groups', 'document-groups'].map(name => [
     `${name}.js`, loadAsset(`../web/${name}.js`, 'text/javascript; charset=utf-8'),
   ] as [string, Asset]),
   ['app.js', loadAsset('../web/app.js', 'text/javascript; charset=utf-8')],
@@ -23,6 +25,8 @@ const STATIC_ASSETS = new Map<string, Asset>([
   ['ui-primitives.js', loadAsset('../web/ui-primitives.js', 'text/javascript; charset=utf-8')],
   ['design-tokens.css', loadAsset('../web/design-tokens.css', 'text/css; charset=utf-8')],
   ['styles.css', loadAsset('../web/styles.css', 'text/css; charset=utf-8')],
+  ['interaction-theme.css', loadAsset('../web/interaction-theme.css', 'text/css; charset=utf-8')],
+  ['discard-confirmation.css', loadAsset('../web/discard-confirmation.css', 'text/css; charset=utf-8')],
 ])
 const ASSET_VERSION = assetVersion(STATIC_ASSETS.values())
 const INDEX_TEMPLATE = readFileSync(new URL('../web/index.html', import.meta.url), 'utf8')
@@ -77,17 +81,22 @@ function serveWeb(
     res.end()
     return
   }
-  sendAsset(res, method, asset)
+  sendAsset(res, method, asset, false, req.headers['accept-encoding'])
 }
 
-function sendAsset(res: ServerResponse, method: string, asset: Asset, embedded = false): void {
+function sendAsset(res: ServerResponse, method: string, asset: Asset, embedded = false, acceptEncoding = ''): void {
+  const gzipAllowed = acceptEncoding.split(',').some(part => /^gzip\s*(?:;\s*q\s*=\s*(?:1(?:\.0*)?|0\.\d*[1-9]\d*))?\s*$/i.test(part.trim()))
+  const compressed = gzipAllowed && asset.gzip !== undefined
+  const body = compressed ? asset.gzip! : asset.body
   res.writeHead(200, {
     ...securityHeaders(embedded),
     'content-type': asset.contentType,
-    'content-length': asset.body.byteLength,
+    'content-length': body.byteLength,
+    vary: 'Accept-Encoding',
+    ...(compressed ? { 'content-encoding': 'gzip' } : {}),
     'cache-control': asset.contentType.startsWith('text/html') ? 'no-store' : 'public, max-age=31536000, immutable',
   })
-  res.end(method === 'HEAD' ? undefined : asset.body)
+  res.end(method === 'HEAD' ? undefined : body)
 }
 
 function securityHeaders(embedded = false): Record<string, string> {
@@ -113,7 +122,9 @@ function hasValidEmbedToken(rawUrl: string | undefined, expected: string): boole
 }
 
 function loadAsset(path: string, contentType: string): Asset {
-  return { body: readFileSync(new URL(path, import.meta.url)), contentType }
+  const body = readFileSync(new URL(path, import.meta.url))
+  const gzip = body.length >= 1024 ? gzipSync(body) : undefined
+  return { body, contentType, ...(gzip && gzip.length < body.length ? { gzip } : {}) }
 }
 
 function assetVersion(assets: Iterable<Asset>): string {
