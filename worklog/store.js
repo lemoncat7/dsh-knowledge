@@ -1,9 +1,11 @@
 import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import { defaults, fail, settings, text, validDay } from './domain.js'
 import { scheduledDay } from './scheduler.js'
+import { prepareBatches, batchProgress } from './batches.js'
+import { recoverDay } from './recovery.js'
 
 // SQLite transactions are short and never span a model/network request.
 export class Store {
@@ -25,13 +27,21 @@ export class Store {
     this.db.exec('PRAGMA user_version=1')
     this.db.exec('CREATE TABLE IF NOT EXISTS journal_imports (id TEXT PRIMARY KEY)')
     this.db.exec('CREATE TABLE IF NOT EXISTS local_projects (id TEXT PRIMARY KEY)')
+    this.db.exec('CREATE INDEX IF NOT EXISTS jobs_day ON jobs(day); CREATE INDEX IF NOT EXISTS records_day_excluded ON records(day,excluded)')
     this.migrateLocalProjects()
     this.db.prepare("UPDATE jobs SET status='queued' WHERE status='running'").run()
+    // Older releases stored preflight failures only in one global status field.
+    const last = this.scheduleState().last
+    if (last?.status === 'failed' && !this.db.prepare('SELECT 1 FROM jobs WHERE day=?').get(last.day)) {
+      this.db.prepare("INSERT INTO jobs VALUES (?,?,'failed',0,?,?)").run(randomUUID(), last.day, last.time || Date.now(), JSON.stringify({ error: last.message, preflight: true, fingerprint: '', legacy: true }))
+    }
   }
   config() { return { ...defaults, ...JSON.parse(this.db.prepare("SELECT value FROM meta WHERE key='settings'").get()?.value || '{}') } }
   version() { return `${this.instance}:${this.db.prepare('SELECT total_changes() AS count').get().count}` }
   configure(value, now = Date.now()) {
     const config = settings(value), previous = this.config(), state = this.scheduleState()
+    if (config.scheduleEnabled && !previous.scheduleEnabled) state.catchupSince = now
+    else if (config.scheduleEnabled && !Number.isFinite(state.catchupSince)) state.catchupSince = state.since ?? now
     if (config.scheduleEnabled && (!previous.scheduleEnabled || config.scheduleTime !== previous.scheduleTime || config.timezone !== previous.timezone)) state.since = now
     this.db.exec('BEGIN IMMEDIATE')
     try {
@@ -65,13 +75,14 @@ export class Store {
     try {
       const state = this.scheduleState(), day = scheduledDay(this.config(), state, now)
       const active = day && this.db.prepare("SELECT id FROM jobs WHERE day=? AND status IN ('queued','running')").get(day)
+      let enqueued = false
       if (day && !active) {
         const report = this.report(day), records = this.records(day)
         const last = { day, time: now, status: 'skipped', message: '' }
         if (report.edited) last.message = '日报有手工修改，未自动覆盖；可在对应日期手动整理。'
         else if (!records.some(r => !report.covered.includes(r.id))) last.message = '没有待整理的新素材，已跳过。'
         else {
-          try { last.jobId = this.enqueue(day); last.status = 'queued'; last.message = '已加入整理队列，可在对应日期查看进度或重试。' }
+          try { last.jobId = this.enqueue(day); enqueued = true; last.status = 'queued'; last.message = '已加入整理队列，可在对应日期查看进度或重试。' }
           catch (e) {
             if (!e.status) throw e
             last.status = 'failed'; last.message = e.message
@@ -79,6 +90,7 @@ export class Store {
         }
         this.setMeta('schedule', { ...state, last })
       }
+      if (!enqueued && !active) recoverDay(this, state, now)
       this.db.exec('COMMIT')
     } catch (e) { this.db.exec('ROLLBACK'); throw e }
   }
@@ -116,13 +128,14 @@ export class Store {
   report(day) { const row = this.db.prepare('SELECT * FROM reports WHERE day=?').get(day); return row ? { ...JSON.parse(row.body), revision: row.revision } : { revision: 0, markdown: '', covered: [], edited: false } }
   overview() {
     return { config: this.config(), scheduleLast: this.scheduleState().last || null, today: null, projects: this.db.prepare('SELECT id FROM local_projects ORDER BY id').all().map(p => p.id),
-      days: this.db.prepare('SELECT day FROM records UNION SELECT day FROM reports UNION SELECT day FROM history ORDER BY day DESC').all().map(d => d.day) }
+      days: this.db.prepare('SELECT day FROM records UNION SELECT day FROM reports UNION SELECT day FROM history UNION SELECT day FROM jobs ORDER BY day DESC').all().map(d => d.day),
+      failedDays: this.db.prepare("SELECT j.day FROM jobs j WHERE j.status='failed' AND j.rowid=(SELECT max(rowid) FROM jobs WHERE day=j.day) ORDER BY j.day DESC").all().map(r => r.day) }
   }
   detail(day) {
     const records = this.records(day, true), report = this.report(day)
     const job = this.db.prepare('SELECT * FROM jobs WHERE day=? ORDER BY rowid DESC LIMIT 1').get(day)
     return { day, records, report, pending: records.filter(r => !r.excluded && !report.covered.includes(r.id)).length,
-      job: job ? { ...job, body: JSON.stringify({ error: JSON.parse(job.body).error }) } : null,
+      job: job ? { ...job, body: JSON.stringify({ error: JSON.parse(job.body).error, progress: this.progress(job) }) } : null,
       history: this.db.prepare('SELECT id,body FROM history WHERE day=? ORDER BY id DESC LIMIT 30').all(day).map(r => ({ id: r.id, ...JSON.parse(r.body) })) }
   }
   save(day, markdown, expected, covered, edited = true) {
@@ -142,6 +155,12 @@ export class Store {
     if (typeof excluded !== 'boolean') throw fail('排除状态无效')
     if (!this.db.prepare('UPDATE records SET excluded=? WHERE id=?').run(+excluded, id).changes) throw fail('记录不存在', 404)
   }
+  progress(job) { try { return batchProgress(JSON.parse(job.body)) } catch { return null } }
+  fingerprint(day, records = this.records(day), route) {
+    const config = this.config()
+    route ||= config.provider && config.model ? { provider: config.provider, model: config.model } : records.findLast(r => r.route)?.route
+    return createHash('sha256').update(JSON.stringify({ records, route, revision: this.report(day).revision })).digest('hex')
+  }
   enqueue(day, allowReplace = false) {
     validDay(day)
     const active = this.db.prepare("SELECT id FROM jobs WHERE day=? AND status IN ('queued','running')").get(day)
@@ -151,9 +170,21 @@ export class Store {
     if (report.edited && !allowReplace) throw fail('日报有手工修改，请明确确认后再重新整理。', 409)
     const config = this.config()
     const route = config.provider && config.model ? { provider: config.provider, model: config.model } : records.findLast(r => r.route)?.route
-    if (!route) throw fail('尚无可用的会话模型。请在采集项目完成一轮对话，或在采集设置中指定日报模型。')
-    const id = randomUUID(), body = { revision: report.revision, records, route, error: '' }
-    if (JSON.stringify(body).length > 180000) throw fail('当天素材过多，请先排除无关记录后重试；尚未截断或覆盖日报。', 413)
+    const id = randomUUID(), fingerprint = this.fingerprint(day, records, route)
+    const body = { revision: report.revision, records, route, error: '', fingerprint }
+    try {
+      if (!route) throw fail('尚无可用的会话模型。请在采集设置中指定日报模型后重新整理。')
+      prepareBatches(body)
+    } catch (e) {
+      if (!e.status) throw e
+      this.db.prepare("INSERT INTO jobs VALUES (?,?,'failed',0,?,?)").run(id, day, Date.now(), JSON.stringify({ revision: report.revision, fingerprint, preflight: true, error: e.message, failedAt: Date.now() }))
+      throw e
+    }
+    const previous = this.db.prepare("SELECT body FROM jobs WHERE day=? AND status='failed' ORDER BY rowid DESC LIMIT 1").get(day)
+    if (previous) {
+      const old = JSON.parse(previous.body)
+      if (old.fingerprint === fingerprint && old.batch && !old.preflight) body.batch = old.batch
+    }
     this.db.prepare("INSERT INTO jobs VALUES (?,?,'queued',0,?,?)").run(id, day, Date.now(), JSON.stringify(body))
     return id
   }

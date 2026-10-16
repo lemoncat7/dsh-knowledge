@@ -102,15 +102,16 @@ test('failed preflight is visible and does not loop; transaction rollback permit
   s.configure({ ...config, provider: '', model: '' }, before)
   s.note('2026-09-30', '仅补记')
   s.schedule(due); assert.equal(s.scheduleState().last.status, 'failed')
-  s.schedule(due + 30000); assert.equal(count(s), 0)
+  s.schedule(due + 30000); assert.equal(count(s), 1)
+  assert.equal(s.db.prepare('SELECT status FROM jobs').get().status, 'failed')
   s.configure(config, before)
   const original = s.setMeta
   s.note('2026-10-01', '新素材')
   s.setMeta = () => { throw new Error('disk failure') }
   assert.throws(() => s.schedule(due + 86400000), /disk failure/)
-  assert.equal(count(s), 0); assert.equal(s.scheduleState().last.day, '2026-09-30')
+  assert.equal(count(s), 1); assert.equal(s.scheduleState().last.day, '2026-09-30')
   s.setMeta = original; s.schedule(due + 86400000)
-  assert.equal(count(s), 1)
+  assert.equal(count(s), 2)
 })
 
 test('disabling, cancelling and changing time cannot repeatedly trigger the same day', t => {

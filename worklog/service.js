@@ -13,6 +13,7 @@ export class JournalService {
     store.originId()
   }
   collect(session, turn) {
+    if (session.header.origin === 'subagent') return
     this.store.observe(session.header.cwd)
     const connection = { ...this.current() }, record = capture(session, turn, this.store.config())
     if (!record) return

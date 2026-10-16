@@ -1,4 +1,5 @@
 import { dayOf, fail, validDay, text } from './domain.js'
+import { sourceRoutes } from './sources.js'
 
 // Host web authentication remains mandatory. This header + Origin check is
 // CSRF protection, not a substitute for the host's authentication boundary.
@@ -39,6 +40,10 @@ export function handler(store, worker, authenticate = () => 401, models = async 
       if (dispatch) {
         if (!['GET', 'POST'].includes(req.method)) throw fail('请求方法不支持', 405)
         result = await dispatch(req.method, path, req.method === 'POST' ? await body(req) : {}, url.searchParams)
+      }
+      else if (['/day-summary', '/sources', '/source', '/history', '/exclude-batch'].includes(path)) {
+        result = sourceRoutes(store, req.method, path, req.method === 'POST' ? await body(req) : {}, url.searchParams)
+        if (result === undefined) throw fail('请求方法不支持', 405)
       }
       else if (req.method === 'GET' && path === '/version') result = { version: `${store.version()}:${dayOf(Date.now(), store.config().timezone)}` }
       else if (req.method === 'GET' && path === '/models') result = { providers: await models() }

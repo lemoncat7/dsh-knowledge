@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
 import { dayOf, fail, text, validDay } from './domain.js'
+import { sourceRoutes } from './sources.js'
 
-export const sharedKeys = ['timezone', 'provider', 'model', 'scheduleEnabled', 'scheduleTime']
+export const sharedKeys = ['timezone', 'provider', 'model', 'scheduleEnabled', 'scheduleTime', 'scheduleCatchup']
 export const captureKeys = ['enabled', 'scope', 'projects', 'recursiveProjects', 'excludedSessions']
 export const pick = (value, keys) => Object.fromEntries(keys.map(key => [key, value[key]]))
 export const sharedRevision = config => createHash('sha256').update(JSON.stringify(pick(config, sharedKeys))).digest('hex')
@@ -22,12 +23,15 @@ export function incomingRecord(value, sourceId, timezone) {
   if (sessionId !== null && (!Number.isSafeInteger(value.turn) || value.turn < 0)) throw fail('来源轮次无效')
   return { id: sourceKey(sourceId, originalId), originalId, sourceId, day: dayOf(value.time, timezone), time: value.time,
     project: string(value.project, 4096, true), user: string(value.user, 16000), answer: string(value.answer, 32000, true),
-    sessionId, turn: sessionId === null ? null : value.turn, truncated: value.truncated === true, route: null, excluded: value.excluded === true }
+    sessionId, turn: sessionId === null ? null : value.turn, truncated: value.truncated === true, route: null, excluded: value.excluded === true,
+    ...(value.captureKind === 'conversation' ? { captureKind: 'conversation' } : {}) }
 }
 
 /** Only called after Host or Knowledge bearer authorization. Never trusts client model routes. */
 export function createCentral(store, worker, models) {
   return async (method, path, data = {}, query = new URLSearchParams()) => {
+    const sourceResult = sourceRoutes(store, method, path, data, query)
+    if (sourceResult !== undefined) return sourceResult
     if (method === 'GET') {
       if (path === '/identity') return { id: store.originId(), protocol: 1 }
       if (path === '/version') return { version: `${store.version()}:${dayOf(Date.now(), store.config().timezone)}` }

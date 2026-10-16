@@ -48,6 +48,28 @@ function client(t, connection, path = ':memory:', request, defaultProject = '') 
   return { store, service, worker, calls: () => calls }
 }
 
+test('new source APIs remain central and preserve read/write permissions', async t => {
+  const c = await central(t), a = client(t, c.connection)
+  const child = session('internal-child'); child.header.origin = 'subagent'; child.header.cwd = '/internal-only'
+  a.service.collect(child, 1)
+  assert.equal(a.service.collectorState().projects.includes('/internal-only'), false)
+  a.service.collect(session('source-page-test'), 1); await a.service.outbox.tick()
+  const day = dayOf(Date.now(), config.timezone), query = new URLSearchParams({ day })
+  const page = await a.service.browser('GET', '/sources', {}, query)
+  assert.equal(page.total, 1); assert.equal(page.records[0].answer, undefined)
+  const summary = await a.service.browser('GET', '/day-summary', {}, query)
+  assert.equal(summary.total, 1); assert.equal(summary.records, undefined)
+  const id = page.records[0].id
+  const source = await a.service.browser('GET', '/source', {}, new URLSearchParams({ id }))
+  assert.equal(source.captureKind, 'conversation')
+  await a.service.browser('POST', '/exclude-batch', { ids: [id], excluded: true })
+  assert.equal(c.store.records(day).length, 0)
+  await a.service.browser('POST', '/exclude-batch', { ids: [id], excluded: false })
+  assert.equal(c.store.records(day).length, 1)
+  const readOnly = { ...c.connection, remoteToken: c.tokens.read }
+  await assert.rejects(requestCentral(readOnly, 'POST', '/exclude-batch', { ids: [id], excluded: true }), e => e.status === 403)
+})
+
 test('multiple collectors share central records, model catalog and report; never run local models', async t => {
   const c = await central(t), a = client(t, c.connection), b = client(t, c.connection)
   a.service.collect(session('same-id'), 1); b.service.collect(session('same-id'), 1)
