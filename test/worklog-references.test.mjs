@@ -80,7 +80,7 @@ test('valid grouped output saves on first attempt and all source links remain in
   } finally { await worker.close() }
 })
 
-test('invalid source stops after one call, preserves prior report and allows explicit retry', async t => {
+test('invalid source stops after one targeted repair, preserves prior report and allows explicit retry', async t => {
   const store = fixture(t)
   store.save(day, '已有有效日报', 0, [], false)
   const job = store.enqueue(day)
@@ -88,7 +88,7 @@ test('invalid source stops after one call, preserves prior report and allows exp
   const worker = new Worker(store, { async *stream() { calls++; yield { type: 'text-delta', text: invalid ? '完成 [依据:s:1,secret-fake]' : '完成 [依据:s:1,s:2]' } } })
   try {
     await worker.tick(); await worker.tick(); await worker.tick()
-    assert.equal(calls, 1)
+    assert.equal(calls, 2)
     assert.equal(store.job(job).status, 'failed')
     assert.equal(store.report(day).markdown, '已有有效日报')
     const payload = JSON.parse(store.job(job).body)
@@ -98,7 +98,7 @@ test('invalid source stops after one call, preserves prior report and allows exp
     invalid = false
     const retry = store.retry(job)
     await worker.tick()
-    assert.equal(store.job(retry).status, 'done'); assert.equal(calls, 2)
+    assert.equal(store.job(retry).status, 'done'); assert.equal(calls, 3)
   } finally { await worker.close() }
 })
 

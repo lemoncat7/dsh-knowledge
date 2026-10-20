@@ -41,7 +41,7 @@ export function handler(store, worker, authenticate = () => 401, models = async 
         if (!['GET', 'POST'].includes(req.method)) throw fail('请求方法不支持', 405)
         result = await dispatch(req.method, path, req.method === 'POST' ? await body(req) : {}, url.searchParams)
       }
-      else if (['/day-summary', '/sources', '/source', '/history', '/exclude-batch'].includes(path)) {
+      else if (['/day-summary', '/sources', '/source', '/history', '/exclude-batch', '/failure'].includes(path)) {
         result = sourceRoutes(store, req.method, path, req.method === 'POST' ? await body(req) : {}, url.searchParams)
         if (result === undefined) throw fail('请求方法不支持', 405)
       }

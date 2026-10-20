@@ -18,6 +18,16 @@ body[data-ds-dark-theme] .dsh-worklog{--wl-text:#e4e7eb;--wl-muted:#b1b8c0;--wl-
 .wl-help-tip>span{display:block}
 .wl-help-tip>span+span{margin-top:8px}
 .wl-saved-paths{margin:12px 0}
+.dsh-worklog .wl-failure{min-height:180px;overflow-wrap:anywhere}
+.dsh-worklog .wl-failure section{border-top:1px solid var(--wl-line);padding-block:12px}
+.dsh-worklog .wl-failure h3{font-size:14px;margin:0 0 8px}
+.dsh-worklog .wl-failure pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;background:var(--wl-hover);padding:12px;border-radius:8px;max-height:220px;overflow:auto}
+.dsh-worklog .wl-failure summary{cursor:pointer;padding-block:10px}
+.dsh-worklog .wl-failure-sources{display:grid;gap:4px;margin-bottom:12px}
+.dsh-worklog .wl-failure-sources button{display:flex;gap:12px;min-width:0;text-align:left;white-space:normal;background:transparent;border-color:transparent}
+.dsh-worklog .wl-failure-sources code{flex-shrink:0}
+.dsh-worklog .wl-failure-sources span{min-width:0;overflow-wrap:anywhere}
+.dsh-worklog .wl-job{flex-wrap:wrap}
 @media(pointer:coarse){.dsh-worklog .wl-help-button{width:44px;height:44px;min-height:44px;margin-block:-10px}}
 .wl-directory-picker{margin:4px 0 12px;min-width:0}
 .dsh-worklog .wl-directory-picker>p{font-size:12px;margin:8px 0}

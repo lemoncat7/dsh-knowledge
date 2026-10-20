@@ -20,6 +20,7 @@ export class Worker {
     this.active = job.id; this.controller = new AbortController()
     const timeout = setTimeout(() => this.controller?.abort(new Error('整理超时')), 180000)
     this.store.status(job.id, 'running', payload, attempts)
+    let step
     try {
       const valid = () => {
         const current = new Set(this.store.records(job.day).map(r => r.id))
@@ -27,7 +28,7 @@ export class Worker {
         if (this.store.report(job.day).revision !== payload.revision) throw fail('日报已被修改，请重新整理；你的草稿仍保留。', 409)
       }
       valid()
-      const step = nextBatch(payload)
+      step = nextBatch(payload)
       const result = await this.render(this.llm, step.payload, this.controller.signal)
       if (this.closed || this.store.job(job.id).status === 'cancelled') return
       valid()
@@ -47,7 +48,8 @@ export class Worker {
         const diagnostic = { ...(e.worklogDiagnostic || { code: this.controller.signal.aborted ? 'timeout' : 'request_error' }), retryable, elapsedMs: Date.now() - started, attempt: attempts, httpStatus: Number.isInteger(e.status) ? e.status : null }
         const message = e.worklogDiagnostic || [409, 413].includes(e.status) ? e.message : diagnostic.code === 'timeout' ? '整理超过 180 秒，已中止' : '模型请求或流式读取失败'
         const progress = retryable ? `第 ${attempts}/3 次` : `第 ${attempts} 次，已停止自动重试`
-        this.store.status(job.id, retry ? 'queued' : 'failed', { ...payload, diagnostic, failedAt: Date.now(), error: `${message}（${progress}，${diagnostic.code}）` }, attempts, Date.now() + attempts * 10000)
+        const failure = e.worklogFailure ? { ...e.worklogFailure, phase: payload.batch ? (payload.batch.level ? '合并摘要' : '分批整理') : '整理日报', batch: payload.batch ? payload.batch.index + 1 : null, sourceIds: step?.payload.records.map(record => record.id) || [] } : undefined
+        this.store.status(job.id, retry ? 'queued' : 'failed', { ...payload, diagnostic, failure, failedAt: Date.now(), error: `${message}（${progress}，${diagnostic.code}）` }, attempts, Date.now() + attempts * 10000)
         this.onError({ jobId: job.id, day: job.day, ...diagnostic })
       }
     } finally { clearTimeout(timeout); this.active = null; this.controller = null }

@@ -14,6 +14,7 @@ test('bundled runtime normalizes grouped references and preserves reports on inv
       async *stream(request) {
         calls++
         const records = JSON.parse(request.messages[0].content[0].text)
+        if (!Array.isArray(records)) { yield { type: 'text-delta', text: '{"repairs":[]}' }; return }
         yield { type: 'text-delta', text: `完成 [依据: ${records[0].id}， ${invalid ? 'missing-source' : records[1].id} ]` }
       },
     },
@@ -44,7 +45,7 @@ test('bundled runtime normalizes grouped references and preserves reports on inv
   const second = await completed((await api('POST', '/generate', { day })).id)
   assert.equal(second.job.status, 'failed')
   assert.equal(second.job.attempts, 1)
-  assert.equal(calls, 2)
+  assert.equal(calls, 3)
   assert.match(JSON.parse(second.job.body).error, /已停止自动重试/)
   assert.equal(second.report.markdown, first.report.markdown)
 })

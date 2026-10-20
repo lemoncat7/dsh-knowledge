@@ -1,4 +1,22 @@
 import { fail, validDay } from './domain.js'
+import { referenceAlias } from './reference-context.js'
+
+// Authenticated, on-demand only: never included in the polled day summary.
+export function failureDetail(store, query) {
+  const id = query.get('id'), page = Number(query.get('page') || 0), limit = 30
+  if (!id || id.length > 4096 || !Number.isSafeInteger(page) || page < 0 || page > 100000) throw fail('失败详情参数无效')
+  const job = store.job(id)
+  if (!job || job.day !== validDay(query.get('day'))) throw fail('整理任务不存在', 404)
+  const payload = JSON.parse(job.body), failure = payload.failure
+  const records = payload.records || [], byId = new Map(records.map(record => [record.id, record]))
+  const sourceIds = failure?.sourceIds || records.map(record => record.id)
+  return { id: job.id, day: job.day, status: job.status, code: payload.diagnostic?.code || '', failedAt: payload.failedAt,
+    detail: failure ? { phase: failure.phase, batch: failure.batch, total: failure.total, repairAttempted: failure.repairAttempted, repairResult: failure.repairResult, issues: failure.issues } : null,
+    sources: sourceIds.slice(page * limit, (page + 1) * limit).map((id, index) => {
+      const record = byId.get(id)
+      return { id, alias: referenceAlias(page * limit + index), project: record?.project || '', time: record?.time }
+    }), total: sourceIds.length, page, limit }
+}
 
 function filters(query) {
   const where = [], args = []
@@ -62,6 +80,7 @@ export function excludeSources(store, data) {
   } catch (e) { store.db.exec('ROLLBACK'); throw e }
 }
 export function sourceRoutes(store, method, path, data, query) {
+  if (method === 'GET' && path === '/failure') return failureDetail(store, query)
   if (method === 'GET' && path === '/day-summary') return daySummary(store, query.get('day'))
   if (method === 'GET' && path === '/sources') return sourcePage(store, query)
   if (method === 'GET' && path === '/source') return sourceDetail(store, query.get('id'))

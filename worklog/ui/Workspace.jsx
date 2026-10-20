@@ -9,6 +9,7 @@ import { ActionMenu } from './ActionMenu.jsx'
 import { defaults } from '../domain.js'
 import { Sources, SourceViewer } from './Sources.jsx'
 import { History } from './History.jsx'
+import { FailureDetails } from './FailureDetails.jsx'
 
 const statuses = { queued: '等待整理', running: '正在整理', failed: '整理失败', cancelled: '已取消', done: '整理完成' }
 export function Workspace({ close, openSession, embedded = false, currentProject = '' }) {
@@ -91,6 +92,7 @@ export function Workspace({ close, openSession, embedded = false, currentProject
         </div>
         {detail.job && <div className="wl-job" role="status"><span>{statuses[detail.job.status]}{detail.job.error && ` · ${detail.job.error}`}{active && detail.job.progress && ` · ${detail.job.progress.phase} ${detail.job.progress.current}/${detail.job.progress.total}，已保存 ${detail.job.progress.completed} 批`}</span>
           {active && <button disabled={busy} onClick={() => act('/cancel', { id: detail.job.id })}>取消</button>}
+          {detail.job.status === 'failed' && <button onClick={() => setModal('failure')}>查看失败详情</button>}
           {['failed', 'cancelled'].includes(detail.job.status) && <button disabled={busy} onClick={generate}>重新整理</button>}
         </div>}
         {detail.report.markdown ? <article className="wl-document"><Markdown text={detail.report.markdown} onEvidence={setEvidence} /></article> : <div className="wl-empty"><h3>把今天做的事，整理成一份日报</h3><p>只采集用户会话，不采集内部委派子会话；整理时才调用模型。</p></div>}
@@ -100,12 +102,13 @@ export function Workspace({ close, openSession, embedded = false, currentProject
     {message && <div className="wl-feedback" role="status">{message}</div>}
     {dates && <Dialog title="选择日期" close={() => setDates(false)}>{dayList}</Dialog>}
     {evidence && <SourceViewer key={evidence} id={evidence} close={() => setEvidence(null)} time={time} localSource={localSource} visit={visit} openSession={openSession} />}
-    {modal && <Dialog key={modal} title={{ settings: '工作记录 · 采集设置', note: '补记一条', edit: '编辑日报', history: '历史版本', replace: '重新整理日报' }[modal]} busy={busy} protectChanges={['settings', 'note', 'edit'].includes(modal)} dirty={modal === 'settings' ? settingsDirty : modal === 'edit' ? draft !== detail.report.markdown : modal === 'note' ? !!draft.trim() : undefined} close={() => !busy && setModal('')}>
+    {modal && <Dialog key={modal} title={{ failure: '整理失败详情', settings: '工作记录 · 采集设置', note: '补记一条', edit: '编辑日报', history: '历史版本', replace: '重新整理日报' }[modal]} busy={busy} protectChanges={['settings', 'note', 'edit'].includes(modal)} dirty={modal === 'settings' ? settingsDirty : modal === 'edit' ? draft !== detail.report.markdown : modal === 'note' ? !!draft.trim() : undefined} close={() => !busy && setModal('')}>
       {error && <p className="wl-error" role="alert">{error}</p>}
       {modal === 'settings' && <Settings state={state} currentProject={currentProject} busy={busy} onDirtyChange={setSettingsDirty} saveCapture={config => act('/capture-settings', config)} save={config => act('/settings', config)} />}
       {['note', 'edit'].includes(modal) && <form id={editFormId} onSubmit={e => { e.preventDefault(); act(modal === 'note' ? '/note' : '/save', modal === 'note' ? { day, text: draft } : { day, markdown: draft, revision }) }}><label>{modal === 'note' ? '记录实际完成的工作、决定或待办' : 'Markdown 正文'}<textarea autoFocus rows={14} value={draft} onChange={e => setDraft(e.target.value)} required /></label><DialogActions><button type="submit" form={editFormId} disabled={busy || !draft.trim()} className="wl-primary">{busy ? '保存中…' : '保存'}</button></DialogActions></form>}
       {modal === 'replace' && <><p>日报包含手工修改。重新整理会替换正文，原版本保留在历史版本中。新整理期间的任何编辑都会阻止覆盖。</p><DialogActions><button disabled={busy} onClick={() => setModal('')}>保留正文</button><button className="wl-primary" disabled={busy} onClick={() => act('/generate', { day, allowReplace: true })}>确认重新整理</button></DialogActions></>}
       {modal === 'history' && <History day={day} time={time} edit={markdown => { setDraft(markdown); setRevision(detail.report.revision); setModal('edit') }} />}
+      {modal === 'failure' && detail?.job && <FailureDetails key={detail.job.id} day={day} jobId={detail.job.id} onEvidence={setEvidence} />}
     </Dialog>}
   </section>
 }
