@@ -23,6 +23,7 @@ import { registerKnowledgeNoteTools } from './note-tools.js'
 import type { KnowledgeNoteHandleCodec } from './note-reference-handle.js'
 import { documentLifecycleTool } from './document-lifecycle-tool.js'
 import { documentGroupTools } from './document-group-tools.js'
+import { usageRecorder } from './recall-usage.js'
 
 const textOutput = {
   schema: { type: 'string' },
@@ -212,10 +213,13 @@ function searchTool(provider: KnowledgeProvider, codec: KnowledgeHandleCodec): T
       const query = requireNonEmptyString(args.query, 'query', 6000)
       const base = requireNonEmptyString(args.base, 'base', 200)
       const limit = optionalInteger(args.limit, 'limit', 1, 20) ?? 8
+      const recordUsage = usageRecorder(provider, agent)
       const mounts = selectMounts(await resolveRecallMounts(provider, agent, exec.signal), base)
       if (mounts.length === 0) return 'No knowledge bases are mounted for recall in this session.'
       const hits = await searchMountedKnowledge(provider, agent, mounts, query, limit, codec, exec.signal)
-      return formatSearchResults(query, hits)
+      const result = formatSearchResults(query, hits)
+      recordUsage('search', hits.map(hit => hit.entry.id))
+      return result
     },
   }
 }
@@ -242,8 +246,11 @@ function readTool(provider: KnowledgeProvider, codec: KnowledgeHandleCodec): Too
       const handle = requireNonEmptyString(args.handle, 'handle', 4096)
       const offset = optionalInteger(args.offset, 'offset', 0, 1_000_000) ?? 0
       const maxChars = optionalInteger(args.maxChars, 'maxChars', 500, 20_000) ?? 12_000
+      const recordUsage = usageRecorder(provider, agent)
       const { entry, mount } = await readMountedKnowledge(provider, agent, handle, codec, exec.signal)
-      return formatKnowledgeEntry(entry, mount, offset, maxChars)
+      const result = formatKnowledgeEntry(entry, mount, offset, maxChars)
+      recordUsage('read', [entry.id])
+      return result
     },
   }
 }

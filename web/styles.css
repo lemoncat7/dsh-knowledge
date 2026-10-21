@@ -1,3 +1,57 @@
+.recall-workspace { min-width: 0; display: grid; gap: 16px; }
+.recall-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.recall-toolbar .input { width: auto; min-width: 120px; max-width: 100%; }
+.recall-workspace .recall-toolbar > .knowledge-select { flex: 0 1 auto; width: auto; min-width: 120px; max-width: 220px; }
+.recall-workspace .recall-toolbar > .knowledge-select .knowledge-select-trigger { width: 100%; }
+.recall-toolbar input[type="search"] { flex: 1 1 200px; }
+.recall-summary { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 12px; color: var(--text-secondary); }
+.recall-summary details { max-width: 500px; }
+.recall-summary summary { cursor: pointer; }
+.recall-summary p { line-height: 1.6; }
+.recall-table-wrap { min-height: 240px; }
+.recall-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 13px; }
+/* A theme-relative wash, not an opaque menu surface. Focus stays on the
+   control's :focus-visible outline so closing a dialog cannot latch the row. */
+.recall-table tbody tr[data-recall-id]:hover {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+.recall-table th, .recall-table td { border-bottom: 1px solid var(--separator); padding: 10px 6px; text-align: right; font-variant-numeric: tabular-nums; }
+.recall-table th { color: var(--text-secondary); font-size: 12px; font-weight: 500; }
+.recall-table th:first-child, .recall-table td:first-child { width: 30px; text-align: left; }
+.recall-table th:nth-child(2), .recall-table td:nth-child(2) { width: 36%; text-align: left; }
+.recall-table th:last-child, .recall-table td:last-child { width: 110px; }
+.recall-table input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; }
+.recall-table .recall-title { width: 100%; display: block; text-align: left; white-space: normal; overflow-wrap: anywhere; padding: 0; min-height: 28px; }
+.recall-table small { display: block; font-size: 12px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.recall-table .recall-empty { text-align: center; padding: 56px 12px; color: var(--text-secondary); }
+.recall-bulk, .recall-detail-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.recall-bulk[hidden] { display: none; }
+.recall-bulk { padding: 8px; background: var(--surface-highlight); border-radius: var(--radius-small); }
+.recall-form { display: grid; gap: 16px; }
+.recall-form label { display: grid; gap: 6px; font-size: 13px; }
+.recall-form .input { width: 100%; }
+.recall-detail-tabs [aria-pressed="true"] { border-color: var(--text-secondary); background: var(--surface-highlight); }
+.recall-history-item { padding: 12px 0; border-bottom: 1px solid var(--separator); overflow-wrap: anywhere; }
+.recall-history-item p { margin: 6px 0; }
+.recall-history-item time, .recall-history-item small { font-size: 12px; color: var(--text-secondary); }
+.recall-error { color: var(--danger, var(--text)); overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .recall-table thead { display: none; }
+  .recall-table tbody { display: grid; gap: 12px; }
+  .recall-table tr { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-bottom: 1px solid var(--separator); padding-bottom: 8px; }
+  .recall-table th, .recall-table td, .recall-table td:first-child, .recall-table td:nth-child(2), .recall-table td:last-child { width: auto; text-align: left; border: 0; padding: 4px; }
+  .recall-table td:first-child { grid-column: 1; }
+  .recall-table td:nth-child(2) { grid-row: 1; grid-column: 2 / 4; }
+  .recall-table td:nth-child(3)::before { content: '召回 '; }
+  .recall-table td:nth-child(4)::before { content: '会话 '; }
+  .recall-table td:nth-child(5)::before { content: '阅读 '; }
+  .recall-table td:nth-child(6)::before { content: '摩擦 '; }
+  .recall-table td:nth-child(7)::before { content: '优先级 '; }
+  .recall-table .small { padding: 6px; min-height: 36px; white-space: normal; }
+  .recall-toolbar .input { font-size: 16px; flex: 1 1 120px; }
+  .recall-workspace .recall-toolbar > .knowledge-select { flex: 1 1 120px; max-width: 100%; }
+  .recall-empty { grid-column: 1 / -1; }
+}
 .document-sync-notice {
   flex: 1 0 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
   padding: 8px 0 0; color: var(--text); font-size: 12px;
@@ -2110,18 +2164,18 @@ html,
 
 /* Management pages own one bounded content scroller. The translucent header
    stays outside it, so rows never paint underneath the title. */
-.app-shell:is([data-view="bases"], [data-view="writeback"], [data-view="candidates"]) .main {
+.app-shell:is([data-view="bases"], [data-view="writeback"], [data-view="candidates"], [data-view="recall"]) .main {
   height: calc(100dvh - var(--chrome-inset) * 2);
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
-.app-shell:is([data-view="bases"], [data-view="writeback"], [data-view="candidates"]) .topbar {
+.app-shell:is([data-view="bases"], [data-view="writeback"], [data-view="candidates"], [data-view="recall"]) .topbar {
   position: relative;
   flex: none;
 }
-.app-shell:is([data-view="bases"], [data-view="writeback"], [data-view="candidates"]) .page {
+.app-shell:is([data-view="bases"], [data-view="writeback"], [data-view="candidates"], [data-view="recall"]) .page {
   flex: 1 1 auto;
   min-height: 0;
   contain: layout paint;
@@ -2130,7 +2184,7 @@ html,
   overscroll-behavior-y: contain;
   padding-bottom: max(20px, env(safe-area-inset-bottom));
 }
-.app-shell:is([data-view="bases"], [data-view="writeback"], [data-view="candidates"]) .view-stage {
+.app-shell:is([data-view="bases"], [data-view="writeback"], [data-view="candidates"], [data-view="recall"]) .view-stage {
   min-height: 0;
 }
 .writeback-workspace .button[aria-pressed="true"] {
@@ -2139,7 +2193,7 @@ html,
   color: var(--text);
 }
 @media (max-width: 1120px), (hover: none) and (pointer: coarse) and (max-width: 1400px) {
-  .app-shell:is([data-view="bases"], [data-view="writeback"], [data-view="candidates"]) .main { height: 100dvh; }
+  .app-shell:is([data-view="bases"], [data-view="writeback"], [data-view="candidates"], [data-view="recall"]) .main { height: 100dvh; }
 }
 
 @media (prefers-reduced-motion: reduce) {

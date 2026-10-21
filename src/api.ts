@@ -11,6 +11,7 @@ import type { RuntimeContextLike } from './runtime.js'
 import { isNoteId, type NoteReference, type NoteListRequest } from './notes/domain.js'
 import { renderNoteSharePage } from './notes/share-page.js'
 import { createNoteShareManifest, importNoteShare, inspectNoteShareUrl, type NoteShareRequestPolicy } from './notes/share-import.js'
+import type { RecallUsage, RecallPreferencePatch, FrictionInput } from './recall-ranking.js'
 
 const MAX_BODY_BYTES = 1_048_576
 const MAX_NOTE_BODY_BYTES = 64 * 1024 * 1024
@@ -117,6 +118,30 @@ async function dispatch(
   }
 
   const actor = options.authMode === 'same-origin' ? authenticateSameOrigin(req) : authenticateBearer(provider, req)
+
+  if (segments[0] === 'recall') {
+    requirePermission(actor.permissions, 'read')
+    const id = segments[1]
+    if (method === 'GET' && segments.length === 1) return sendJson(res, 200, { ...provider.recallRanking.list({ days: Number(url.searchParams.get('days') ?? 30), limit: Number(url.searchParams.get('limit') ?? 30), base: url.searchParams.get('base') || '', query: url.searchParams.get('q') || '', sort: url.searchParams.get('sort') || 'recalls', cursor: url.searchParams.get('cursor') || '' }), canManage: actor.permissions.includes('admin') })
+    if (method === 'POST' && id === 'usage' && segments.length === 2) {
+      await provider.recordRecallUsage(await readObject(req) as unknown as RecallUsage, undefined, actor.id)
+      return sendJson(res, 200, { recorded: true })
+    }
+    if (id && method === 'GET' && segments.length === 2) return sendJson(res, 200, provider.recallRanking.detail(id, url.searchParams.get('kind') || 'incidents', Number(url.searchParams.get('before') ?? Number.MAX_SAFE_INTEGER)))
+    requirePermission(actor.permissions, 'admin')
+    if (id === 'preferences' && method === 'POST' && segments.length === 2) {
+      const data = await readObject(req)
+      return sendJson(res, 200, provider.recallRanking.patchMany(data.items as { id: string; revision: number }[], data.priority as number))
+    }
+    if (id && method === 'PATCH' && segments.length === 2) return sendJson(res, 200, provider.recallRanking.patch(id, await readObject(req) as unknown as RecallPreferencePatch))
+    if (id && method === 'POST' && segments[2] === 'incidents' && segments.length === 3) return sendJson(res, 200, provider.recallRanking.incident(id, await readObject(req) as unknown as FrictionInput))
+    if (id && method === 'POST' && segments[2] === 'incidents' && segments[3] && segments[4] === 'retract' && segments.length === 5) {
+      const data = await readObject(req)
+      provider.recallRanking.retract(id, segments[3], data.reason as string)
+      return sendJson(res, 200, { retracted: true })
+    }
+    throw httpError(404, '召回排行接口不存在')
+  }
 
   if (segments[0] === 'worklog') {
     if (!['GET', 'POST'].includes(method) || segments.length !== 2) throw httpError(404, '日报接口不存在')

@@ -233,6 +233,8 @@ export interface SearchRequest {
 export interface SearchHit {
   entry: KnowledgeEntry
   score: number
+  /** Bounded re-ranking only; never used for relevance admission. */
+  rankScore?: number
 }
 
 export interface ListRequest {

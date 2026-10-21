@@ -11,6 +11,7 @@ import { knowledgeDocumentPath } from './documents/path.js'
 import { mapConcurrent } from './async-pool.js'
 import { SessionReferences } from './session-references.js'
 import { compareNames } from './collation.js'
+import { compareRecallHits } from './recall-ranking.js'
 
 interface HandlePayload {
   v: 1
@@ -132,7 +133,7 @@ export async function searchMountedKnowledge(
     }))
   })
   return batches.flat()
-    .sort((left, right) => right.score - left.score || right.entry.updatedAt.localeCompare(left.entry.updatedAt))
+    .sort(compareRecallHits)
     .slice(0, boundedLimit)
 }
 
@@ -211,11 +212,11 @@ export function selectAutomaticRecallHits(
     if (current === undefined || hit.score > current.score) unique.set(hit.entry.id, hit)
   }
   return [...unique.values()]
-    .sort((left, right) => right.score - left.score || right.entry.updatedAt.localeCompare(left.entry.updatedAt))
+    .sort(compareRecallHits)
     .slice(0, boundedLimit)
 }
 
-export function formatAutomaticRecall(hits: MountedSearchResult[], maxChars: number): string {
+export function formatAutomaticRecall(hits: MountedSearchResult[], maxChars: number, included?: string[]): string {
   if (hits.length === 0) return ''
   let output = [
     '[Automatically retrieved knowledge for the current user request]',
@@ -226,6 +227,7 @@ export function formatAutomaticRecall(hits: MountedSearchResult[], maxChars: num
     const item = formatHit(hit)
     if (output.length + item.length > maxChars) break
     output += item
+    included?.push(hit.entry.id)
   }
   return output
 }

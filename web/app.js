@@ -32,6 +32,9 @@ const loadChangeReview = () => resources.script('change-review', 'DshKnowledgeRe
 let readModelCatalog
 let createWritebackWorkspace
 let createWorklogWorkspace
+let createRecallWorkspace
+let recallWorkspace
+const recallFilters = {}
 let baseGroups
 let writebackWorkspace
 let worklogWorkspace
@@ -50,7 +53,7 @@ const NOTE_MAX_FILE_SIZE = 64 * 1024 * 1024
 const pageParams = new URLSearchParams(location.search)
 const initialKnowledgeBaseId = pageParams.get('knowledgeBaseId')?.trim() || ''
 const initialDocumentId = pageParams.get('documentId')?.trim() || ''
-const initialView = ['notes', 'writeback', 'worklog'].includes(pageParams.get('view')) ? pageParams.get('view') : 'entries'
+const initialView = ['notes', 'writeback', 'worklog', 'recall'].includes(pageParams.get('view')) ? pageParams.get('view') : 'entries'
 const initialNoteId = pageParams.get('noteId')?.trim() || ''
 const mountContext = {
   sessionId: pageParams.get('sessionId')?.trim() || '',
@@ -303,6 +306,8 @@ function renderLogin(message = '') {
 }
 
 function signOut() {
+  recallWorkspace?.dispose()
+  recallWorkspace = undefined
   candidateCountController?.abort()
   candidateCountController = null
   candidateCountUpdatedAt = 0
@@ -355,6 +360,7 @@ async function navigate(view) {
   try {
     if (view === 'writeback') ({ createWritebackWorkspace } = await resources.module('writeback-workspace'))
     if (view === 'worklog') ({ createWorklogWorkspace } = await resources.module('worklog-workspace'))
+    if (view === 'recall') ({ createRecallWorkspace } = await resources.module('recall-workspace'))
     if (view === 'candidates') await Promise.all([loadChangeReview(), loadMarkdownPreview()])
     if (controller.signal.aborted) return
     if (view === 'overview') await loadOverview(controller.signal)
@@ -1144,6 +1150,8 @@ function renderShell() {
   window.clearTimeout(routeFeedbackTimer)
   routeFeedbackTimer = 0
   const navigationHadFocus = document.activeElement?.closest?.('[data-nav-view]') != null
+  recallWorkspace?.dispose()
+  recallWorkspace = undefined
   disposeInfiniteScroll()
   worklogWorkspace?.dispose()
   worklogWorkspace = undefined
@@ -1156,6 +1164,7 @@ function renderShell() {
     overview: ['概览', '知识库运行状态与最近活动'],
     bases: ['知识库与挂载', '管理知识目录，并限定项目与会话的召回和写入范围'],
     entries: ['知识文档', '在知识目录中阅读、整理和维护 Markdown 文档'],
+    recall: ['召回排行', '查看知识使用情况，调整优先级与防踩坑权重'],
     notes: ['笔记文档', '像本地目录一样整理笔记和资料，并按需关联到知识文档'],
     shares: ['已分享', '管理只读分享链接，也可以导入别人分享的笔记和目录'],
     candidates: ['待审核', '确认 AI 提取结果后再写入知识文档'],
@@ -1164,7 +1173,7 @@ function renderShell() {
     tokens: ['访问管理', '管理其他客户端连接中央知识库的权限'],
   }
   const [title, subtitle] = titles[state.view]
-  const viewIndexes = { overview: '00', notes: '01', shares: '02', entries: '03', candidates: '04', writeback: '05', bases: '06', worklog: '07', tokens: '08' }
+  const viewIndexes = { overview: '00', notes: '01', shares: '02', entries: '03', recall: '04', candidates: '05', writeback: '06', bases: '07', worklog: '08', tokens: '09' }
   const nextShell = element('div', {
     class: 'app-shell', 'data-menu-open': String(state.menuOpen),
     'data-view': state.view, 'data-loading': String(state.loading),
@@ -1366,7 +1375,7 @@ function renderSidebar() {
   const pending = state.candidateCounts?.pending
   const navGroups = [
     ['笔记工作区', [['notes', '笔记文档'], ['shares', '已分享']]],
-    ['知识工作区', [['entries', '知识文档'], ['candidates', '待审核'], ['writeback', '回写任务'], ['bases', '知识库与挂载']]],
+    ['知识工作区', [['entries', '知识文档'], ['recall', '召回排行'], ['candidates', '待审核'], ['writeback', '回写任务'], ['bases', '知识库与挂载']]],
     ['工作记录', [['worklog', '工作日报']]],
     ['连接', [['tokens', '访问管理']].filter(([id]) => id !== 'tokens' || !state.service.remote)],
   ].filter(([, items]) => items.length)
@@ -1394,6 +1403,14 @@ function renderCurrentView() {
   if (state.loading) return element('div', { class: 'route-placeholder', 'aria-hidden': 'true' },
     element('div', { class: 'route-placeholder-lines' }, ...Array.from({ length: 3 }, () => element('span', {}))))
   if (state.error) return errorView(state.error, () => navigate(state.view))
+  if (state.view === 'recall') {
+    recallWorkspace = createRecallWorkspace({ api, element, actionButton, openModal, filters: recallFilters, openDocument: async item => {
+      state.documentView.knowledgeBaseId = item.knowledgeBaseId
+      state.documentView.documentId = item.id
+      await navigate('entries')
+    } })
+    return recallWorkspace.root
+  }
   if (state.view === 'worklog') {
     worklogWorkspace = createWorklogWorkspace({ element, actionButton })
     return worklogWorkspace.root

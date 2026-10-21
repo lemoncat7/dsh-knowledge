@@ -1,5 +1,6 @@
 import type { ResolvedConfig } from './config.js'
 import type { KnowledgeProvider } from './provider.js'
+import { usageRecorder } from './recall-usage.js'
 import {
   formatAutomaticRecall,
   formatMountCatalog,
@@ -38,6 +39,7 @@ export function registerKnowledgeRecall(
     if (config.autoRecallLimit === 0) return sanitized
     const query = automaticRecallQuery(payload, sanitized)
     if (!shouldRecall(query)) return sanitized
+    const recordUsage = usageRecorder(provider, payload.agent, payload.turn)
     try {
       const mounts = await resolveRecallMounts(provider, payload.agent, payload.signal)
       if (mounts.length === 0) return sanitized
@@ -51,8 +53,10 @@ export function registerKnowledgeRecall(
         payload.signal,
       )
       const hits = selectAutomaticRecallHits(searched, config.autoRecallLimit, config.autoRecallMinScore)
-      const text = formatAutomaticRecall(hits, config.recallMaxChars)
+      const included: string[] = []
+      const text = formatAutomaticRecall(hits, config.recallMaxChars, included)
       if (text.length === 0) return sanitized
+      recordUsage('auto', included)
       return { kind: 'enter', messages: [...messages, createRecallMessage(text)] }
     } catch (error) {
       if (!payload.signal.aborted) {

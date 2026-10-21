@@ -60,6 +60,10 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     this.baseUrl = normalizeRemoteKnowledgeUrl(options.url)
   }
 
+  async recordRecallUsage(usage: import('./recall-ranking.js').RecallUsage, signal?: AbortSignal): Promise<void> {
+    await this.request('recall/usage', { method: 'POST', body: usage, signal })
+  }
+
   async getSettings(signal?: AbortSignal): Promise<KnowledgeSettings> {
     return this.request<KnowledgeSettings>('settings', { signal })
   }
