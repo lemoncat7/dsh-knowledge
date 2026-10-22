@@ -42,10 +42,10 @@ body[data-ds-dark-theme] :is(
   --knowledge-on-accent: var(--on-accent);
   --knowledge-danger: var(--danger);
   --knowledge-success: var(--success);
-  --knowledge-pane: rgb(25 33 35 / 90%);
+  --knowledge-pane: rgb(25 33 35 / 20%);
   --knowledge-header-surface: rgb(25 33 35 / 16%);
-  --knowledge-raised: rgb(32 41 43 / 94%);
-  --knowledge-control: rgb(39 50 53 / 92%);
+  --knowledge-raised: rgb(32 41 43 / 48%);
+  --knowledge-control: rgb(39 50 53 / 56%);
   --knowledge-border: var(--border);
   --knowledge-text: var(--text);
   --knowledge-text-secondary: var(--text-secondary);
@@ -676,4 +676,14 @@ body[data-ds-dark-theme] :is(
   .dsh-knowledge-settings-card :is(input, button),
   .dsh-knowledge-settings-card input::before,
   .dsh-knowledge-writeback-notice button { transition: none; }
+}
+/* Material belongs to this plugin; accessibility can explicitly make it solid. */
+@media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+  :is(body, body[data-ds-dark-theme]) :is(.dsh-knowledge-trigger, .dsh-knowledge-activity-panel, .dsh-knowledge-workspace, .dsh-knowledge-settings-card, .dsh-knowledge-writeback-notice) {
+    --knowledge-pane: var(--surface);
+    --knowledge-header-surface: var(--surface);
+    --knowledge-raised: var(--surface-raised);
+    --knowledge-control: var(--surface);
+    --knowledge-glass-filter: none;
+  }
 }
