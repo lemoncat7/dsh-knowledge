@@ -90,6 +90,11 @@ const EXTRACTION_LEASE_MS = 15 * 60 * 1000
 
 export class LocalKnowledgeProvider implements KnowledgeProvider {
   readonly recallRanking: RecallRankingStore
+
+  async recordRecallIncident(id: string, value: import('./recall-ranking.js').FrictionInput, signal?: AbortSignal): Promise<{ id: string }> {
+    signal?.throwIfAborted()
+    return this.recallRanking.incident(id, value)
+  }
   readonly mode = 'local' as const
   readonly notes: NoteStore
   private readonly db: DatabaseSync

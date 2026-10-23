@@ -54,6 +54,9 @@ export interface RemoteProviderOptions {
 
 export class RemoteKnowledgeProvider implements KnowledgeProvider {
   readonly mode = 'remote' as const
+  async recordRecallIncident(id: string, value: import('./recall-ranking.js').FrictionInput, signal?: AbortSignal): Promise<{ id: string }> {
+    return this.request(`recall/${encodeURIComponent(id)}/feedback`, { method: 'POST', body: value, signal })
+  }
   private readonly baseUrl: URL
 
   constructor(private readonly options: RemoteProviderOptions) {

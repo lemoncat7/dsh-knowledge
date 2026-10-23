@@ -207,6 +207,7 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
     'knowledge_note_search',
     'knowledge_note_update',
     'knowledge_read',
+    'knowledge_record_incident',
     'knowledge_search',
   ])
   const toolExec = { agent: { session }, signal: new AbortController().signal }
@@ -419,7 +420,7 @@ test('content write-back is not exposed to the main agent tool surface', async (
   assert.deepEqual([...tools.keys()].sort(), [
     'knowledge_base_create', 'knowledge_base_search', 'knowledge_base_update', 'knowledge_document_group_assign', 'knowledge_document_groups', 'knowledge_document_status', 'knowledge_note_confirm', 'knowledge_note_create',
     'knowledge_note_delete', 'knowledge_note_list', 'knowledge_note_move', 'knowledge_note_preview', 'knowledge_note_read',
-    'knowledge_note_references', 'knowledge_note_search', 'knowledge_note_update', 'knowledge_read', 'knowledge_search',
+    'knowledge_note_references', 'knowledge_note_search', 'knowledge_note_update', 'knowledge_read', 'knowledge_record_incident', 'knowledge_search',
   ])
 })
 

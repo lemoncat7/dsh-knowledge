@@ -23,6 +23,7 @@ import { registerKnowledgeNoteTools } from './note-tools.js'
 import type { KnowledgeNoteHandleCodec } from './note-reference-handle.js'
 import { documentLifecycleTool } from './document-lifecycle-tool.js'
 import { documentGroupTools } from './document-group-tools.js'
+import { recallIncidentTool } from './recall-incident-tool.js'
 import { usageRecorder } from './recall-usage.js'
 
 const textOutput = {
@@ -41,6 +42,7 @@ export function registerKnowledgeTools(
   ctx.tools.register(searchTool(provider, codec))
   ctx.tools.register(readTool(provider, codec))
   ctx.tools.register(documentLifecycleTool(provider, codec))
+  ctx.tools.register(recallIncidentTool(provider, codec))
   for (const tool of documentGroupTools(provider, codec)) ctx.tools.register(tool)
   ctx.tools.register(createKnowledgeBaseTool(provider, ctx.llm))
   ctx.tools.register(updateKnowledgeBaseTool(provider, ctx.llm))

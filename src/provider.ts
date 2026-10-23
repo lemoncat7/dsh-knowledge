@@ -36,6 +36,7 @@ import type { KnowledgeNoteReference, KnowledgeNoteReferenceSource, NoteListRequ
 
 /** Stable storage boundary shared by local SQLite and remote HTTP clients. */
 export interface KnowledgeProvider {
+  recordRecallIncident?(id: string, value: import('./recall-ranking.js').FrictionInput, signal?: AbortSignal): Promise<{ id: string }>
   recordRecallUsage?(usage: import('./recall-ranking.js').RecallUsage, signal?: AbortSignal): Promise<void>
   writebackProtocol?(signal?: AbortSignal): Promise<{ idempotentDirectWrites: boolean }>
   readonly mode: 'local' | 'remote'

@@ -128,6 +128,11 @@ async function dispatch(
       return sendJson(res, 200, { recorded: true })
     }
     if (id && method === 'GET' && segments.length === 2) return sendJson(res, 200, provider.recallRanking.detail(id, url.searchParams.get('kind') || 'incidents', Number(url.searchParams.get('before') ?? Number.MAX_SAFE_INTEGER)))
+    if (id && method === 'POST' && segments[2] === 'feedback' && segments.length === 3) {
+      requirePermission(actor.permissions, 'write')
+      const value = await readObject(req) as unknown as FrictionInput
+      return sendJson(res, 200, await provider.recordRecallIncident(id, value))
+    }
     requirePermission(actor.permissions, 'admin')
     if (id === 'preferences' && method === 'POST' && segments.length === 2) {
       const data = await readObject(req)
