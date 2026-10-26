@@ -116,7 +116,7 @@ test('central settings are shared while local capture scope stays local', async 
   const publicState = await requestCentral(c.connection, 'GET', '/state')
   assert.equal(publicState.config.enabled, undefined, 'central API must not disclose central local capture settings')
   assert.equal(publicState.config.recursiveProjects, undefined)
-  await a.service.browser('POST', '/settings', { ...state.config, sharedRevision: state.sharedRevision, enabled: false, projects: ['/only-a'], recursiveProjects: true, timezone: 'UTC', scheduleEnabled: true, scheduleTime: '22:30' })
+  await a.service.browser('POST', '/settings', { ...state.config, sharedRevision: state.sharedRevision, enabled: false, projects: ['/only-a'], recursiveProjects: true, timezone: 'UTC', scheduleEnabled: true, scheduleTime: '22:30', scheduleFallbackEnabled: true })
   const bs = await b.service.browser('GET', '/state')
   assert.equal(bs.config.timezone, 'UTC'); assert.equal(bs.config.scheduleTime, '22:30')
   assert.equal(bs.config.enabled, true); assert.deepEqual(bs.config.projects, [])
@@ -128,6 +128,8 @@ test('central settings are shared while local capture scope stays local', async 
   assert.equal(a.store.config().scheduleEnabled, false, 'central scheduler is not installed locally')
   assert.equal(c.store.config().enabled, true, 'remote UI cannot alter central collection authorization')
   await assert.rejects(b.service.browser('POST', '/settings', { ...state.config, sharedRevision: state.sharedRevision, scheduleTime: '21:00' }), e => e.status === 409)
+  assert.equal(c.store.config().scheduleFallbackEnabled, true)
+  assert.equal(a.calls(), 0, 'remote collectors must not run local models')
   assert.equal(c.store.config().scheduleTime, '22:30', 'stale settings must not overwrite another client')
 })
 

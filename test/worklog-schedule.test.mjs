@@ -10,7 +10,7 @@ import { scheduledDay, Scheduler } from '../worklog/scheduler.js'
 
 const at = text => Date.parse(text)
 const before = at('2026-09-30T14:00:00Z'), due = at('2026-09-30T15:00:00Z')
-const config = { ...defaults, scheduleEnabled: true, provider: 'test', model: 'test' }
+const config = { ...defaults, scheduleFallbackEnabled: false, scheduleEnabled: true, provider: 'test', model: 'test' }
 function setup(t) { const store = new Store(':memory:'); t.after(() => store.close()); store.configure(config, before); return store }
 function count(s) { return s.db.prepare('SELECT count(*) AS n FROM jobs').get().n }
 
@@ -21,7 +21,7 @@ test('schedule is opt-in; strict HH:mm validation and legacy settings stay disab
     assert.throws(() => settings({ ...config, scheduleTime }), /时间/)
   }
   assert.throws(() => settings({ ...config, scheduleEnabled: 'true' }), /时间/)
-  s.configure(defaults, before)
+  s.configure({ ...defaults, scheduleFallbackEnabled: false }, before)
   s.note('2026-09-30', '不应被自动整理')
   s.schedule(due); assert.equal(count(s), 0)
 })
@@ -141,4 +141,93 @@ test('scheduled jobs use the normal worker retry and completion path', async t =
   s.status(id, 'queued', JSON.parse(s.job(id).body), 1, 0)
   await worker.tick()
   assert.equal(s.job(id).status, 'done'); assert.equal(s.report('2026-09-30').markdown, '# 日报')
+})
+
+const fallbackDue = due + 30 * 60000
+
+test('fallback defaults on, validates its switch and runs independently at 23:30', t => {
+  const s = setup(t)
+  assert.equal(settings({ ...defaults, scheduleFallbackEnabled: undefined }).scheduleFallbackEnabled, true)
+  assert.throws(() => settings({ ...defaults, scheduleFallbackEnabled: 'true' }), /保底/)
+  s.configure({ ...config, scheduleEnabled: false, scheduleFallbackEnabled: true }, before)
+  s.note('2026-09-30', '全天素材')
+  s.schedule(fallbackDue - 1); assert.equal(count(s), 0)
+  s.schedule(fallbackDue); assert.equal(count(s), 1)
+  assert.equal(s.scheduleState().last, undefined)
+  assert.equal(s.overview().scheduleFallbackLast.jobId, s.scheduleState().fallbackLast.jobId)
+  s.schedule(fallbackDue + 30000); assert.equal(count(s), 1)
+})
+
+test('fallback incorporates late records after the regular report completed', async t => {
+  const s = setup(t)
+  s.configure({ ...config, scheduleFallbackEnabled: true }, before)
+  s.note('2026-09-30', '早期素材'); s.schedule(due)
+  let calls = 0
+  const worker = new Worker(s, {}, async () => `日报第 ${++calls} 次整理`)
+  worker.scheduler.tick = () => {} // Schedule explicitly on the simulated civil dates.
+  t.after(() => worker.close())
+  await worker.tick()
+  const first = s.scheduleState().last.jobId
+  s.note('2026-09-30', '定时之后的素材'); s.schedule(fallbackDue)
+  assert.equal(count(s), 2); assert.notEqual(s.scheduleState().fallbackLast.jobId, first)
+  await worker.tick()
+  assert.equal(s.report('2026-09-30').covered.length, 2)
+  assert.equal(calls, 2)
+  s.schedule(fallbackDue + 30000); assert.equal(count(s), 2)
+})
+
+test('simultaneous fallback waits for the regular report and skips covered records', t => {
+  const s = setup(t)
+  s.configure({ ...config, scheduleTime: '23:30', scheduleFallbackEnabled: true }, before)
+  s.note('2026-09-30', '同一时间只整理一次'); s.schedule(fallbackDue)
+  assert.equal(count(s), 1); assert.equal(s.scheduleState().fallbackLast, undefined)
+  const id = s.scheduleState().last.jobId, body = JSON.parse(s.job(id).body)
+  s.save('2026-09-30', '已整理', 0, body.records.map(r => r.id), false); s.status(id, 'done', body)
+  s.schedule(fallbackDue + 30000)
+  assert.equal(count(s), 1); assert.equal(s.scheduleState().fallbackLast.status, 'skipped')
+})
+
+test('fallback respects timezone, manual edits, disabling and enable boundaries', t => {
+  const s = setup(t)
+  s.configure({ ...config, scheduleEnabled: false, scheduleFallbackEnabled: true, timezone: 'UTC' }, before)
+  s.note('2026-09-30', '保留手工正文'); s.save('2026-09-30', '手工编辑', 0)
+  s.schedule(fallbackDue); assert.equal(s.scheduleState().fallbackLast, undefined)
+  s.schedule(at('2026-09-30T23:30Z')); assert.equal(count(s), 0)
+  assert.match(s.scheduleState().fallbackLast.message, /手工修改/)
+  s.configure({ ...config, scheduleEnabled: false, scheduleFallbackEnabled: false }, fallbackDue)
+  s.note('2026-10-01', '后续素材'); s.schedule(fallbackDue + 86400000); assert.equal(count(s), 0)
+  s.configure({ ...config, scheduleEnabled: false, scheduleFallbackEnabled: true }, fallbackDue + 86400000 + 60000)
+  s.schedule(fallbackDue + 86400000 + 120000); assert.equal(count(s), 0)
+})
+
+test('fallback persists across restart and catches the latest missed slot', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'worklog-fallback-')), file = join(dir, 'journal.sqlite')
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  let s = new Store(file)
+  s.configure(config, before)
+  s.configure({ ...config, scheduleEnabled: false, scheduleFallbackEnabled: true }, before)
+  s.note('2026-09-30', '晚间素材'); s.close(); s = new Store(file)
+  try {
+    s.schedule(at('2026-10-01T01:00Z')); assert.equal(count(s), 1)
+    const id = s.scheduleState().fallbackLast.jobId
+    s.close(); s = new Store(file); s.schedule(at('2026-10-01T02:00Z'))
+    assert.equal(count(s), 1); assert.equal(s.scheduleState().fallbackLast.jobId, id)
+  } finally { s.close() }
+})
+
+test('upgrade enables fallback once and preserves an explicit off switch across restarts', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'worklog-fallback-upgrade-')), file = join(dir, 'journal.sqlite')
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  let s = new Store(file)
+  const legacy = { ...config }; delete legacy.scheduleFallbackEnabled
+  s.setMeta('settings', legacy); s.setMeta('schedule', { since: before }); s.close()
+  const start = Date.now(); s = new Store(file)
+  assert.equal(s.config().scheduleFallbackEnabled, true)
+  const since = s.scheduleState().fallbackSince
+  assert.ok(since >= start && since <= Date.now())
+  s.close(); s = new Store(file)
+  assert.equal(s.scheduleState().fallbackSince, since)
+  s.configure({ ...s.config(), scheduleFallbackEnabled: false }); s.close()
+  s = new Store(file)
+  try { assert.equal(s.config().scheduleFallbackEnabled, false) } finally { s.close() }
 })

@@ -29,6 +29,12 @@ export class Store {
     this.db.exec('CREATE TABLE IF NOT EXISTS local_projects (id TEXT PRIMARY KEY)')
     this.db.exec('CREATE INDEX IF NOT EXISTS jobs_day ON jobs(day); CREATE INDEX IF NOT EXISTS records_day_excluded ON records(day,excluded)')
     this.migrateLocalProjects()
+    // Existing installations opt into the new fallback once, without replaying
+    // earlier days or changing an explicitly saved off switch.
+    const schedule = this.scheduleState()
+    if (this.config().scheduleFallbackEnabled && !Number.isFinite(schedule.fallbackSince)) {
+      this.setMeta('schedule', { ...schedule, fallbackSince: Date.now() })
+    }
     this.db.prepare("UPDATE jobs SET status='queued' WHERE status='running'").run()
     // Older releases stored preflight failures only in one global status field.
     const last = this.scheduleState().last
@@ -43,6 +49,7 @@ export class Store {
     if (config.scheduleEnabled && !previous.scheduleEnabled) state.catchupSince = now
     else if (config.scheduleEnabled && !Number.isFinite(state.catchupSince)) state.catchupSince = state.since ?? now
     if (config.scheduleEnabled && (!previous.scheduleEnabled || config.scheduleTime !== previous.scheduleTime || config.timezone !== previous.timezone)) state.since = now
+    if (config.scheduleFallbackEnabled && (!previous.scheduleFallbackEnabled || !Number.isFinite(state.fallbackSince) || config.timezone !== previous.timezone)) state.fallbackSince = now
     this.db.exec('BEGIN IMMEDIATE')
     try {
       this.setMeta('settings', config); this.setMeta('schedule', state)
@@ -73,10 +80,15 @@ export class Store {
     // A crash can neither lose the job after claiming a day nor enqueue it twice.
     this.db.exec('BEGIN IMMEDIATE')
     try {
-      const state = this.scheduleState(), day = scheduledDay(this.config(), state, now)
-      const active = day && this.db.prepare("SELECT id FROM jobs WHERE day=? AND status IN ('queued','running')").get(day)
-      let enqueued = false
-      if (day && !active) {
+      const state = this.scheduleState(), config = this.config()
+      let enqueued = false, active = false
+      // Each trigger owns its durable daily claim. The second pass can pick up
+      // material captured after the regular report, without competing jobs.
+      for (const fallback of [false, true]) {
+        const slot = fallback ? { since: state.fallbackSince, last: state.fallbackLast } : state
+        const day = scheduledDay(fallback ? { ...config, scheduleEnabled: config.scheduleFallbackEnabled, scheduleTime: '23:30' } : config, slot, now)
+        if (!day) continue
+        if (this.db.prepare("SELECT id FROM jobs WHERE day=? AND status IN ('queued','running')").get(day)) { active = true; continue }
         const report = this.report(day), records = this.records(day)
         const last = { day, time: now, status: 'skipped', message: '' }
         if (report.edited) last.message = '日报有手工修改，未自动覆盖；可在对应日期手动整理。'
@@ -88,7 +100,8 @@ export class Store {
             last.status = 'failed'; last.message = e.message
           }
         }
-        this.setMeta('schedule', { ...state, last })
+        state[fallback ? 'fallbackLast' : 'last'] = last
+        this.setMeta('schedule', state)
       }
       if (!enqueued && !active) recoverDay(this, state, now)
       this.db.exec('COMMIT')
@@ -127,7 +140,7 @@ export class Store {
   records(day, includeExcluded = false) { return this.db.prepare(`SELECT body,excluded FROM records WHERE day=? ${includeExcluded ? '' : 'AND excluded=0'} ORDER BY rowid`).all(day).map(r => ({ ...JSON.parse(r.body), excluded: !!r.excluded })) }
   report(day) { const row = this.db.prepare('SELECT * FROM reports WHERE day=?').get(day); return row ? { ...JSON.parse(row.body), revision: row.revision } : { revision: 0, markdown: '', covered: [], edited: false } }
   overview() {
-    return { config: this.config(), scheduleLast: this.scheduleState().last || null, today: null, projects: this.db.prepare('SELECT id FROM local_projects ORDER BY id').all().map(p => p.id),
+    return { config: this.config(), scheduleLast: this.scheduleState().last || null, scheduleFallbackLast: this.scheduleState().fallbackLast || null, today: null, projects: this.db.prepare('SELECT id FROM local_projects ORDER BY id').all().map(p => p.id),
       days: this.db.prepare('SELECT day FROM records UNION SELECT day FROM reports UNION SELECT day FROM history UNION SELECT day FROM jobs ORDER BY day DESC').all().map(d => d.day),
       failedDays: this.db.prepare("SELECT j.day FROM jobs j WHERE j.status='failed' AND j.rowid=(SELECT max(rowid) FROM jobs WHERE day=j.day) ORDER BY j.day DESC").all().map(r => r.day) }
   }

@@ -40,6 +40,9 @@ export function Settings({ state, save, saveCapture, busy, currentProject = '', 
     <ModelPicker central={state.remote} provider={config.provider} model={config.model} onChange={(provider, model) => set({ ...config, provider, model })} />
     <section aria-label="定时整理设置">
       <h3 className="wl-setting-heading wl-setting-subheading">定时整理</h3>
+      <label className="wl-check"><input type="checkbox" checked={config.scheduleFallbackEnabled ?? true} onChange={e => set({ ...config, scheduleFallbackEnabled: e.target.checked })} />23:30 保底整理</label>
+      <p className="wl-muted">按上方时区，每天 23:30 补充整理当天尚未覆盖的素材，可独立于每日定时整理开启。没有新素材时跳过，手工修改的日报不会被覆盖；23:30 之后的内容仍可手动整理。</p>
+      {state.scheduleFallbackLast && <p className="wl-muted" role="status">最近保底整理：{state.scheduleFallbackLast.day} · {state.scheduleFallbackLast.message}</p>}
       <label className="wl-check"><input type="checkbox" checked={config.scheduleEnabled ?? false} onChange={e => set({ ...config, scheduleEnabled: e.target.checked })} />每日定时整理</label>
       {config.scheduleEnabled && <>
         <label>每日整理时间<input type="time" required step="60" value={config.scheduleTime ?? '23:00'} onChange={e => set({ ...config, scheduleTime: e.target.value })} /></label>
