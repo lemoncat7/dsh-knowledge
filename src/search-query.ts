@@ -1,6 +1,13 @@
 // Keep automatic recall cheap and compatible with the provider's 20-term FTS
 // query. This is only a retrieval hint; extraction still receives the full turn.
 const segmenter = new Intl.Segmenter('zh', { granularity: 'word' })
+
+/** A quoted document name is still a name, not a request to search the quote marks. */
+export function documentTitleQuery(value: string): string {
+  const text = value.trim()
+  const pairs: Record<string, string> = { '"': '"', "'": "'", '`': '`', '《': '》', '“': '”', '「': '」' }
+  return text.length > 2 && pairs[text[0]!] === text.at(-1) ? text.slice(1, -1).trim() : text
+}
 const STOP_WORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'to', 'of', 'is', 'are', 'for', 'in', 'on', 'with',
   'this', 'that', 'it', 'as', 'be', 'by', 'from', 'text', 'json', 'cpp',

@@ -109,6 +109,28 @@ test('preferences reorder similar relevance only, preserve thresholds and snippe
   assert.deepEqual(included, [])
 })
 
+test('incident summary spans all pages, honors filters and excludes revoked and archived records', async t => {
+  const { provider, entry, store } = await fixture(t)
+  for (let i = 0; i < 32; i++) {
+    const e = await provider.create({ ...draft, title: `Frequently read ${i}` })
+    store.record({ sessionId: 's', turn: String(i), kind: 'search', ids: [e.id] })
+  }
+  const incident = store.incident(entry.id, { requestId: randomUUID(), reason: 'Real independent failure', severity: 3 })
+  const first = store.list({ limit: 30, sort: 'recalls' })
+  assert.equal(first.incidentDocuments, 1)
+  assert.ok(first.items.every(row => row.incidents === 0))
+  assert.equal(store.list({ sort: 'friction' }).items[0].id, entry.id)
+  assert.equal(store.list({ query: 'Frequently' }).incidentDocuments, 0)
+  assert.equal(store.list({ cursor: first.nextCursor, limit: 30, sort: 'recalls' }).incidentDocuments, 1)
+  provider.db.prepare('UPDATE recall_friction SET at=? WHERE id=?').run(Date.now() - 100 * 86400000, incident.id)
+  assert.equal(store.list({ days: 7 }).incidentDocuments, 1)
+  store.retract(entry.id, incident.id, 'Test retraction')
+  assert.equal(store.list().incidentDocuments, 0)
+  store.incident(entry.id, { requestId: randomUUID(), reason: 'New independent failure', severity: 1 })
+  await provider.archive(entry.id)
+  assert.equal(store.list().incidentDocuments, 0)
+})
+
 test('remote usage and ranking API enforce management permission without granting write authority', async t => {
   const { provider, entry, store } = await fixture(t)
   const admin = provider.createApiToken('admin', ['admin']).token

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import type { SearchHit } from './domain.js'
+import { recallScoreColumns, recallScoreSql, recallScoreTotal, type RecallScoreBreakdown } from './recall-score.js'
 
 export interface RecallUsage {
   sessionId: string
@@ -15,8 +16,9 @@ export interface RecallRankRow extends RecallPreference {
   id: string; title: string; knowledgeBaseId: string; baseName: string; documentState: string
   recalls: number; reads: number; sessions: number; auto: number; searches: number; lastRecall: number | null
   friction: number; automaticFriction: number; incidents: number
+  score: number; scoreBreakdown: RecallScoreBreakdown
 }
-export interface RecallRankPage { items: RecallRankRow[]; total: number; startedAt: number; nextCursor?: string; asOf: number }
+export interface RecallRankPage { items: RecallRankRow[]; total: number; startedAt: number; nextCursor?: string; asOf: number; incidentDocuments: number }
 export interface RecallPreferencePatch { priority?: number; frictionOverride?: number | null; revision: number; reason?: string }
 export interface FrictionInput { requestId: string; reason: string; severity: number }
 type Row = Record<string, unknown>
@@ -164,8 +166,8 @@ export class RecallRankingStore {
   }
 
   list(query: RecallRankQuery = {}): RecallRankPage {
-    const days = query.days ?? 30, limit = query.limit ?? 30, sort = query.sort || 'recalls', base = query.base || '', search = query.query?.trim() || ''
-    if (![0, 7, 30].includes(days) || !Number.isSafeInteger(limit) || limit < 1 || limit > 100 || !['recalls', 'reads', 'friction', 'priority', 'recent'].includes(sort)
+    const days = query.days ?? 30, limit = query.limit ?? 30, sort = query.sort || 'score', base = query.base || '', search = query.query?.trim() || ''
+    if (![0, 7, 30].includes(days) || !Number.isSafeInteger(limit) || limit < 1 || limit > 100 || !['score', 'recalls', 'reads', 'friction', 'priority', 'recent'].includes(sort)
       || typeof base !== 'string' || base.length > 256 || search.length > 256) throw bad('排行筛选条件无效')
     let offset = 0, asOf = Date.now()
     if (query.cursor) {
@@ -179,8 +181,14 @@ export class RecallRankingStore {
     const where = `e.status='active' AND b.status='active'${base ? ' AND e.knowledge_base_id=?' : ''}${search ? ' AND instr(lower(e.title),lower(?))>0' : ''}`
     const args = [...(base ? [base] : []), ...(search ? [search] : [])]
     const total = Number(this.db.prepare(`SELECT count(*) AS n FROM knowledge_entries e JOIN knowledge_bases b ON b.id=e.knowledge_base_id WHERE ${where}`).get(...args)?.n || 0)
+    // Scope-wide count, independent of pagination and the usage-period filter.
+    // Incidents retain their prevention floor beyond the selected usage period.
+    const incidentDocuments = Number(this.db.prepare(`SELECT count(*) AS n
+      FROM knowledge_entries e JOIN knowledge_bases b ON b.id=e.knowledge_base_id
+      WHERE ${where} AND EXISTS (SELECT 1 FROM recall_friction f WHERE f.entry_id=e.id AND f.retracted_at IS NULL AND f.at<=?)
+    `).get(...args, asOf)?.n || 0)
     // SQLite computes the decayed incident sum for sorting without loading documents or event histories.
-    const sql = `SELECT e.id,e.title,e.knowledge_base_id,e.document_state,b.name AS base_name,
+    const sql = `WITH measured AS (SELECT e.id,e.title,e.knowledge_base_id,e.document_state,b.name AS base_name,
       coalesce(p.priority,0) AS priority,p.friction_override,coalesce(p.revision,0) AS revision,
       (SELECT count(*) FROM recall_events r WHERE r.entry_id=e.id AND r.kind='recall' AND r.at BETWEEN ? AND ?) AS recalls,
       (SELECT count(*) FROM recall_events r WHERE r.entry_id=e.id AND r.kind='read' AND r.at BETWEEN ? AND ?) AS reads,
@@ -192,11 +200,14 @@ export class RecallRankingStore {
       coalesce((SELECT min(100,sum(severity*10*(.25+.75*pow(.5,max(0,?-at)/7776000000.0)))) FROM recall_friction f WHERE f.entry_id=e.id AND f.retracted_at IS NULL),0) AS automatic_friction,
       coalesce(p.friction_override,(SELECT min(100,sum(severity*10*(.25+.75*pow(.5,max(0,?-at)/7776000000.0)))) FROM recall_friction f WHERE f.entry_id=e.id AND f.retracted_at IS NULL),0) AS friction
       FROM knowledge_entries e JOIN knowledge_bases b ON b.id=e.knowledge_base_id LEFT JOIN recall_preferences p ON p.entry_id=e.id
-      WHERE ${where} ORDER BY ${sort} DESC,e.id ASC LIMIT ? OFFSET ?`
+      WHERE ${where}), components AS (SELECT *, ${recallScoreColumns} FROM measured)
+      SELECT *, ${recallScoreTotal} AS score FROM components
+      ORDER BY ${sort} DESC,id ASC LIMIT ? OFFSET ?`
     const rows = this.db.prepare(sql).all(since, asOf, since, asOf, since, asOf, since, asOf, since, asOf, asOf, asOf, asOf, ...args, limit, offset) as Row[]
 const items = rows.map(row => ({ id: String(row.id), title: String(row.title), knowledgeBaseId: String(row.knowledge_base_id), baseName: String(row.base_name), documentState: String(row.document_state), priority: Number(row.priority), frictionOverride: row.friction_override == null ? null : Number(row.friction_override), revision: Number(row.revision), recalls: Number(row.recalls), reads: Number(row.reads), sessions: Number(row.sessions), auto: Number(row.automatic), searches: Number(row.searches), lastRecall: row.recent == null ? null : Number(row.recent), friction: Math.round(Number(row.friction) * 10) / 10, automaticFriction: Math.round(Number(row.automatic_friction) * 10) / 10, incidents: Number(row.incidents) }))
+    const scoredItems = items.map((item, index) => ({ ...item, score: Number(rows[index]!.score), scoreBreakdown: Object.fromEntries(Object.keys(recallScoreSql).map(key => [key, Number(rows[index]![key])])) as RecallScoreBreakdown }))
     const startedAt = Number(this.db.prepare("SELECT value FROM recall_meta WHERE key='started_at'").get()?.value)
-    return { items, total, startedAt, asOf, ...(offset + items.length < total ? { nextCursor: Buffer.from(JSON.stringify({ key: JSON.stringify([days, sort, base, search]), offset: offset + items.length, asOf })).toString('base64url') } : {}) }
+    return { items: scoredItems, total, startedAt, asOf, incidentDocuments, ...(offset + items.length < total ? { nextCursor: Buffer.from(JSON.stringify({ key: JSON.stringify([days, sort, base, search]), offset: offset + items.length, asOf })).toString('base64url') } : {}) }
   }
 
   detail(id: string, kind = 'incidents', before = Number.MAX_SAFE_INTEGER): Record<string, unknown> {

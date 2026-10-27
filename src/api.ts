@@ -122,7 +122,7 @@ async function dispatch(
   if (segments[0] === 'recall') {
     requirePermission(actor.permissions, 'read')
     const id = segments[1]
-    if (method === 'GET' && segments.length === 1) return sendJson(res, 200, { ...provider.recallRanking.list({ days: Number(url.searchParams.get('days') ?? 30), limit: Number(url.searchParams.get('limit') ?? 30), base: url.searchParams.get('base') || '', query: url.searchParams.get('q') || '', sort: url.searchParams.get('sort') || 'recalls', cursor: url.searchParams.get('cursor') || '' }), canManage: actor.permissions.includes('admin') })
+    if (method === 'GET' && segments.length === 1) return sendJson(res, 200, { ...provider.recallRanking.list({ days: Number(url.searchParams.get('days') ?? 30), limit: Number(url.searchParams.get('limit') ?? 30), base: url.searchParams.get('base') || '', query: url.searchParams.get('q') || '', sort: url.searchParams.get('sort') || 'score', cursor: url.searchParams.get('cursor') || '' }), canManage: actor.permissions.includes('admin') })
     if (method === 'POST' && id === 'usage' && segments.length === 2) {
       await provider.recordRecallUsage(await readObject(req) as unknown as RecallUsage, undefined, actor.id)
       return sendJson(res, 200, { recorded: true })

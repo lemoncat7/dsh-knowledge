@@ -11,6 +11,7 @@ interface Asset {
 }
 
 const STATIC_ASSETS = new Map<string, Asset>([
+  ['citation-navigation.js', loadAsset('../web/citation-navigation.js', 'text/javascript; charset=utf-8')],
   ['recall-workspace.js', loadAsset('../web/recall-workspace.js', 'text/javascript; charset=utf-8')],
   ...['workspace-shell', 'infinite-scroll', 'lazy-resources', 'model-catalog', 'dialogs', 'dialog-steps', 'discard-confirmation', 'select-control', 'document-actions', 'document-sync', 'document-sync-ui', 'writeback-workspace', 'writeback-live', 'worklog-workspace', 'base-groups', 'document-groups'].map(name => [
     `${name}.js`, loadAsset(`../web/${name}.js`, 'text/javascript; charset=utf-8'),
@@ -71,7 +72,7 @@ function serveWeb(
   }
   const pathname = new URL(req.url ?? '/', 'http://knowledge.local').pathname
   const relative = pathname.slice(webPath.length).replace(/^\/+|\/+$/g, '')
-  if (relative.length === 0) {
+  if (relative.length === 0 || relative.startsWith('cite/')) {
     const embedded = embedToken !== undefined && hasValidEmbedToken(req.url, embedToken)
     sendAsset(res, method, { body: embedded ? embeddedIndex : standaloneIndex, contentType: 'text/html; charset=utf-8' }, embedded)
     return

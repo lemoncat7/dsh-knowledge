@@ -237,6 +237,7 @@ function readTool(provider: KnowledgeProvider, codec: KnowledgeHandleCodec): Too
         handle: { type: 'string', description: 'Exact opaque handle returned by knowledge_search. Do not reconstruct it.' },
         offset: { type: 'integer', description: 'Character offset for continuing a long section; default 0.' },
         maxChars: { type: 'integer', description: 'Characters to return, default 12000 and maximum 20000.' },
+        expectedVersion: { type: 'integer', description: 'Version returned by search; use when reading a passage offset. If changed, search again for its new location.' },
       },
       required: ['handle'],
     },
@@ -248,9 +249,16 @@ function readTool(provider: KnowledgeProvider, codec: KnowledgeHandleCodec): Too
       const handle = requireNonEmptyString(args.handle, 'handle', 4096)
       const offset = optionalInteger(args.offset, 'offset', 0, 1_000_000) ?? 0
       const maxChars = optionalInteger(args.maxChars, 'maxChars', 500, 20_000) ?? 12_000
+      const expectedVersion = optionalInteger(args.expectedVersion, 'expectedVersion', 1, Number.MAX_SAFE_INTEGER)
       const recordUsage = usageRecorder(provider, agent)
       const { entry, mount } = await readMountedKnowledge(provider, agent, handle, codec, exec.signal)
-      const result = formatKnowledgeEntry(entry, mount, offset, maxChars)
+      if (expectedVersion !== undefined && entry.version !== expectedVersion) {
+        throw new Error('[DOCUMENT_VERSION_CHANGED] 文档已更新，请重新搜索获取新的段落位置；不要重试旧 offset。')
+      }
+      const chars = Array.from(entry.body), start = Math.min(offset, chars.length), end = Math.min(chars.length, start + maxChars)
+      const startLine = 1 + (chars.slice(0, start).join('').match(/\n/g)?.length ?? 0)
+      const endLine = startLine + (chars.slice(start, end).join('').replace(/\n$/, '').match(/\n/g)?.length ?? 0)
+      const result = formatKnowledgeEntry(entry, mount, offset, maxChars, codec.citation(agent, entry, startLine, endLine))
       recordUsage('read', [entry.id])
       return result
     },

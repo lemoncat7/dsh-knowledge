@@ -8,6 +8,12 @@
 .recall-summary details { max-width: 500px; }
 .recall-summary summary { cursor: pointer; }
 .recall-summary p { line-height: 1.6; }
+.citation-document-label { color: var(--text-secondary); font-size: 12px; }
+.markdown-preview > section[data-source-start] { display: flow-root; }
+.markdown-preview > .is-citation-target { background: color-mix(in srgb, var(--accent) 10%, transparent); box-shadow: -3px 0 var(--accent); border-radius: 3px; outline-offset: 4px; }
+.markdown-preview > .is-citation-target:focus-visible { outline: 1px solid var(--accent); outline-offset: 3px; }
+.note-paper.has-citation { background: var(--surface-raised); }
+.note-paper.has-citation .markdown-preview { color: var(--text); }
 .recall-table-wrap { min-height: 240px; }
 .recall-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 13px; }
 /* A theme-relative wash, not an opaque menu surface. Focus stays on the
@@ -42,11 +48,12 @@
   .recall-table th, .recall-table td, .recall-table td:first-child, .recall-table td:nth-child(2), .recall-table td:last-child { width: auto; text-align: left; border: 0; padding: 4px; }
   .recall-table td:first-child { grid-column: 1; }
   .recall-table td:nth-child(2) { grid-row: 1; grid-column: 2 / 4; }
-  .recall-table td:nth-child(3)::before { content: '召回 '; }
-  .recall-table td:nth-child(4)::before { content: '会话 '; }
-  .recall-table td:nth-child(5)::before { content: '阅读 '; }
-  .recall-table td:nth-child(6)::before { content: '摩擦 '; }
-  .recall-table td:nth-child(7)::before { content: '优先级 '; }
+  .recall-table td:nth-child(3)::before { content: '得分 '; }
+  .recall-table td:nth-child(4)::before { content: '召回 '; }
+  .recall-table td:nth-child(5)::before { content: '会话 '; }
+  .recall-table td:nth-child(6)::before { content: '阅读 '; }
+  .recall-table td:nth-child(7)::before { content: '摩擦 '; }
+  .recall-table td:nth-child(8)::before { content: '优先级 '; }
   .recall-table .small { padding: 6px; min-height: 36px; white-space: normal; }
   .recall-toolbar .input { font-size: 16px; flex: 1 1 120px; }
   .recall-workspace .recall-toolbar > .knowledge-select { flex: 1 1 120px; max-width: 100%; }
@@ -2194,6 +2201,17 @@ html,
 }
 @media (max-width: 1120px), (hover: none) and (pointer: coarse) and (max-width: 1400px) {
   .app-shell:is([data-view="bases"], [data-view="writeback"], [data-view="candidates"], [data-view="recall"]) .main { height: 100dvh; }
+}
+
+/* A source opens in the document workspace, with only the body scrolling. */
+.app-shell[data-citation="true"] .main { display: flex; flex-direction: column; height: calc(100dvh - var(--chrome-inset) * 2); min-height: 0; overflow: hidden; }
+.app-shell[data-citation="true"] .topbar { position: relative; flex: none; }
+.app-shell[data-citation="true"] .page { flex: 1; min-height: 0; height: auto; overflow: hidden; contain: layout paint; }
+.app-shell[data-citation="true"] .view-stage, .app-shell[data-citation="true"] .note-workspace { height: 100%; min-height: 0; }
+.app-shell[data-citation="true"] .note-editor-scroll { contain: layout paint; }
+@media (max-width: 1120px), (hover: none) and (pointer: coarse) and (max-width: 1400px) {
+  .app-shell[data-citation="true"] .main { height: 100dvh; }
+  .citation-document-label { font-size: 11px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
 import { migrateKnowledgeDatabase } from './storage/migrations.js'
+import { documentTitleQuery } from './search-query.js'
 import { noteExcerptMarkdown, type NoteExcerptRequest } from './note-excerpt.js'
 import {
   contentHash,
@@ -643,6 +644,18 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
         `).all(ftsQuery, ...scopeArgs, ...filterArgs, candidateLimit) as SqlRow[]
       } catch {
         rows = []
+      }
+      // Preserve exact document-name matches before a crowded content pool is capped.
+      // Apply precisely the same project/base/tag restrictions as full-text search.
+      const titleQuery = documentTitleQuery(text)
+      if (titleQuery.length <= 200) {
+        const named = this.db.prepare(`
+          SELECT ${ENTRY_COLUMNS}, 0.0 AS rank FROM knowledge_entries e
+          WHERE e.status = 'active' AND ${scopeSql}${filterSql} AND lower(trim(e.title)) = lower(?)
+          ORDER BY e.updated_at DESC, e.id LIMIT ?
+        `).all(...scopeArgs, ...filterArgs, titleQuery, candidateLimit) as SqlRow[]
+        const namedIds = new Set(named.map(row => String(row.id)))
+        rows = [...named, ...rows.filter(row => !namedIds.has(String(row.id)))].slice(0, candidateLimit)
       }
       if (rows.length < candidateLimit) {
         const supplements = this.searchByTerms(text, scopeSql, scopeArgs, filterSql, filterArgs, candidateLimit)
@@ -2282,6 +2295,7 @@ function relevanceScore(entry: KnowledgeEntry, query: string): number {
   const normalizedQuery = normalizedBody(query)
   if (normalizedQuery.length === 0) return 1
   const title = normalizedBody(entry.title)
+  if (title === normalizedBody(documentTitleQuery(query))) return 1
   const body = normalizedBody(entry.body)
   const tags = normalizedBody(entry.tags.join(' '))
   const combined = `${title}\n${body}\n${tags}`

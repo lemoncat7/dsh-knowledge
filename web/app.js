@@ -34,6 +34,7 @@ let createWritebackWorkspace
 let createWorklogWorkspace
 let createRecallWorkspace
 let recallWorkspace
+let citationNavigation
 const recallFilters = {}
 let baseGroups
 let writebackWorkspace
@@ -51,8 +52,13 @@ const DOCUMENT_LAYOUT_KEY = 'dsh-knowledge.document-layout'
 const KNOWLEDGE_DOCUMENT_DRAG_TYPE = 'application/x-dsh-knowledge-document-id'
 const NOTE_MAX_FILE_SIZE = 64 * 1024 * 1024
 const pageParams = new URLSearchParams(location.search)
+if (!pageParams.has('citation') && location.pathname.startsWith(`${WEB_PATH.replace(/\/$/, '')}/cite/`)) {
+  try { pageParams.set('citation', decodeURIComponent(location.pathname.split('/cite/').slice(1).join('/cite/'))) }
+  catch { pageParams.set('citation', '') }
+}
 const initialKnowledgeBaseId = pageParams.get('knowledgeBaseId')?.trim() || ''
 const initialDocumentId = pageParams.get('documentId')?.trim() || ''
+let pendingCitation = pageParams.get('citation')
 const initialView = ['notes', 'writeback', 'worklog', 'recall'].includes(pageParams.get('view')) ? pageParams.get('view') : 'entries'
 const initialNoteId = pageParams.get('noteId')?.trim() || ''
 const mountContext = {
@@ -361,6 +367,14 @@ async function navigate(view) {
     if (view === 'writeback') ({ createWritebackWorkspace } = await resources.module('writeback-workspace'))
     if (view === 'worklog') ({ createWorklogWorkspace } = await resources.module('worklog-workspace'))
     if (view === 'recall') ({ createRecallWorkspace } = await resources.module('recall-workspace'))
+    if (view === 'entries' && pendingCitation !== null) {
+      citationNavigation = await resources.module('citation-navigation')
+      const ref = await citationNavigation.resolveCitation(pendingCitation, controller.signal)
+      if (controller.signal.aborted) return
+      Object.assign(state.mountContext, { sessionId: ref.sessionId, projectId: ref.projectId || '' })
+      Object.assign(state.documentView, { knowledgeBaseId: ref.knowledgeBaseId, documentId: ref.documentId, citation: ref, citationPositioned: false })
+      pendingCitation = null
+    }
     if (view === 'candidates') await Promise.all([loadChangeReview(), loadMarkdownPreview()])
     if (controller.signal.aborted) return
     if (view === 'overview') await loadOverview(controller.signal)
@@ -828,7 +842,9 @@ async function loadDocumentEditor(workspace, id, signal) {
   const references = api(`entries/${encodeURIComponent(id)}/note-references`, { signal })
     .then(value => ({ value }), error => ({ error }))
   const entry = await api(`entries/${encodeURIComponent(id)}`, { signal })
-  if (entry.documentState !== 'open' || documentWorkspaceReadOnly(workspace)) await loadMarkdownPreview()
+  const citation = workspace.view.citation?.documentId === id ? workspace.view.citation : null
+  if (citation && entry.version !== citation.version) throw Error('来源文档已更新，请重新检索；未使用旧行号定位。')
+  if (citation || entry.documentState !== 'open' || documentWorkspaceReadOnly(workspace)) await loadMarkdownPreview()
   if (workspace.view.loadRevision !== revision || workspace.view.documentId !== id) return false
   workspace.view.mode = 'preview'
   workspace.view.editor = {
@@ -1177,6 +1193,7 @@ function renderShell() {
   const nextShell = element('div', {
     class: 'app-shell', 'data-menu-open': String(state.menuOpen),
     'data-view': state.view, 'data-loading': String(state.loading),
+    'data-citation': String(state.view === 'entries' && state.documentView.citation?.documentId === state.documentView.documentId),
     'data-scroll-state': currentScrollState(),
     'data-base-detail': String(state.view === 'bases' && state.knowledgeBaseView === 'detail'),
     'data-sidebar-hidden': String(state.documentView.sidebarHidden),
@@ -2029,11 +2046,16 @@ function renderNoteEditor(workspace, editor, base) {
     onInput: event => update('title', event.target.value), onKeyDown: saveShortcut,
   })
   const finalized = !editor.isNew && editor.documentState !== 'open'
-  const editable = !finalized && !readOnly
+  const citation = view.citation?.documentId === editor.id ? view.citation : null
+  const editable = !finalized && !readOnly && !citation
   const body = editable
     ? element('div', { class: 'notes-live-editor knowledge-live-editor', role: 'status', 'aria-label': '正在打开知识文档正文' },
       element('div', { class: 'notes-editor-loading' }, '正在打开文档…'))
-    : renderMarkdownPreview(editor.body)
+    : renderMarkdownPreview(editor.body, Boolean(citation))
+  if (citation) {
+    citationNavigation.highlightCitation(body, citation, !view.citationPositioned)
+    view.citationPositioned = true
+  }
   if (editable) mountMarkdownEditor(body, {
     markdown: editor.body,
     label: '编辑知识文档正文',
@@ -2053,8 +2075,10 @@ function renderNoteEditor(workspace, editor, base) {
         finalized ? badge(DOCUMENT_STATE_LABELS[editor.documentState] || '已结束', 'success') : readOnly ? badge('只读') : null,
         element('span', { class: 'editor-save-status', role: 'status' }, editor.saveState),
         finalized && !readOnly ? actionButton('重新打开', () => reopenDocument(workspace, editor), 'small') : null,
-        !readOnly && !finalized ? actionButton(editor.isNew ? '创建文档' : '保存', () => { void saveDocumentEditor(workspace).then(saved => { if (saved) renderShell() }) }, 'primary small') : null,
-        !readOnly && !editor.isNew ? renderDocumentMenu(editor.title || '知识文档', [
+        citation ? element('span', { class: 'citation-document-label', role: 'status' }, `来源 · 第 ${citation.startLine}–${citation.endLine} 行`) : null,
+        citation ? actionButton('退出定位', () => { view.citation = null; renderShell() }, 'ghost small') : null,
+        editable ? actionButton(editor.isNew ? '创建文档' : '保存', () => { void saveDocumentEditor(workspace).then(saved => { if (saved) renderShell() }) }, 'primary small') : null,
+        !readOnly && !citation && !editor.isNew ? renderDocumentMenu(editor.title || '知识文档', [
           [
             ...(documentWorkspaceBases(workspace).some(item => item.id !== editor.knowledgeBaseId)
               ? [{ label: '移动到…', icon: 'move', run: () => openMoveKnowledgeDocument(workspace, editor) }] : []),
@@ -2073,13 +2097,13 @@ function renderNoteEditor(workspace, editor, base) {
         editor.finalizationNote ? element('p', {}, editor.finalizationNote) : null,
         editor.finalizedAt ? element('small', {}, `结束于 ${formatDate(editor.finalizedAt)}`) : null,
       ) : null,
-      element('article', { class: `note-paper is-${editable ? 'edit' : 'preview'}`, 'data-document-mode': editable ? 'edit' : 'preview' },
+      element('article', { class: `note-paper is-${editable ? 'edit' : 'preview'}${citation ? ' has-citation' : ''}`, 'data-document-mode': editable ? 'edit' : 'preview' },
         editable ? title : element('h1', { class: 'note-preview-title' }, editor.title || '无标题文档'),
         body,
       ),
     ),
     renderDocumentReferenceBar(workspace, editor, editable),
-    element('footer', { class: 'note-inspector' },
+    citation ? element('footer', { class: 'note-inspector' }, element('span', { class: 'note-format-hint' }, `引用版本 v${citation.version} · 正在浏览原文档`)) : element('footer', { class: 'note-inspector' },
       readOnly ? element('span', { class: 'note-format-hint' }, `分组：${editor.group || '未分组'}`) : actionButton(`分组：${editor.group || '未分组'}`, () => openDocumentGroupEditor(workspace, editor), 'ghost small document-group-control', { title: editor.group || '未分组', 'aria-label': '调整文档分组' }),
       finalized || readOnly ? element('span', { class: 'note-format-hint' }, readOnly ? '知识库已归档 · 只读' : '只读封存 · 重新打开后才能编辑') : element('label', {}, element('span', {}, '类型'), element('select', {
         class: 'note-meta-select', onChange: event => update('type', event.target.value),
@@ -2198,10 +2222,10 @@ async function removeDocumentNoteReference(workspace, editor, reference) {
   } catch (error) { showToast(friendlyError(error), 'error') }
 }
 
-function renderMarkdownPreview(markdown) {
+function renderMarkdownPreview(markdown, sourceLines = false) {
   if (!markdown.trim()) return element('div', { class: 'markdown-preview is-empty', role: 'document' }, '暂无正文')
   const preview = element('div', { class: 'markdown-preview', role: 'document' })
-  preview.innerHTML = window.DshKnowledgeMarkdown.renderMarkdown(markdown)
+  preview.innerHTML = sourceLines ? window.DshKnowledgeMarkdown.renderMarkdownSource(markdown) : window.DshKnowledgeMarkdown.renderMarkdown(markdown)
   preview.querySelectorAll('table').forEach(table => {
     const scroller = element('div', {
       class: 'markdown-table-scroll', role: 'region', tabindex: '0',

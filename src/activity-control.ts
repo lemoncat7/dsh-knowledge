@@ -4,6 +4,7 @@ import type { KnowledgeProvider } from './provider.js'
 import type { RuntimeContextLike } from './runtime.js'
 import { isEditableNoteNode, isNoteId, noteReferenceMarkdown } from './notes/domain.js'
 import type { KnowledgeNoteHandleCodec } from './note-reference-handle.js'
+import { readCitation } from './citation-reader.js'
 
 export interface NoteMentionOptions {
   codec: KnowledgeNoteHandleCodec
@@ -43,6 +44,10 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, provider: Kno
   const sessionId = url.searchParams.get('sessionId')?.trim()
   if (!sessionId) throw httpError(400, 'sessionId is required')
   const projectId = url.searchParams.get('projectId')?.trim() || undefined
+
+  if (segments[0] === 'citation' && segments.length === 1 && mentions) {
+    return sendJson(res, 200, await readCitation(provider, url.searchParams.get('citation') || '', sessionId, mentions.sourceKey))
+  }
 
   if (segments[0] === 'note-mentions' && mentions) {
     const sourceKey = mentions.sourceKey()

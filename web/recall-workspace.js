@@ -2,7 +2,7 @@ const priorities = [[-2, '低'], [-1, '较低'], [0, '标准'], [1, '较高'], [
 const time = value => value ? new Date(value).toLocaleString('zh-CN') : '尚未召回'
 
 export function createRecallWorkspace({ api, element: el, actionButton: button, openModal, openDocument, filters = {} }) {
-  Object.assign(filters, { days: filters.days ?? 30, base: filters.base || '', query: filters.query || '', sort: filters.sort || 'recalls' })
+  Object.assign(filters, { days: filters.days ?? 30, base: filters.base || '', query: filters.query || '', sort: filters.sort || 'score' })
   let disposed = false, request, generation = 0, items = [], cursor = '', total = 0, canManage = false, selected = new Set()
   const dialogs = new Set()
   const modal = options => {
@@ -10,19 +10,22 @@ export function createRecallWorkspace({ api, element: el, actionButton: button, 
     current = openModal({ ...options, onClose: () => { dialogs.delete(current); options.onClose?.() } })
     dialogs.add(current); return current
   }
-  const info = el('span', { role: 'status' }), error = el('p', { class: 'recall-error', role: 'alert', hidden: true })
+  const info = el('span', { role: 'status', 'aria-atomic': 'true' }), error = el('p', { class: 'recall-error', role: 'alert', hidden: true })
   const rows = el('tbody'), list = el('div', { class: 'recall-table-wrap' })
   const more = button('加载更多', () => load(false), 'ghost small', { 'data-load-more': 'auto' })
   const count = el('span', { role: 'status' })
   const options = (values, value, change, label) => el('select', { class: 'input', 'aria-label': label, onChange: change }, values.map(([id, name]) => el('option', { value: id, selected: String(id) === String(value) }, name)))
   const period = options([[7, '近 7 天'], [30, '近 30 天'], [0, '全部时间']], filters.days, e => { filters.days = Number(e.target.value); load(true) }, '统计时间')
   const bases = options([['', '全部知识库']], filters.base, e => { filters.base = e.target.value; load(true) }, '筛选知识库')
-  const sort = options([['recalls', '按召回次数'], ['friction', '按摩擦系数'], ['priority', '按人工优先级'], ['reads', '按模型阅读'], ['recent', '按最近召回']], filters.sort, e => { filters.sort = e.target.value; load(true) }, '排行排序')
+  const sort = options([['score', '按综合得分'], ['recalls', '按召回次数'], ['friction', '按摩擦系数'], ['priority', '按人工优先级'], ['reads', '按模型阅读'], ['recent', '按最近召回']], filters.sort, e => { filters.sort = e.target.value; load(true) }, '排行排序')
+  const showIncidents = button('查看踩坑排行', () => { filters.sort = 'friction'; sort.value = 'friction'; sort.dispatchEvent(new Event('change', { bubbles: true })) }, 'ghost small', { hidden: true })
   const search = el('input', { class: 'input', type: 'search', value: filters.query, placeholder: '搜索知识文档', 'aria-label': '搜索知识文档' })
   const form = el('form', { class: 'recall-toolbar', onSubmit: e => { e.preventDefault(); filters.query = search.value.trim(); load(true) } }, search, button('搜索', () => { filters.query = search.value.trim(); load(true) }, 'small'), bases, period, sort, button('刷新', () => load(true), 'ghost small'))
   const bulk = el('div', { class: 'recall-bulk', hidden: true })
   const root = el('section', { class: 'recall-workspace' }, form, el('div', { class: 'recall-summary' }, info, el('details', {}, el('summary', {}, '统计与排序说明'), el('p', {}, '仅统计升级后成功上报的 AI 召回与阅读；候选搜索、人工浏览不计入。同一会话同一轮去重。自动注入和主动搜索可能同时发生，两者不直接相加。'), el('p', {}, '原始相关性决定能否召回；同等相关性内参考优先级、摩擦系数和近期使用。摩擦按独立踩坑的严重程度累计，90 天半衰减，保留 25% 防踩坑权重；已解决不清零。手动系数覆盖自动值。'))), error, bulk, list, el('div', { class: 'list-load-footer' }, count, more))
-  list.append(el('table', { class: 'recall-table' }, el('thead', {}, el('tr', {}, ['', '知识文档', '召回', '会话', '阅读', '摩擦', '优先级', '操作'].map(name => el('th', { scope: 'col' }, name || el('span', { class: 'visually-hidden' }, '选择'))))), rows))
+  list.append(el('table', { class: 'recall-table' }, el('thead', {}, el('tr', {}, ['', '知识文档', '综合得分', '召回', '会话', '阅读', '摩擦', '优先级', '操作'].map(name => el('th', { scope: 'col' }, name || el('span', { class: 'visually-hidden' }, '选择'))))), rows))
+  info.after(showIncidents)
+  root.querySelector('.recall-summary details').append(el('p', {}, '默认按综合得分排序，点击分数查看构成。得分 = 25×召回/(召回+10) + 25×阅读/(阅读+5) + 20×会话/(会话+5) + 0.2×摩擦 + 5×优先级，限制在 0–100 分。优先级从低到高为 −2、−1、0、1、2。使用量按所选日期统计；高频数据贡献逐渐趋缓。'), el('p', {}, '综合得分用于展示关注价值，不代表质量、正确率或实际搜索相关性。摩擦代表防踩坑价值，最多贡献 20 分；自动注入与主动搜索已计入召回，不重复加分。'), el('p', {}, '摩擦为 0 表示没有有效踩坑记录或被手动设为 0，不代表没有召回。踩坑依赖 Agent 明确提交依据，普通回写和搜索不会自动增加摩擦；只读挂载不能记录。'))
 
   function updateBulk() {
     bulk.hidden = !selected.size || !canManage
@@ -38,11 +41,17 @@ export function createRecallWorkspace({ api, element: el, actionButton: button, 
     return el('tr', { 'data-recall-id': item.id },
       el('td', {}, canManage ? el('input', { type: 'checkbox', 'aria-label': `选择 ${item.title}`, onChange: e => { if (e.target.checked) selected.add(item.id); else selected.delete(item.id); updateBulk() } }) : null),
       el('td', { class: 'recall-name' }, button(item.title, () => openDocument(item), 'ghost recall-title'), el('small', {}, `${item.baseName}${item.documentState === 'resolved' ? ' · 已解决' : item.documentState === 'complete' ? ' · 已收集完成' : ''}`)),
+      el('td', {}, Number.isFinite(item.score) ? button(item.score.toFixed(1), () => scoreDetails(item), 'ghost small', { 'aria-label': `${item.title} 综合得分构成` }) : '—'),
       el('td', {}, button(String(item.recalls), () => details(item, 'usage'), 'ghost small', { 'aria-label': `${item.title} 召回记录`, title: `最近召回：${time(item.lastRecall)}` })),
       el('td', {}, item.sessions), el('td', {}, item.reads),
-      el('td', {}, button(item.friction.toFixed(1), () => details(item, 'incidents'), 'ghost small', { 'aria-label': `${item.title} 摩擦记录`, title: item.frictionOverride === null ? '自动计算' : '手动系数' }), item.frictionOverride === null ? null : el('small', {}, '手动')),
+      el('td', {}, button(item.friction.toFixed(1), () => details(item, 'incidents'), 'ghost small', { 'aria-label': `${item.title} 摩擦记录`, title: item.frictionOverride === null ? (item.incidents ? `由 ${item.incidents} 次有效踩坑自动计算` : '暂无有效踩坑记录，召回次数不会自动增加摩擦系数') : '手动系数' }), el('small', {}, item.frictionOverride !== null ? '手动' : item.incidents ? `${item.incidents} 次踩坑` : '未记录')),
       el('td', {}, canManage ? button(priorities.find(([value]) => value === item.priority)?.[1] || '标准', () => settings(item), 'ghost small', { 'aria-label': `${item.title} 召回设置` }) : priorities.find(([value]) => value === item.priority)?.[1]),
       el('td', {}, canManage ? button('记一次踩坑', () => incident(item), 'ghost small') : button('详情', () => details(item, 'usage'), 'ghost small')))
+  }
+  function scoreDetails(item) {
+    const parts = item.scoreBreakdown
+    const labels = { recallPoints: '召回贡献（最多 25 分）', readPoints: '阅读贡献（最多 25 分）', sessionPoints: '会话覆盖（最多 20 分）', frictionPoints: '防踩坑价值（最多 20 分）', priorityPoints: '人工优先级（−10 至 +10 分）' }
+    modal({ title: '综合得分构成', description: item.title, cancelLabel: '关闭', body: el('div', { class: 'recall-form' }, el('strong', {}, `${item.score.toFixed(1)} / 100`), ...(parts ? Object.entries(labels).map(([key, label]) => el('p', {}, `${label}：${Number(parts[key]).toFixed(2)}`)) : [el('p', {}, '当前服务端未返回分项，请升级中央知识库。')]), el('p', { class: 'muted' }, '分项按未四舍五入的值求和，再限制为 0–100 分并保留一位小数。该分数不替代实际搜索的相关性排序。')) })
   }
   function footer() { count.textContent = `已显示 ${items.length} / ${total} 篇`; more.hidden = !cursor; more.disabled = !!request }
   async function load(reset) {
@@ -61,10 +70,14 @@ export function createRecallWorkspace({ api, element: el, actionButton: button, 
       const known = new Set(items.map(item => item.id)), added = data.items.filter(item => !known.has(item.id))
       items.push(...added); rows.append(...added.map(row)); total = data.total; cursor = data.nextCursor || ''
       info.textContent = `${total} 篇知识文档 · 统计始于 ${new Date(data.startedAt).toLocaleDateString('zh-CN')}`
-      if (!items.length) rows.append(el('tr', {}, el('td', { colspan: 8, class: 'recall-empty' }, '没有匹配的知识文档')))
+      if (Number.isInteger(data.incidentDocuments)) info.textContent += ` · 当前范围 ${data.incidentDocuments} 篇有有效踩坑记录（不限统计日期）`
+      showIncidents.hidden = !(data.incidentDocuments > 0) || filters.sort === 'friction'
+      const sortColumns = { score: 2, recalls: 3, reads: 5, friction: 6, priority: 7 }
+      list.querySelectorAll('th').forEach((node, index) => node.setAttribute('aria-sort', index === sortColumns[filters.sort] ? 'descending' : 'none'))
+      if (!items.length) rows.append(el('tr', {}, el('td', { colspan: 9, class: 'recall-empty' }, '没有匹配的知识文档')))
       more.dataset.loadMore = 'auto'
     } catch (e) {
-      if (!controller.signal.aborted && !disposed) { error.hidden = false; error.replaceChildren(el('span', {}, e.status === 404 ? '中央知识库尚不支持召回排行，请先升级服务端。' : e.message), button('重试', () => load(reset), 'ghost small')); more.dataset.loadMore = 'manual' }
+      if (!controller.signal.aborted && !disposed) { error.hidden = false; error.replaceChildren(el('span', {}, e.status === 404 ? '中央知识库尚不支持召回排行，请先升级服务端。' : e.status === 400 && filters.sort === 'score' ? '当前服务可能尚不支持综合排行，请升级中央知识库，或切换“按召回次数”。' : e.message), button('重试', () => load(reset), 'ghost small')); more.dataset.loadMore = 'manual' }
     } finally { if (request === controller) { request = null; root.setAttribute('aria-busy', 'false'); footer() } }
   }
   function settings(item) {

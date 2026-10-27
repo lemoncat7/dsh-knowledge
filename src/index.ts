@@ -141,7 +141,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
     if (job?.status === 'running') throw new WritebackDeferred('上一次远端回写租约尚未释放，等待恢复')
     throw new Error(job?.lastError ?? '未能确认远端回写状态，请重试')
   }, message => runtime.logger.warn(message)) : undefined
-  const handleCodec = new KnowledgeHandleCodec(randomBytes(32))
+  const handleCodec = new KnowledgeHandleCodec(randomBytes(32), () => createHash('sha256').update(destination()).digest('hex'))
   const noteHandleCodec = new KnowledgeNoteHandleCodec(randomBytes(32))
   const managementEmbedToken = randomBytes(32).toString('base64url')
   registerKnowledgeRecall(runtime, provider, resolved, handleCodec)

@@ -30,6 +30,7 @@ import { supportsDockedPanels } from './docked-panel-compat.js'
 import cssText from './client.css'
 import { settingsSurfaceCss } from './settings-surface.js'
 import { registerMainPanel } from './main-panel-compat.js'
+import { installCitationLinks } from './citation-links.js'
 import activityCss from './knowledge-activity.css'
 import { createKnowledgeActivityController, type KnowledgeActivityController } from './knowledge-activity-controller.js'
 import {
@@ -70,6 +71,7 @@ export type KnowledgeDocumentTarget =
   | { view?: 'entries'; knowledgeBaseId: string; documentId: string }
   | { view: 'notes'; noteId?: string }
   | { view: 'writeback'; sessionId: string }
+  | { view: 'citation'; citation: string }
 
 
 const CONNECTION_CONTROL_PATH = '/knowledge-control/v1/connection'
@@ -84,6 +86,7 @@ export function apply(ctx: ClientContext): void {
   const docked = supportsDockedPanels(ctx)
   let activity: KnowledgeActivityController | undefined
   const workspace = createKnowledgeWorkspaceController(ctx, () => { if (!docked) activity?.close(undefined, true) })
+  ctx.effect(() => installCitationLinks(citation => workspace.openDocument({ view: 'citation', citation: JSON.stringify(citation) })), 'dsh-knowledge: inline source navigation')
   ctx.inject(['inputTriggers'], scoped => {
     scoped.effect(() => scoped.inputTriggers.registerSource(createNoteMentionSource(
       noteId => workspace.openDocument({ view: 'notes', noteId }),
@@ -572,7 +575,9 @@ function knowledgePanelUrl(managementPath: string, sessionId?: string, projectId
   if (sessionId !== undefined) params.set('sessionId', sessionId)
   if (projectId !== undefined) params.set('projectId', projectId)
   if (target !== undefined) {
-    if (target.view === 'writeback') {
+    if (target.view === 'citation') {
+      params.set('citation', target.citation)
+    } else if (target.view === 'writeback') {
       params.set('view', 'writeback')
       params.set('sessionId', target.sessionId)
     } else if (target.view === 'notes') {
