@@ -222,6 +222,8 @@ export interface DirectWriteResult {
 
 export interface SearchRequest {
   text: string
+  /** Opt in for evidence reads; extraction/deduplication do not need passages. */
+  includePassage?: boolean
   projectId?: string
   knowledgeBaseIds?: string[]
   includeTags?: string[]
@@ -233,6 +235,8 @@ export interface SearchRequest {
 export interface SearchHit {
   entry: KnowledgeEntry
   score: number
+  passage?: import('./retrieval-passages.js').KnowledgePassage
+  retrieval?: { source: 'index' | 'fallback'; indexVersion: number; documentVersion: number }
   /** Bounded re-ranking only; never used for relevance admission. */
   rankScore?: number
 }

@@ -130,6 +130,7 @@ export async function searchMountedKnowledge(
   const batches = await mapConcurrent(mounts, 4, async mount => {
     const hits = await provider.search({
       text: query,
+      includePassage: true,
       ...projectId === undefined ? {} : { projectId },
       knowledgeBaseIds: [mount.knowledgeBaseId],
       ...mount.includeTags.length === 0 ? {} : { includeTags: mount.includeTags },
@@ -146,7 +147,8 @@ export async function searchMountedKnowledge(
     .sort(compareRecallHits)
     .slice(0, boundedLimit)
     .map(hit => {
-      const passage = selectKnowledgePassage(hit.entry.body, query)
+      const passage = hit.retrieval?.documentVersion === hit.entry.version && hit.passage
+        ? hit.passage : selectKnowledgePassage(hit.entry.body, query)
       return { ...hit, passage, citation: codec.citation(agent, hit.entry, passage.startLine, passage.endLine) }
     })
 }

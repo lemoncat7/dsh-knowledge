@@ -176,6 +176,7 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
 
   async search(request: SearchRequest, signal?: AbortSignal): Promise<SearchHit[]> {
     const params = new URLSearchParams({ q: request.text, limit: String(request.limit) })
+    if (request.includePassage) params.set('includePassage', '1')
     if (request.projectId !== undefined) params.set('projectId', request.projectId)
     for (const id of request.knowledgeBaseIds ?? []) params.append('knowledgeBaseId', id)
     for (const tag of request.includeTags ?? []) params.append('includeTag', tag)

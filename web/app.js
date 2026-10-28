@@ -34,6 +34,8 @@ let createWritebackWorkspace
 let createWorklogWorkspace
 let createRecallWorkspace
 let recallWorkspace
+let createRetrievalIndexStatus
+let retrievalIndexStatus
 let citationNavigation
 const recallFilters = {}
 let baseGroups
@@ -312,6 +314,8 @@ function renderLogin(message = '') {
 }
 
 function signOut() {
+  retrievalIndexStatus?.dispose()
+  retrievalIndexStatus = undefined
   recallWorkspace?.dispose()
   recallWorkspace = undefined
   candidateCountController?.abort()
@@ -367,6 +371,7 @@ async function navigate(view) {
     if (view === 'writeback') ({ createWritebackWorkspace } = await resources.module('writeback-workspace'))
     if (view === 'worklog') ({ createWorklogWorkspace } = await resources.module('worklog-workspace'))
     if (view === 'recall') ({ createRecallWorkspace } = await resources.module('recall-workspace'))
+    if (view === 'entries' || view === 'bases') ({ createRetrievalIndexStatus } = await resources.module('retrieval-index-status'))
     if (view === 'entries' && pendingCitation !== null) {
       citationNavigation = await resources.module('citation-navigation')
       const ref = await citationNavigation.resolveCitation(pendingCitation, controller.signal)
@@ -1163,6 +1168,7 @@ function renderShell() {
   // Switch route chrome immediately, but do not rebuild its pending body for
   // repeated background updates while the same request is still loading.
   if (state.loading && shellModule.isPendingShell(app.querySelector('.app-shell'), state.view)) return
+  if (state.loading || !activeDocumentWorkspace()) retrievalIndexStatus?.suspend()
   window.clearTimeout(routeFeedbackTimer)
   routeFeedbackTimer = 0
   const navigationHadFocus = document.activeElement?.closest?.('[data-nav-view]') != null
@@ -1863,6 +1869,20 @@ function renderEntries() {
   return renderDocumentWorkspace(sessionDocumentWorkspace(), { heading: '知识目录' })
 }
 
+function renderRetrievalIndexStatus(workspace, bases) {
+  if (!createRetrievalIndexStatus) return null
+  retrievalIndexStatus ??= createRetrievalIndexStatus({ api, element, actionButton, interfaceIcon, openModal,
+    sourceLabel: API_BASE.includes('remote') ? '中央知识库' : '当前知识库服务' })
+  const params = new URLSearchParams()
+  // Explicit empty scope prevents an unmounted session from showing global totals.
+  for (const id of bases.length ? bases.map(base => base.id).sort() : ['']) params.append('knowledgeBaseId', id)
+  if (workspace.kind === 'session') {
+    if (state.mountContext.sessionId) params.set('sessionId', state.mountContext.sessionId)
+    if (state.mountContext.projectId) params.set('projectId', state.mountContext.projectId)
+  }
+  return retrievalIndexStatus.mount(params)
+}
+
 async function applyDocumentGroup(workspace, baseId, ids, group) {
   if (workspace.view.editor?.dirty && !await saveDocumentEditor(workspace)) throw new Error('请先保存当前文档，再调整分组。')
   await api('document-groups', { method: 'POST', body: { knowledgeBaseId: baseId, ids, group } })
@@ -2007,6 +2027,7 @@ function renderDocumentWorkspace(workspace, options = {}) {
       ),
       element('div', {}, element('div', { class: 'note-tree-search-wrap' }, interfaceIcon('search', 'search-symbol'), search),
         !readOnly && view.knowledgeBaseId ? actionButton('整理分组', () => { const baseId = view.knowledgeBaseId; void openDocumentGroupOrganizer({ element, api, openSheet, baseId, onApply: (ids, group) => applyDocumentGroup(workspace, baseId, ids, group) }) }, 'ghost small document-groups-manage') : null),
+      renderRetrievalIndexStatus(workspace, activeBases),
       element('nav', { class: 'note-tree', 'data-scroll-key': `${workspace.kind}-note-tree` }, treeContent),
       workspace.kind === 'session' ? element('footer', { class: 'note-tree-footer' }, actionButton('新建知识库', () => openKnowledgeBaseEditor(), 'ghost small')) : null,
     ),

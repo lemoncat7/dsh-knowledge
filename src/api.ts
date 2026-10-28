@@ -12,6 +12,7 @@ import { isNoteId, type NoteReference, type NoteListRequest } from './notes/doma
 import { renderNoteSharePage } from './notes/share-page.js'
 import { createNoteShareManifest, importNoteShare, inspectNoteShareUrl, type NoteShareRequestPolicy } from './notes/share-import.js'
 import type { RecallUsage, RecallPreferencePatch, FrictionInput } from './recall-ranking.js'
+import type { RetrievalIndexScope } from './retrieval-index.js'
 
 const MAX_BODY_BYTES = 1_048_576
 const MAX_NOTE_BODY_BYTES = 64 * 1024 * 1024
@@ -118,6 +119,35 @@ async function dispatch(
   }
 
   const actor = options.authMode === 'same-origin' ? authenticateSameOrigin(req) : authenticateBearer(provider, req)
+
+  if (segments[0] === 'retrieval-index') {
+    requirePermission(actor.permissions, 'read')
+    let baseIds: string[] | undefined = url.searchParams.has('knowledgeBaseId') ? [...new Set(url.searchParams.getAll('knowledgeBaseId'))] : undefined
+    if (baseIds && baseIds.length > 100) throw httpError(400, 'too many knowledge bases')
+    const sessionId = url.searchParams.get('sessionId') || undefined
+    const projectId = url.searchParams.get('projectId') || undefined
+    let policies: RetrievalIndexScope['mounts']
+    if (sessionId) {
+      const mounts = await provider.resolveMounts(sessionId, projectId)
+      const allowed = mounts.filter(m => m.enabled && m.recallEnabled && m.base.status === 'active')
+      policies = allowed
+      baseIds = allowed.map(m => m.knowledgeBaseId).filter(id => !baseIds || baseIds.includes(id))
+    }
+    const scope = { ...(baseIds ? { baseIds } : {}), ...(projectId ? { projectId } : {}), ...(policies ? { mounts: policies } : {}), scoped: Boolean(sessionId || projectId) }
+    if (method === 'GET' && segments.length === 1) {
+      return sendJson(res, 200, { ...provider.retrievalIndex.status(scope, {
+        details: url.searchParams.get('details') === '1', state: url.searchParams.get('state') === 'pending' ? 'pending' : 'failed',
+        offset: integerParam(url, 'offset', 0, 0, 1_000_000),
+      }), canRetry: actor.permissions.includes('admin') })
+    }
+    if (method === 'POST' && segments.length === 2 && segments[1] === 'retry') {
+      requirePermission(actor.permissions, 'admin')
+      const body = await readObject(req)
+      const documentId = body.documentId === undefined ? undefined : requiredString(body.documentId, 'documentId')
+      return sendJson(res, 200, { queued: provider.retrievalIndex.retryFailed(scope, documentId) })
+    }
+    throw httpError(404, 'retrieval index route was not found')
+  }
 
   if (segments[0] === 'recall') {
     requirePermission(actor.permissions, 'read')
@@ -348,6 +378,7 @@ async function dispatch(
       if (!types.every(isKnowledgeType)) throw httpError(400, 'search types are invalid')
       return sendJson(res, 200, await provider.search({
         text: body.text,
+        ...body.includePassage === true ? { includePassage: true } : {},
         ...body.projectId === undefined ? {} : { projectId: body.projectId },
         knowledgeBaseIds: stringArray(body.knowledgeBaseIds, 'knowledgeBaseIds', 100),
         includeTags: stringArray(body.includeTags, 'includeTags', 100),
@@ -363,6 +394,7 @@ async function dispatch(
     const excludeTags = url.searchParams.getAll('excludeTag').filter(Boolean)
     const result = await provider.search({
       text: url.searchParams.get('q') ?? '',
+      ...url.searchParams.get('includePassage') === '1' ? { includePassage: true } : {},
       ...projectId === undefined ? {} : { projectId },
       ...knowledgeBaseIds.length === 0 ? {} : { knowledgeBaseIds },
       ...includeTags.length === 0 ? {} : { includeTags },

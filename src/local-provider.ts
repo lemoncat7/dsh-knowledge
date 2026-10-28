@@ -71,6 +71,7 @@ import {
 import { compareNames } from './collation.js'
 import { decodePageCursor, encodePageCursor } from './page-cursor.js'
 import { RecallRankingStore, type RecallUsage, validateUsage } from './recall-ranking.js'
+import { RetrievalIndex } from './retrieval-index.js'
 
 type SqlRow = Record<string, unknown>
 
@@ -91,6 +92,7 @@ const EXTRACTION_LEASE_MS = 15 * 60 * 1000
 
 export class LocalKnowledgeProvider implements KnowledgeProvider {
   readonly recallRanking: RecallRankingStore
+  readonly retrievalIndex: RetrievalIndex
 
   async recordRecallIncident(id: string, value: import('./recall-ranking.js').FrictionInput, signal?: AbortSignal): Promise<{ id: string }> {
     signal?.throwIfAborted()
@@ -119,6 +121,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
     migrateKnowledgeDatabase(this.db, this.notes)
     this.recallRanking = new RecallRankingStore(this.db)
+    this.retrievalIndex = new RetrievalIndex(this.db)
     if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_candidates'").get()) {
       this.db.exec('CREATE INDEX IF NOT EXISTS knowledge_candidates_page ON knowledge_candidates(status, created_at DESC, id DESC);')
     }
@@ -667,7 +670,8 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       const entry = rowToEntry(row)
       return { entry, score: relevanceScore(entry, text) }
     })
-    return (text ? this.recallRanking.boost(hits) : hits.sort((a, b) => b.entry.updatedAt.localeCompare(a.entry.updatedAt))).slice(0, limit)
+    return (text ? this.recallRanking.boost(hits) : hits.sort((a, b) => b.entry.updatedAt.localeCompare(a.entry.updatedAt)))
+      .slice(0, limit).map(hit => request.includePassage ? { ...hit, ...this.retrievalIndex.passage(hit.entry, text) } : hit)
   }
 
   private searchByTerms(
@@ -1657,6 +1661,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     if (this.closed) return
     await this.documentsReady
     this.closed = true
+    this.retrievalIndex.close()
     this.db.close()
     await this.notes.close()
   }

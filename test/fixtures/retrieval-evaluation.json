@@ -1,0 +1,29 @@
+{
+  "description": "人工编写的代表性回归问题，不是线上真实会话质量评估。允许替换为本地标注的真实问题数据集。",
+  "documents": [
+    { "key": "tls", "title": "证书续期手册", "body": "# 运维\n\n## TLS_CERT_EXPIRED\n\n发现 TLS_CERT_EXPIRED 后续签证书。\n\n检查系统时间，再重启代理。\n\n## 账号\n\n账号变更单独审批。" },
+    { "key": "backup", "title": "备份恢复流程", "body": "# Docker 数据备份\n\n先停止写入，备份持久化卷。\n\n## 恢复\n\nRESTORE_VOLUME：核对卷名称，恢复数据库，再启动应用。" },
+    { "key": "ssh", "title": "跳板机指纹变化", "body": "# Host denied\n\n主机重装后出现 Host denied (verification failed)，应核对新的主机指纹。\n\n确认指纹来源可信后重新批准，不要关闭主机验证。" },
+    { "key": "writeback", "title": "知识库回写重试", "body": "# 回写\n\n网络中断后回写处于等待状态。\n\n## WRITEBACK_RETRY\n\n先检查前一轮是否失败，再重试；重启服务后需要恢复队列。" },
+    { "key": "private", "title": "私有项目指纹", "body": "# Host denied\n\nPRIVATE_SENTINEL_A：私有主机批准方法。", "scope": { "kind": "project", "id": "/secret" } },
+    { "key": "excluded", "title": "内部证书", "body": "TLS_CERT_EXPIRED PRIVATE_SENTINEL_B 内部凭据配置", "tags": ["private"] },
+    { "key": "unicode", "title": "Unicode 偏移", "body": "# 😀字符位置\n\nUNICODE_OFFSET 按 Unicode 码点计算，不能把 emoji 的代理对拆开。\n\n中文和英文都应定位到正确段落。" },
+    { "key": "fence", "title": "代码围栏", "body": "# 诊断\n\n```sh\n# 不是章节标题\necho FENCE_SENTINEL\n```\n\n## 退出\n\n诊断结束。" },
+    { "key": "unrelated", "title": "食谱", "body": "# 番茄鸡蛋\n\n先炒鸡蛋，再加入番茄。" },
+    { "key": "late", "title": "长文档后半段", "body": "# 引言\n\n背景记录。", "paddingParagraphs": 180, "suffix": "\n\n## 最后步骤\n\nLATE_EVIDENCE：核对校验和后才能替换产物。" }
+  ],
+  "questions": [
+    { "query": "TLS_CERT_EXPIRED", "expected": ["tls"], "evidence": "续签证书", "excludeTags": ["private"] },
+    { "query": "《证书续期手册》", "expected": ["tls"], "excludeTags": ["private"] },
+    { "query": "RESTORE_VOLUME", "expected": ["backup"], "evidence": "恢复数据库" },
+    { "query": "Host denied verification failed", "expected": ["ssh"], "evidence": "核对新的主机指纹" },
+    { "query": "WRITEBACK_RETRY", "expected": ["writeback"], "evidence": "先检查前一轮" },
+    { "query": "回写重试", "expected": ["writeback"] },
+    { "query": "UNICODE_OFFSET", "expected": ["unicode"], "evidence": "Unicode 码点" },
+    { "query": "FENCE_SENTINEL", "expected": ["fence"], "evidence": "echo FENCE_SENTINEL" },
+    { "query": "LATE_EVIDENCE", "expected": ["late"], "evidence": "核对校验和" },
+    { "query": "PRIVATE_SENTINEL_A", "expected": [], "projectId": "/demo" },
+    { "query": "PRIVATE_SENTINEL_A", "expected": ["private"], "projectId": "/secret", "evidence": "PRIVATE_SENTINEL_A" },
+    { "query": "PRIVATE_SENTINEL_B", "expected": [], "excludeTags": ["private"] }
+  ]
+}

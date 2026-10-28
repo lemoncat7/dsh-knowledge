@@ -11,6 +11,7 @@ interface Asset {
 }
 
 const STATIC_ASSETS = new Map<string, Asset>([
+  ['retrieval-index-status.js', loadAsset('../web/retrieval-index-status.js', 'text/javascript; charset=utf-8')],
   ['citation-navigation.js', loadAsset('../web/citation-navigation.js', 'text/javascript; charset=utf-8')],
   ['recall-workspace.js', loadAsset('../web/recall-workspace.js', 'text/javascript; charset=utf-8')],
   ...['workspace-shell', 'infinite-scroll', 'lazy-resources', 'model-catalog', 'dialogs', 'dialog-steps', 'discard-confirmation', 'select-control', 'document-actions', 'document-sync', 'document-sync-ui', 'writeback-workspace', 'writeback-live', 'worklog-workspace', 'base-groups', 'document-groups'].map(name => [

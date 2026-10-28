@@ -13,10 +13,12 @@ export interface KnowledgePassage {
   matched: boolean
 }
 
-interface Block { start: number; end: number; heading: string }
+export interface PassageBlock { start: number; end: number; offset: number; startLine: number; heading: string; sectionId: number | null }
+export interface PassageSection { id: number; parentId: number | null; level: number; heading: string }
+export interface PassageStructure { blocks: PassageBlock[]; sections: PassageSection[]; totalChars: number }
 
 /** Ephemeral passage selection. The authoritative document is never split or rewritten. */
-export function selectKnowledgePassage(body: string, query: string, maxChars = 420): KnowledgePassage {
+export function selectKnowledgePassage(body: string, query: string, maxChars = 420, structure?: PassageStructure): KnowledgePassage {
   const budget = Number.isFinite(maxChars) ? Math.max(1, Math.min(2000, Math.trunc(maxChars))) : 420
   const terms = buildSearchQuery(query).toLocaleLowerCase('zh-CN').split(/\s+/u).filter(Boolean)
   const exact = query.trim().toLocaleLowerCase('zh-CN')
@@ -25,12 +27,33 @@ export function selectKnowledgePassage(body: string, query: string, maxChars = 4
     return terms.reduce((sum, term) => sum + (lower.includes(term) ? 1 : 0), 0)
       + (exact.length >= 2 && lower.includes(exact) ? Math.max(2, terms.length) : 0)
   }
-  const blocks = markdownBlocks(body)
-  let best = blocks[0] ?? { start: 0, end: body.length, heading: '' }
+  const prepared = structure ?? buildPassageStructure(body)
+  const blocks = prepared.blocks
+  let best = blocks[0] ?? { start: 0, end: body.length, offset: 0, startLine: 1, heading: '', sectionId: null }
   let bestScore = -1
+  const headingScores = new Map<string, number>()
   for (const block of blocks) {
-    const value = score(body.slice(block.start, block.end)) + score(block.heading) * .15
+    let headingScore = headingScores.get(block.heading)
+    if (headingScore === undefined) { headingScore = score(block.heading); headingScores.set(block.heading, headingScore) }
+    const value = score(body.slice(block.start, block.end)) + headingScore * .15
     if (value > bestScore) { best = block; bestScore = value }
+  }
+  // One contiguous excerpt: adjacent paragraphs from the same section only,
+  // never duplicate overlapping text or silently merge unrelated headings.
+  const selected = blocks.indexOf(best)
+  if (selected >= 0 && Array.from(body.slice(best.start, best.end)).length < budget) {
+    let from = selected, to = selected
+    for (const direction of [1, -1]) {
+      while (true) {
+        const candidate = blocks[direction === 1 ? to + 1 : from - 1]
+        if (!candidate || candidate.sectionId !== best.sectionId) break
+        const start = direction === 1 ? best.start : candidate.start
+        const end = direction === 1 ? candidate.end : best.end
+        if (Array.from(body.slice(start, end)).length > budget) break
+        best = { ...best, start, end, ...(direction === -1 ? { offset: candidate.offset, startLine: candidate.startLine } : {}) }
+        if (direction === 1) to++; else from--
+      }
+    }
   }
   const chars = Array.from(body.slice(best.start, best.end))
   let start = 0
@@ -45,11 +68,11 @@ export function selectKnowledgePassage(body: string, query: string, maxChars = 4
     }
   }
   const text = chars.slice(start, start + budget).join('')
-  const prefix = body.slice(0, best.start) + chars.slice(0, start).join('')
-  const offset = Array.from(prefix).length
-  const totalChars = Array.from(body).length
+  const prefix = chars.slice(0, start).join('')
+  const offset = best.offset + start
+  const totalChars = prepared.totalChars
   const endOffset = offset + Array.from(text).length
-  const startLine = 1 + (prefix.match(/\n/g)?.length ?? 0)
+  const startLine = best.startLine + (prefix.match(/\n/g)?.length ?? 0)
   return {
     text, heading: best.heading, offset, endOffset, totalChars, startLine,
     endLine: startLine + (text.match(/\n/g)?.length ?? 0),
@@ -59,14 +82,19 @@ export function selectKnowledgePassage(body: string, query: string, maxChars = 4
 }
 
 /** Fence-aware paragraphs and ATX heading paths; no Markdown rendering or mutation. */
-function markdownBlocks(body: string): Block[] {
-  const blocks: Block[] = []
-  const headings: { level: number; text: string }[] = []
+export function buildPassageStructure(body: string): PassageStructure {
+  const blocks: PassageBlock[] = []
+  const sections: PassageSection[] = []
+  const headings: { level: number; text: string; id: number }[] = []
   let start = 0, position = 0, heading = ''
+  let offset = 0, startLine = 1
   let hasContent = false
   let fence: { char: string; length: number } | undefined
   const flush = (end: number) => {
-    if (body.slice(start, end).trim()) blocks.push({ start, end, heading })
+    const segment = body.slice(start, end)
+    if (segment.trim()) blocks.push({ start, end, offset, startLine, heading, sectionId: headings.at(-1)?.id ?? null })
+    offset += Array.from(segment).length
+    startLine += segment.match(/\n/g)?.length ?? 0
     start = end
     hasContent = false
   }
@@ -86,8 +114,11 @@ function markdownBlocks(body: string): Block[] {
         if (hasContent) flush(position)
         const level = title[1]!.length
         while (headings.length && headings.at(-1)!.level >= level) headings.pop()
-        headings.push({ level, text: title[2]!.trim() })
+        const id = sections.length
+        const parentId = headings.at(-1)?.id ?? null
+        headings.push({ level, text: title[2]!.trim(), id })
         heading = headings.map(item => item.text).join(' / ')
+        sections.push({ id, parentId, level, heading })
       } else if (!line.trim()) {
         // A matching heading alone is not evidence. Keep it with its first paragraph.
         if (hasContent) flush(end)
@@ -98,5 +129,5 @@ function markdownBlocks(body: string): Block[] {
     position = end
   }
   flush(body.length)
-  return blocks
+  return { blocks, sections, totalChars: offset }
 }

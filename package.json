@@ -1,6 +1,6 @@
 {
   "name": "@lemoncat7/dsh-knowledge",
-  "version": "2.15.9",
+  "version": "2.16.0",
   "description": "Local and remote knowledge bases for DeepSeek Harness, with scoped recall, controlled write-back, and a Web management console",
   "keywords": [
     "deepseek-harness",
@@ -82,6 +82,7 @@
     "clean": "node -e \"require('node:fs').rmSync('lib', { recursive: true, force: true })\"",
     "prepare": "npm run clean && npm run build",
     "test": "npm run build && node --test test/*.test.mjs",
+    "eval:retrieval": "npm run build && node scripts/evaluate-retrieval.mjs",
     "pack:check": "npm pack --dry-run"
   },
   "dependencies": {
