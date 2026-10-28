@@ -26,9 +26,20 @@ const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_E
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 850 } })
   const errors = []; page.on('pageerror', e => errors.push(e.message))
+  let releaseModule
+  const moduleGate = new Promise(resolve => { releaseModule = resolve })
+  await page.route('**/retrieval-index-status.js*', async route => { await moduleGate; await route.continue() })
   await page.goto(origin + '/knowledge/')
+  await page.locator('.app-shell[data-view="entries"][data-loading="false"]').waitFor({ timeout: 10000 })
+  assert.equal(await page.locator('.retrieval-index-trigger').count(), 0, 'directory must be usable before optional module download')
+  releaseModule()
   const trigger = page.locator('.retrieval-index-trigger')
   await trigger.filter({ hasText: '33 篇索引失败' }).waitFor()
+  await page.waitForTimeout(150)
+  assert.equal(calls.filter(path => path.startsWith('/api/retrieval-index')).length, 1, 'initial mount/intersection share one request')
+  await page.evaluate(() => { document.dispatchEvent(new Event('visibilitychange')); document.dispatchEvent(new Event('visibilitychange')) })
+  await page.waitForTimeout(100)
+  assert.equal(calls.filter(path => path.startsWith('/api/retrieval-index')).length, 1, 'fresh visibility events do not re-fetch')
   const search = await page.locator('.note-tree-search-wrap').boundingBox()
   const entry = await trigger.boundingBox()
   assert.ok(entry.y >= search.y + search.height)
@@ -63,7 +74,19 @@ try {
   await trigger.click()
   await page.getByText('当前知识库服务尚不支持索引状态，请升级实际存储文档的服务。', { exact: true }).waitFor()
   assert.deepEqual(errors, [])
-  console.log('PASS real UI: placement, pagination, individual/bulk retry, light/dark/mobile, Escape, route cleanup and old-server fallback')
+  // A failed optional download must not block the directory, and must be retryable.
+  const recovery = await browser.newPage({ viewport: { width: 1280, height: 850 } })
+  let failedOnce = false
+  await recovery.route('**/retrieval-index-status.js*', route => {
+    if (!failedOnce) { failedOnce = true; return route.abort('failed') }
+    return route.continue()
+  })
+  await recovery.goto(origin + '/knowledge/')
+  await recovery.locator('.app-shell[data-loading="false"]').waitFor()
+  await recovery.getByRole('button', { name: '索引状态加载失败，重试' }).click()
+  await recovery.locator('.retrieval-index-trigger').waitFor()
+  await recovery.close()
+  console.log('PASS real UI: optional slow/failed module isolation, retry, request coalescing, placement, pagination, scoped retries, light/dark/mobile, Escape, route cleanup and old-server fallback')
 } finally {
   await browser.close(); await provider.close(); server.closeAllConnections()
   await new Promise(resolve => server.close(resolve))

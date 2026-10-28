@@ -111,9 +111,20 @@ test('module loads are deferred, deduplicated, and retryable after failure', asy
   const a = resources.module('worklog'), b = resources.module('worklog')
   assert.equal(a, b)
   await assert.rejects(a, /offline/)
-  assert.deepEqual(await resources.module('worklog'), { name: 'worklog' })
+  assert.deepEqual(await resources.module('worklog'), { name: 'worklog?retry=1' })
   await resources.module('worklog')
   assert.equal(count, 2)
+})
+
+test('failed feature imports keep the asset version while bypassing cached failures', async () => {
+  const urls = []
+  const resources = createLazyResources({ moduleUrl: name => `./${name}.js?v=release`, scriptUrl: name => name,
+    importModule: async url => { urls.push(url); if (urls.length === 1) throw Error('offline'); return { loaded: true } } })
+  await assert.rejects(resources.module('retrieval-index-status'), /offline/)
+  assert.deepEqual(await resources.module('retrieval-index-status'), { loaded: true })
+  assert.deepEqual(urls, ['./retrieval-index-status.js?v=release', './retrieval-index-status.js?v=release&retry=1'])
+  await resources.module('retrieval-index-status')
+  assert.equal(urls.length, 2)
 })
 
 test('classic feature scripts download only on demand, deduplicate and recover after errors', async () => {

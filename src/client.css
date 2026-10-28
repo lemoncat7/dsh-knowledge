@@ -93,6 +93,7 @@ body[data-ds-dark-theme] :is(
 .dsh-knowledge-activity-panel button,
 .dsh-knowledge-activity-panel input,
 .dsh-knowledge-panel-state button,
+.dsh-knowledge-connection-warning button,
 .dsh-knowledge-settings-card button,
 .dsh-knowledge-writeback-notice button {
   -webkit-appearance: none;
@@ -341,6 +342,27 @@ body[data-ds-dark-theme] :is(
   font-weight: 600;
 }
 
+.dsh-knowledge-connection-warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px;
+  color: var(--knowledge-text-secondary);
+  font-size: 13px;
+}
+.dsh-knowledge-connection-warning span { min-width: 0; overflow-wrap: anywhere; }
+.dsh-knowledge-connection-warning button {
+  flex-shrink: 0;
+  min-width: 56px;
+  min-height: 32px;
+  padding: 4px 12px;
+  border: 1px solid var(--knowledge-border);
+  border-radius: 10px;
+  background: var(--knowledge-hover);
+  color: var(--knowledge-text);
+  cursor: pointer;
+}
 .dsh-knowledge-panel-state > div { max-width: 560px; }
 .dsh-knowledge-panel-state h3 { margin: 0 0 6px; font-size: 17px; line-height: 24px; font-weight: 600; }
 .dsh-knowledge-panel-state p { margin: 0; color: var(--knowledge-text-secondary); font-size: 13px; line-height: 20px; }

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createConnectionClient, ConnectionRequestError, type KnowledgeConnectionView } from './connection-client.js'
 import { WritebackStatusClient } from './writeback/status-client.js'
 import { createNoteMentionSource } from './note-mention-source.js'
 import type {} from '@deepseek-ai/dsh-client-ui-input-trigger/client'
@@ -46,17 +47,6 @@ const STYLE_ID = `${PLUGIN_ID}/client`
 type SidebarActionProps = PropsRuntime<'sidebar.footer.action'>
 type ConversationSlotProps = PropsRuntime<'conversation'>
 
-interface KnowledgeConnectionView {
-  backend: 'local' | 'remote'
-  remoteUrl?: string
-  remoteTimeoutMs: number
-  tokenConfigured: boolean
-  canSwitchRemote: boolean
-  writable: boolean
-  managementAvailable: boolean
-  managementPath?: string
-}
-
 export interface KnowledgeWorkspaceController {
   isOpen(): boolean
   open(): void
@@ -74,8 +64,8 @@ export type KnowledgeDocumentTarget =
   | { view: 'citation'; citation: string }
 
 
-const CONNECTION_CONTROL_PATH = '/knowledge-control/v1/connection'
-let cachedConnectionView: KnowledgeConnectionView | undefined
+const connectionClient = createConnectionClient()
+const requestConnection = connectionClient.request
 
 /** Cordis services needed by the browser half. */
 export const inject = ['slots', 'theme', 'layout', 'sessions']
@@ -242,6 +232,7 @@ function KnowledgeConnectionCard() {
     setLoadError('')
     try {
       const value = await requestConnection('GET', undefined, signal)
+      if (signal?.aborted) return
       setCurrent(value)
       setLoadState('ready')
     } catch (error) {
@@ -377,45 +368,6 @@ function connectionErrorMessage(error: unknown): string {
   return message || '连接配置操作失败，请检查地址、令牌和 DSH 日志。'
 }
 
-async function requestConnection(
-  method: 'GET' | 'PUT',
-  body?: Record<string, unknown>,
-  signal?: AbortSignal,
-): Promise<KnowledgeConnectionView> {
-  const response = await fetch(CONNECTION_CONTROL_PATH, {
-    method,
-    headers: { accept: 'application/json', ...body === undefined ? {} : { 'content-type': 'application/json' } },
-    ...body === undefined ? {} : { body: JSON.stringify(body) },
-    ...signal === undefined ? {} : { signal },
-  })
-  const payload = await response.json().catch(() => undefined) as unknown
-  if (!response.ok) {
-    const message = payload !== null && typeof payload === 'object' && typeof (payload as { error?: unknown }).error === 'string'
-      ? (payload as { error: string }).error
-      : `连接接口返回 HTTP ${response.status}`
-    throw new Error(message)
-  }
-  if (!isConnectionView(payload)) throw new Error('插件连接接口返回了无效数据。')
-  cachedConnectionView = payload
-  return payload
-}
-
-function isConnectionView(value: unknown): value is KnowledgeConnectionView {
-  if (value === null || typeof value !== 'object') return false
-  const item = value as Partial<KnowledgeConnectionView>
-  return (item.backend === 'local' || item.backend === 'remote')
-    && Number.isInteger(item.remoteTimeoutMs)
-    && typeof item.tokenConfigured === 'boolean'
-    && typeof item.canSwitchRemote === 'boolean'
-    && typeof item.writable === 'boolean'
-    && typeof item.managementAvailable === 'boolean'
-    && (!item.managementAvailable || isManagementPath(item.managementPath))
-}
-
-function isManagementPath(value: unknown): value is string {
-  return typeof value === 'string' && value.startsWith('/') && !value.startsWith('//')
-}
-
 function KnowledgeLauncher({ wide, useSessions, workspace, activity, docked }: SidebarActionProps & { workspace: KnowledgeWorkspaceController; activity: KnowledgeActivityController; docked: boolean }) {
   const [open, setOpen] = useState(workspace.isOpen())
   const currentSessionId = useSessions((state: SessionListState) => availableActivitySession(state, docked))
@@ -464,6 +416,7 @@ function KnowledgeWorkspace({
   client,
   workspace,
 }: ConversationSlotProps & { client: ClientContext; workspace: KnowledgeWorkspaceController }) {
+  const cachedConnectionView = connectionClient.peek()
   const cachedManagementPath = cachedConnectionView?.managementAvailable ? cachedConnectionView.managementPath : undefined
   const [panelState, setPanelState] = useState<'loading' | 'ready' | 'unavailable' | 'error'>(cachedConnectionView === undefined ? 'loading' : cachedManagementPath === undefined ? 'unavailable' : 'ready')
   const [managementPath, setManagementPath] = useState<string | undefined>(cachedManagementPath)
@@ -475,12 +428,19 @@ function KnowledgeWorkspace({
   const knowledgeUrl = managementPath === undefined ? undefined : knowledgePanelUrl(managementPath, sessionId, projectId, target)
   const frame = useRef<HTMLIFrameElement | null>(null)
   const themeFrame = useRef(0)
+  const connectionRequest = useRef<AbortController | null>(null)
+  const managementPathRef = useRef(managementPath)
+  managementPathRef.current = managementPath
 
   const loadManagement = useCallback(async (background = false): Promise<void> => {
+    connectionRequest.current?.abort()
+    const controller = new AbortController()
+    connectionRequest.current = controller
     if (!background) setPanelState('loading')
     setPanelError('')
     try {
-      const connection = await requestConnection('GET')
+      const connection = await requestConnection('GET', undefined, controller.signal)
+      if (controller.signal.aborted) return
       if (!connection.managementAvailable || connection.managementPath === undefined) {
         setManagementPath(undefined)
         setPanelState('unavailable')
@@ -489,14 +449,30 @@ function KnowledgeWorkspace({
       setManagementPath(connection.managementPath)
       setPanelState('ready')
     } catch (error) {
+      if (controller.signal.aborted) return
+      // A temporary metadata outage must not destroy an editor already on screen.
+      // Access revocation and a removed endpoint must still fail closed.
+      if (background && managementPathRef.current !== undefined
+        && !(error instanceof ConnectionRequestError && [401, 403, 404].includes(error.status))) {
+        setPanelError(connectionErrorMessage(error))
+        return
+      }
       setManagementPath(undefined)
       setPanelError(connectionErrorMessage(error))
       setPanelState('error')
+    } finally {
+      if (connectionRequest.current === controller) connectionRequest.current = null
     }
   }, [])
 
   useEffect(() => {
-    void loadManagement(cachedConnectionView !== undefined)
+    void loadManagement(managementPathRef.current !== undefined)
+    const reconnect = (): void => { void loadManagement(managementPathRef.current !== undefined) }
+    window.addEventListener('online', reconnect)
+    return () => {
+      connectionRequest.current?.abort()
+      window.removeEventListener('online', reconnect)
+    }
   }, [loadManagement])
 
   useEffect(() => workspace.subscribe(() => { setTarget(workspace.currentTarget()) }), [workspace])
@@ -552,6 +528,10 @@ function KnowledgeWorkspace({
           <span><h2 id="dsh-knowledge-workspace-title">知识库</h2><p>文档、审核、挂载与访问管理</p></span>
         </div>
       </header>
+      {panelState === 'ready' && panelError && <div className="dsh-knowledge-connection-warning" role="status">
+        <span>连接复查暂未完成，当前页面已保留。{panelError}</span>
+        <button type="button" onClick={() => { void loadManagement(true) }}>重试</button>
+      </div>}
       {panelState === 'ready' && knowledgeUrl !== undefined
         ? <iframe ref={frame} className="dsh-knowledge-frame" src={knowledgeUrl} title="知识库管理台" onLoad={sendTheme} />
         : <div className="dsh-knowledge-panel-state" role={panelState === 'error' ? 'alert' : 'status'} aria-live="polite">

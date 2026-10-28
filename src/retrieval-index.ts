@@ -91,24 +91,34 @@ export class RetrievalIndex {
       ORDER BY i.retry_at,i.entry_id LIMIT ?`).all(now, count) as Row[]
     const started = performance.now()
     let processed = 0
-    for (const row of rows) {
-      if (processed && performance.now() - started > 12) break
-      const id = String(row.entry_id), body = String(row.body), version = Number(row.version)
-      try {
-        const hash = createHash('sha256').update(body).digest('hex')
-        const previous = this.db.prepare('SELECT body_hash,index_version,structure_json FROM knowledge_passage_index WHERE entry_id=?').get(id) as Row
-        const json = previous.body_hash === hash && previous.index_version === PASSAGE_INDEX_VERSION && previous.structure_json
-          ? String(previous.structure_json) : JSON.stringify(this.build(body))
-        this.db.prepare(`UPDATE knowledge_passage_index SET entry_version=?,index_version=?,body_hash=?,structure_json=?,
-          state='ready',attempts=0,retry_at=0,error_code=NULL,indexed_at=? WHERE entry_id=?
-          AND EXISTS(SELECT 1 FROM knowledge_entries WHERE id=? AND version=? AND body=?)`)
-          .run(version, PASSAGE_INDEX_VERSION, hash, json, now, id, id, version, body)
-      } catch {
-        const attempts = Number(row.attempts) + 1
-        this.db.prepare(`UPDATE knowledge_passage_index SET state='failed',attempts=?,retry_at=?,error_code='INDEX_BUILD_FAILED' WHERE entry_id=?`)
-          .run(attempts, now + Math.min(3_600_000, 5000 * 2 ** Math.min(attempts - 1, 10)), id)
+    if (!rows.length) return 0
+    // One durable commit per bounded batch, rather than one fsync per document.
+    // A savepoint also preserves a caller's surrounding transaction.
+    this.db.exec('SAVEPOINT knowledge_passage_batch')
+    try {
+      for (const row of rows) {
+        if (processed && performance.now() - started > 12) break
+        const id = String(row.entry_id), body = String(row.body), version = Number(row.version)
+        try {
+          const hash = createHash('sha256').update(body).digest('hex')
+          const previous = this.db.prepare('SELECT body_hash,index_version,structure_json FROM knowledge_passage_index WHERE entry_id=?').get(id) as Row
+          const json = previous.body_hash === hash && previous.index_version === PASSAGE_INDEX_VERSION && previous.structure_json
+            ? String(previous.structure_json) : JSON.stringify(this.build(body))
+          this.db.prepare(`UPDATE knowledge_passage_index SET entry_version=?,index_version=?,body_hash=?,structure_json=?,
+            state='ready',attempts=0,retry_at=0,error_code=NULL,indexed_at=? WHERE entry_id=?
+            AND EXISTS(SELECT 1 FROM knowledge_entries WHERE id=? AND version=? AND body=?)`)
+            .run(version, PASSAGE_INDEX_VERSION, hash, json, now, id, id, version, body)
+        } catch {
+          const attempts = Number(row.attempts) + 1
+          this.db.prepare(`UPDATE knowledge_passage_index SET state='failed',attempts=?,retry_at=?,error_code='INDEX_BUILD_FAILED' WHERE entry_id=?`)
+            .run(attempts, now + Math.min(3_600_000, 5000 * 2 ** Math.min(attempts - 1, 10)), id)
+        }
+        processed++
       }
-      processed++
+      this.db.exec('RELEASE knowledge_passage_batch')
+    } catch (error) {
+      this.db.exec('ROLLBACK TO knowledge_passage_batch; RELEASE knowledge_passage_batch')
+      throw error
     }
     if (processed < rows.length || rows.length === count) this.schedule(25)
     return processed

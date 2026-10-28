@@ -23,6 +23,45 @@ async function fixture(t) {
 const search = provider => provider.search({ text: 'TLS_CERT_EXPIRED', includePassage: true, limit: 4 })
 const drain = provider => { while (provider.retrievalIndex.processBatch()) {} }
 
+test('bounded index batches use one savepoint and preserve surrounding rollback', async t => {
+  const { provider } = await fixture(t)
+  provider.retrievalIndex.close()
+  for (let n = 0; n < 3; n++) await provider.create({ ...draft, title: `batch ${n}` })
+  const index = new RetrievalIndex(provider.db)
+  t.after(() => index.close())
+  const statements = []
+  const exec = provider.db.exec.bind(provider.db)
+  provider.db.exec = sql => { statements.push(sql); return exec(sql) }
+  provider.db.exec('BEGIN')
+  assert.equal(index.processBatch(), 3)
+  assert.equal(index.status().ready, 3)
+  provider.db.exec('ROLLBACK')
+  assert.equal(index.status().pending, 3)
+  assert.equal(statements.filter(s => s === 'SAVEPOINT knowledge_passage_batch').length, 1)
+  assert.equal(statements.filter(s => s === 'RELEASE knowledge_passage_batch').length, 1)
+  index.processBatch()
+  statements.length = 0
+  assert.equal(index.processBatch(), 0)
+  assert.deepEqual(statements, [], 'idle work must not start write transactions')
+})
+
+test('storage failure rolls back a batch and the next attempt can recover', async t => {
+  const { provider } = await fixture(t)
+  provider.retrievalIndex.close()
+  for (let n = 0; n < 2; n++) await provider.create({ ...draft, title: `recover ${n}` })
+  const index = new RetrievalIndex(provider.db)
+  t.after(() => index.close())
+  provider.db.exec(`CREATE TRIGGER reject_batch BEFORE UPDATE ON knowledge_passage_index
+    WHEN (SELECT count(*) FROM knowledge_passage_index WHERE state='ready') > 0
+    BEGIN SELECT RAISE(ABORT, 'test storage unavailable'); END;`)
+  assert.throws(() => index.processBatch(), /test storage unavailable/)
+  assert.equal(index.status().ready, 0)
+  assert.equal(index.status().pending, 2)
+  provider.db.exec('DROP TRIGGER reject_batch')
+  assert.equal(index.processBatch(), 2)
+  assert.equal(index.status().ready, 2)
+})
+
 test('persistent index has parent sections, deduplicated contiguous context and Unicode-accurate evidence', async t => {
   const { provider } = await fixture(t)
   const entry = await provider.create(draft)

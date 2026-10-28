@@ -1,5 +1,5 @@
 /** Create the authenticated HTTP boundary used by the management console. */
-export function createApiClient({ apiBase, authMode, getToken }) {
+export function createApiClient({ apiBase, authMode, getToken, readTimeoutMs = 30000, fetch: fetchRequest = globalThis.fetch }) {
   const requestHeaders = (options = {}) => {
     const headers = { accept: options.accept || 'application/json' }
     if (options.json) headers['content-type'] = 'application/json'
@@ -38,13 +38,31 @@ export function createApiClient({ apiBase, authMode, getToken }) {
   }
 
   async function api(path, options = {}) {
-    const response = await fetch(endpoint(path), {
-      method: options.method || 'GET',
-      headers: requestHeaders({ json: options.body !== undefined }),
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
-      signal: options.signal,
-    })
-    return parseJsonResponse(response)
+    const method = options.method || 'GET'
+    // Bound reads (including response bodies). Never replay or automatically
+    // time out a write whose server-side outcome could already be committed.
+    const bounded = method === 'GET' || method === 'HEAD'
+    const controller = bounded ? new AbortController() : undefined
+    const cancel = () => controller?.abort(options.signal.reason)
+    let expired = false
+    if (options.signal?.aborted) cancel()
+    else options.signal?.addEventListener('abort', cancel, { once: true })
+    const timer = bounded ? setTimeout(() => { expired = true; controller.abort() }, readTimeoutMs) : undefined
+    try {
+      const response = await fetchRequest(endpoint(path), {
+        method,
+        headers: requestHeaders({ json: options.body !== undefined }),
+        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+        signal: controller?.signal || options.signal,
+      })
+      return await parseJsonResponse(response)
+    } catch (error) {
+      if (expired && !options.signal?.aborted) throw Object.assign(new Error('读取超时，请重试；未自动重复提交任何修改。'), { code: 'READ_TIMEOUT' })
+      throw error
+    } finally {
+      clearTimeout(timer)
+      options.signal?.removeEventListener('abort', cancel)
+    }
   }
 
   async function binaryRequest(path, options = {}) {

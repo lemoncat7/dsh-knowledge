@@ -371,7 +371,6 @@ async function navigate(view) {
     if (view === 'writeback') ({ createWritebackWorkspace } = await resources.module('writeback-workspace'))
     if (view === 'worklog') ({ createWorklogWorkspace } = await resources.module('worklog-workspace'))
     if (view === 'recall') ({ createRecallWorkspace } = await resources.module('recall-workspace'))
-    if (view === 'entries' || view === 'bases') ({ createRetrievalIndexStatus } = await resources.module('retrieval-index-status'))
     if (view === 'entries' && pendingCitation !== null) {
       citationNavigation = await resources.module('citation-navigation')
       const ref = await citationNavigation.resolveCitation(pendingCitation, controller.signal)
@@ -1870,7 +1869,21 @@ function renderEntries() {
 }
 
 function renderRetrievalIndexStatus(workspace, bases) {
-  if (!createRetrievalIndexStatus) return null
+  if (!createRetrievalIndexStatus) {
+    const slot = element('div', { class: 'retrieval-index-status' })
+    const load = () => {
+      slot.replaceChildren(element('span', { class: 'muted', role: 'status' }, '读取索引状态…'))
+      void resources.module('retrieval-index-status').then(module => {
+        createRetrievalIndexStatus = module.createRetrievalIndexStatus
+        // Only patch this optional status slot, never remount an active editor.
+        if (slot.isConnected) slot.replaceWith(renderRetrievalIndexStatus(workspace, bases))
+      }).catch(() => {
+        if (slot.isConnected) slot.replaceChildren(actionButton('索引状态加载失败，重试', load, 'ghost small'))
+      })
+    }
+    load()
+    return slot
+  }
   retrievalIndexStatus ??= createRetrievalIndexStatus({ api, element, actionButton, interfaceIcon, openModal,
     sourceLabel: API_BASE.includes('remote') ? '中央知识库' : '当前知识库服务' })
   const params = new URLSearchParams()

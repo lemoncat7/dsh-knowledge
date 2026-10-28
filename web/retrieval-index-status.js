@@ -7,7 +7,10 @@ export function indexStatusLabel(data) {
 }
 
 export function createRetrievalIndexStatus({ api, element: el, actionButton: button, interfaceIcon: icon, openModal, sourceLabel = '当前知识库服务' }) {
-  let scope = '', data, error = '', terminal = false, disposed = false, active = false, visible = true
+  let scope = '', data, error = '', terminal = false, disposed = false, active = false
+  // An observed root starts detached. Wait for its first visible notification
+  // instead of issuing a read that the initial hidden notification cancels.
+  let visible = typeof IntersectionObserver === 'undefined'
   let timer, controller, modal, detailRoot, summary, list, feedback, tabs, pager, retryAll
   let selected = 'failed', offset = 0, busy = false, generation = 0, lastFetch = 0
   let detailKey = ''
@@ -23,7 +26,7 @@ export function createRetrievalIndexStatus({ api, element: el, actionButton: but
   function render() {
     const text = error ? '索引状态暂不可用' : indexStatusLabel(data)
     if (label.textContent !== text) label.textContent = text
-    root.dataset.state = error ? 'unavailable' : data?.failed ? 'failed' : data?.pending ? 'pending' : 'ready'
+    root.dataset.state = error ? 'unavailable' : !data ? 'loading' : data.failed ? 'failed' : data.pending ? 'pending' : 'ready'
     trigger.title = `${sourceLabel} · 当前目录范围 · ${text}`
     if (!modal) return
     summary.textContent = data ? `已就绪 ${data.ready} · 待处理 ${data.pending} · 失败 ${data.failed} · 共 ${data.total} 篇` : '正在读取服务状态…'
@@ -64,10 +67,16 @@ export function createRetrievalIndexStatus({ api, element: el, actionButton: but
   function schedule() {
     clearTimeout(timer)
     if (!active || disposed || document.hidden || (!visible && !modal) || terminal) return
-    timer = setTimeout(() => { void refresh() }, error ? 15000 : data?.pending || data?.failed ? 3000 : 30000)
+    timer = setTimeout(() => { void refresh() }, Math.max(0, interval() - (Date.now() - lastFetch)))
   }
+  function interval() { return error ? 15000 : data?.pending || data?.failed ? 3000 : 30000 }
   async function refresh(force = false) {
     if (!active || disposed || document.hidden || (!visible && !modal) || (terminal && !force) || busy) return
+    // Mount, visibility and intersection events often arrive in the same frame.
+    // Reuse pending reads and respect freshness; explicit detail changes may replace them.
+    if (!force && controller) return
+    if (!force && lastFetch && Date.now() - lastFetch < interval()) { schedule(); return }
+    clearTimeout(timer); timer = undefined
     controller?.abort()
     const request = ++generation
     const abort = new AbortController(); controller = abort
@@ -87,7 +96,7 @@ export function createRetrievalIndexStatus({ api, element: el, actionButton: but
         : failure.status === 401 || failure.status === 403 ? '当前连接没有查看索引状态的权限，请检查访问令牌。'
           : '暂时无法读取索引状态，不代表索引失败。请检查连接后刷新。'
       render()
-    } finally { clearTimeout(timeout); if (request === generation) { controller = undefined; schedule() } }
+    } finally { clearTimeout(timeout); if (request === generation) { controller = undefined; lastFetch = Date.now(); schedule() } }
   }
   function changePage(next) { offset = next; void refresh(true) }
   async function retry(documentId) {
@@ -142,8 +151,7 @@ export function createRetrievalIndexStatus({ api, element: el, actionButton: but
       const next = params.toString()
       if (scope !== next) { stop(); modal?.close(true); scope = next; data = undefined; error = ''; terminal = false; lastFetch = 0 }
       active = true; render()
-      if (!controller && (!lastFetch || Date.now() - lastFetch >= 3000)) void refresh()
-      else schedule()
+      void refresh()
       return root
     },
     suspend() { active = false; stop(); modal?.close(true) },

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, utimes, unlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -49,6 +49,22 @@ function markdown(body = '服务使用 Docker Compose 部署。') {
     body,
   })
 }
+
+test('unchanged base manifests are not rewritten; changes and missing files remain durable', async t => {
+  const { store, directory } = await fixture(t)
+  const path = join(directory, KNOWLEDGE_BASE_MANIFEST)
+  const oldTime = new Date('2020-01-01T00:00:00Z')
+  await utimes(path, oldTime, oldTime)
+  await store.ensureBase(base)
+  await store.ensureBase(base)
+  assert.equal((await stat(path)).mtimeMs, oldTime.getTime())
+  await store.updateBase(directory, { ...base, description: '新的说明' })
+  assert.match(await readFile(path, 'utf8'), /新的说明/)
+  assert.notEqual((await stat(path)).mtimeMs, oldTime.getTime())
+  await unlink(path)
+  await store.ensureBase(base)
+  assert.match(await readFile(path, 'utf8'), /DSH 开发规范/)
+})
 
 test('managed knowledge directories contain portable manifests and real Markdown documents', async (t) => {
   const { store, directory } = await fixture(t)

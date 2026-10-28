@@ -164,7 +164,14 @@ export class KnowledgeDocumentStore {
   }
 
   private async writeManifest(directory: string, base: KnowledgeBase): Promise<void> {
-    await atomicWrite(join(directory, KNOWLEDGE_BASE_MANIFEST), renderKnowledgeBaseManifest(base), true)
+    const path = join(directory, KNOWLEDGE_BASE_MANIFEST)
+    const content = renderKnowledgeBaseManifest(base)
+    // Every startup and projected document update ensures its base. Unchanged
+    // metadata must not cause another fsync/rename on busy disks.
+    try { if (await readFile(path, 'utf8') === content) return } catch (error) {
+      if (!isNodeError(error, 'ENOENT')) throw error
+    }
+    await atomicWrite(path, content, true)
   }
 
   private async assertManagedDirectory(directory: string): Promise<string> {
