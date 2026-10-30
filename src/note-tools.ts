@@ -21,14 +21,15 @@ export function registerKnowledgeNoteTools(
   provider: KnowledgeProvider,
   codec: KnowledgeNoteHandleCodec,
   knowledgeCodec: KnowledgeHandleCodec,
+  register = (tool: ToolDefinitionLike) => ctx.tools.register(tool),
 ): void {
-  ctx.tools.register(listNotesTool(provider, codec))
-  ctx.tools.register(readNoteTool(provider, codec, knowledgeCodec))
-  const confirmable = noteConfirmationTools(ctx)
-  ctx.tools.register(confirmable(createNoteTool(ctx, provider, codec)))
-  ctx.tools.register(confirmable(updateNoteTool(ctx, provider, codec, knowledgeCodec)))
-  ctx.tools.register(confirmable(moveNoteTool(ctx, provider, codec)))
-  ctx.tools.register(deleteNoteTool(provider, codec))
+  register(listNotesTool(provider, codec))
+  register(readNoteTool(provider, codec, knowledgeCodec))
+  const confirmable = noteConfirmationTools(ctx, register)
+  register(confirmable(createNoteTool(ctx, provider, codec)))
+  register(confirmable(updateNoteTool(ctx, provider, codec, knowledgeCodec)))
+  register(confirmable(moveNoteTool(ctx, provider, codec)))
+  register(deleteNoteTool(provider, codec))
 }
 
 function listNotesTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCodec): ToolDefinitionLike {

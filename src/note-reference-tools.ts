@@ -15,9 +15,10 @@ export function registerKnowledgeNoteReferenceTools(
   provider: KnowledgeProvider,
   knowledgeCodec: KnowledgeHandleCodec,
   noteCodec: KnowledgeNoteHandleCodec,
+  register = (tool: ToolDefinitionLike) => ctx.tools.register(tool),
 ): void {
-  ctx.tools.register(searchNotesTool(provider, noteCodec))
-  ctx.tools.register(manageNoteReferencesTool(provider, knowledgeCodec, noteCodec))
+  register(searchNotesTool(provider, noteCodec))
+  register(manageNoteReferencesTool(provider, knowledgeCodec, noteCodec))
 }
 
 function searchNotesTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleCodec): ToolDefinitionLike {

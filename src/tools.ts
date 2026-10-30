@@ -25,6 +25,7 @@ import { documentLifecycleTool } from './document-lifecycle-tool.js'
 import { documentGroupTools } from './document-group-tools.js'
 import { recallIncidentTool } from './recall-incident-tool.js'
 import { usageRecorder } from './recall-usage.js'
+import { knowledgeEntry } from './tool-entry.js'
 
 const textOutput = {
   schema: { type: 'string' },
@@ -38,16 +39,23 @@ export function registerKnowledgeTools(
   codec: KnowledgeHandleCodec,
   noteCodec: KnowledgeNoteHandleCodec,
 ): void {
-  ctx.tools.register(searchKnowledgeBaseTool(provider))
-  ctx.tools.register(searchTool(provider, codec))
-  ctx.tools.register(readTool(provider, codec))
-  ctx.tools.register(documentLifecycleTool(provider, codec))
-  ctx.tools.register(recallIncidentTool(provider, codec))
-  for (const tool of documentGroupTools(provider, codec)) ctx.tools.register(tool)
-  ctx.tools.register(createKnowledgeBaseTool(provider, ctx.llm))
-  ctx.tools.register(updateKnowledgeBaseTool(provider, ctx.llm))
-  registerKnowledgeNoteTools(ctx, provider, noteCodec, codec)
-  registerKnowledgeNoteReferenceTools(ctx, provider, codec, noteCodec)
+  const operations = new Map<string, ToolDefinitionLike>()
+  const register = (tool: ToolDefinitionLike): (() => void) => {
+    if (operations.has(tool.name)) throw new Error(`Duplicate knowledge operation: ${tool.name}`)
+    operations.set(tool.name, tool)
+    return () => { operations.delete(tool.name) }
+  }
+  register(searchKnowledgeBaseTool(provider))
+  register(searchTool(provider, codec))
+  register(readTool(provider, codec))
+  register(documentLifecycleTool(provider, codec))
+  register(recallIncidentTool(provider, codec))
+  for (const tool of documentGroupTools(provider, codec)) register(tool)
+  register(createKnowledgeBaseTool(provider, ctx.llm))
+  register(updateKnowledgeBaseTool(provider, ctx.llm))
+  registerKnowledgeNoteTools(ctx, provider, noteCodec, codec, register)
+  registerKnowledgeNoteReferenceTools(ctx, provider, codec, noteCodec, register)
+  ctx.tools.register(knowledgeEntry(operations))
 }
 
 function searchKnowledgeBaseTool(provider: KnowledgeProvider): ToolDefinitionLike {

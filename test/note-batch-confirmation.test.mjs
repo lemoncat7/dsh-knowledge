@@ -4,15 +4,16 @@ import {mkdtemp,rm} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {LocalKnowledgeProvider} from '../lib/local-provider.js'
-import {registerKnowledgeNoteTools} from '../lib/note-tools.js'
+import {registerKnowledgeTools} from '../lib/tools.js'
+import {ToolMap} from './fixtures/tool-map.mjs'
 import {KnowledgeNoteHandleCodec} from '../lib/note-reference-handle.js'
 import {KnowledgeHandleCodec} from '../lib/retrieval.js'
 
 async function fixture(t,content='# 甲\n旧甲\n# 乙\n旧乙'){
   const root=await mkdtemp(join(tmpdir(),'note-batch-')),provider=new LocalKnowledgeProvider(join(root,'db.sqlite'))
   t.after(async()=>{await provider.close();await rm(root,{recursive:true,force:true})})
-  const tools=new Map(),codec=new KnowledgeNoteHandleCodec(Buffer.alloc(32,1))
-  registerKnowledgeNoteTools({tools:{register(tool){tools.set(tool.name,tool)}}},provider,codec,new KnowledgeHandleCodec(Buffer.alloc(32,2)))
+  const tools=new ToolMap(),codec=new KnowledgeNoteHandleCodec(Buffer.alloc(32,1))
+  registerKnowledgeTools({tools:{register(tool){tools.set(tool.name,tool)}},llm:{}},provider,new KnowledgeHandleCodec(Buffer.alloc(32,2)),codec)
   const session={id:'batch-test',events:[],snapshotEvents(){return this.events},header:{}}
   const exec={agent:{session},signal:new AbortController().signal}
   const user=text=>session.events.push({type:'turn/start',seq:session.events.length,data:{}},{type:'user/message',seq:session.events.length+1,data:{source:{kind:'user'},content:[{type:'text',text}]}})

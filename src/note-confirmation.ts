@@ -39,12 +39,12 @@ export function requestNoteConfirmation(exec: ToolRunContextLike, reason: string
 
 /** Pending plans are server-owned, session-bound, bounded and deliberately not
  * restored after restart. Confirmation never accepts replacement tool args. */
-export function noteConfirmationTools(ctx: RuntimeContextLike): (tool: ToolDefinitionLike) => ToolDefinitionLike {
+export function noteConfirmationTools(ctx: RuntimeContextLike, register = (tool: ToolDefinitionLike) => ctx.tools.register(tool)): (tool: ToolDefinitionLike) => ToolDefinitionLike {
   const pending = new Map<string, { id: string; turn: number; users: number; expires: number; tool: ToolDefinitionLike; args: unknown; reason: string; preview: NoteMutationPreview | undefined; previewReadUntil: number }>()
   const turnOf = (exec: ToolRunContextLike) => exec.agent!.session.snapshotEvents().filter(e => e.type === 'turn/start').at(-1)?.seq ?? -1
   const usersOf = (exec: ToolRunContextLike) => exec.agent!.session.snapshotEvents().filter(e => e.type === 'user/message' && (e.data as unknown as { source?: { kind?: string } }).source?.kind === 'user').length
   const prune = () => { for (const [key, item] of pending) if (item.expires < Date.now()) pending.delete(key) }
-  ctx.tools.register({
+  register({
     name: 'knowledge_note_preview',
     description: 'Read the server-saved before/after preview of the current pending note change. If nextPreviewOffset is not null, continue with that offset BEFORE asking the user for one confirmation. This never writes or changes the proposal. Show every affected section and concrete before/after differences; do not merely ask for confirmation.',
     parameters: { type: 'object', additionalProperties: false, properties: {
@@ -68,7 +68,7 @@ export function noteConfirmationTools(ctx: RuntimeContextLike): (tool: ToolDefin
       })
     },
   })
-  ctx.tools.register({
+  register({
     name: 'knowledge_note_confirm',
     description: 'Execute the exact pending note change only after the user replies in a later turn confirming the previously summarized plan (for example 确认、可以、按这个改). Never call in the proposing turn. Do not regenerate or alter the proposed content. A changed request needs a new proposal. Restart or expiry requires proposing again.',
     parameters: { type: 'object', additionalProperties: false, properties: { confirmationId: { type: 'string' } }, required: ['confirmationId'] },

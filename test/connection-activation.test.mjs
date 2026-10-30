@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { ToolMap } from './fixtures/tool-map.mjs'
 import { createServer } from 'node:http'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -22,7 +23,7 @@ async function listen(server) {
 function createRuntime() {
   let controlHandler
   const disposers = []
-  const tools = new Map()
+  const tools = new ToolMap()
   const settingsNamespaces = new Set()
   const runtime = {
     llm: {

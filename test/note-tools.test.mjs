@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { ToolMap } from './fixtures/tool-map.mjs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -25,7 +26,7 @@ test('note changes require later conversational confirmation and preserve exact 
   const { registerKnowledgeNoteTools } = await import('../lib/note-tools.js')
   const { KnowledgeNoteHandleCodec } = await import('../lib/note-reference-handle.js')
   const { KnowledgeHandleCodec } = await import('../lib/retrieval.js')
-  const tools = new Map()
+  const tools = new ToolMap()
   registerKnowledgeNoteTools({ tools: { register(d) { tools.set(d.name, d) } }, get() { throw Error('must not call popup service') } }, p, new KnowledgeNoteHandleCodec(Buffer.alloc(32, 1)), new KnowledgeHandleCodec(Buffer.alloc(32, 2)))
   t.after(async () => { await p.close(); await rm(root, { recursive: true, force: true }) })
   const session = { id: 'chat', events: [], snapshotEvents() { return this.events }, header: {} }
@@ -91,7 +92,7 @@ test('AI note deletion preserves notes referenced by knowledge documents', async
   await seed.addKnowledgeNoteReference(entry.id, note.id, 'user')
   await seed.close()
 
-  const tools = new Map()
+  const tools = new ToolMap()
   const disposers = []
   const ctx = {
     logger: { debug() {}, info() {}, warn() {}, error() {} },

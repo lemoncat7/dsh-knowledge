@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { ToolMap } from './fixtures/tool-map.mjs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -40,7 +41,7 @@ test('AI note-reference tools use session handles, mounted write policy, and met
   })
   await seed.close()
 
-  const tools = new Map()
+  const tools = new ToolMap()
   const disposers = []
   const ctx = {
     logger: { debug() {}, info() {}, warn() {}, error() {} },

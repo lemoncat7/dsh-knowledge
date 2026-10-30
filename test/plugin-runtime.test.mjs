@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { ToolMap } from './fixtures/tool-map.mjs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -21,7 +22,7 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
   const listeners = new Map()
   const disposers = []
   const extractionRequests = []
-  const tools = new Map()
+  const tools = new ToolMap()
   const ctx = {
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     llm: {
@@ -190,7 +191,10 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
   assert.match(catalog.text, /Only reusable DSH plugin installation/)
   assert.doesNotMatch(catalog.text, /Install profile plugins with/)
 
-  assert.deepEqual([...tools.keys()].sort(), [
+  assert.deepEqual([...tools.keys()], ['knowledge'])
+  const toolExec = { agent: { session }, signal: new AbortController().signal }
+  const directory = JSON.parse(await tools.get('knowledge').execute({ action: 'list' }, toolExec))
+  assert.deepEqual(directory.operations.map(item => item.name).sort(), [
     'knowledge_base_create',
     'knowledge_base_search',
     'knowledge_base_update',
@@ -210,7 +214,6 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
     'knowledge_record_incident',
     'knowledge_search',
   ])
-  const toolExec = { agent: { session }, signal: new AbortController().signal }
   await assert.rejects(
     tools.get('knowledge_base_create').execute({ name: 'Unauthorized base' }, toolExec),
     /requires an explicit request in the current direct user message/,
@@ -227,7 +230,8 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
     }, toolExec),
     /write-back model missing\/unknown-model is unavailable/,
   )
-  assert.equal(tools.get('knowledge_base_create').parameters.properties.useCurrentSessionModel.default, true)
+  const description = JSON.parse(await tools.get('knowledge').execute({ action: 'describe', tool: 'knowledge_base_create' }, toolExec))
+  assert.equal(description.parameters.properties.useCurrentSessionModel.default, true)
   for (const fields of [
     { writebackProvider: 'other-machine', writebackModel: 'unavailable' },
     { useCurrentSessionModel: true, writebackProvider: 'other-machine' },
@@ -237,7 +241,7 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
     assert.equal(inherited.knowledgeBase.writebackModel, undefined)
     assert.match(inherited.warning, /ignored/)
   }
-  await assert.rejects(tools.get('knowledge_base_create').execute({ name: 'Bad mode', useCurrentSessionModel: 'false' }, toolExec), /must be a boolean/)
+  await assert.rejects(tools.get('knowledge_base_create').execute({ name: 'Bad mode', useCurrentSessionModel: 'false' }, toolExec), /must be (?:a )?boolean/)
   await assert.rejects(tools.get('knowledge_base_create').execute({ name: 'Incomplete route', useCurrentSessionModel: false, writebackProvider: 'missing' }, toolExec), /writebackModel/)
   const created = JSON.parse(await tools.get('knowledge_base_create').execute({
     name: 'Tool-managed base',
@@ -286,7 +290,7 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
   assert.doesNotMatch(baseSearchOutput, /Install profile plugins with/)
   await assert.rejects(
     tools.get('knowledge_search').execute({ query: 'DSH plugin installation' }, toolExec),
-    /base must be a non-empty string/,
+    /(?:base must be a non-empty string|required property 'base')/,
   )
   const searchOutput = await tools.get('knowledge_search').execute({ query: 'DSH plugin installation', base: 'default' }, toolExec)
   assert.match(searchOutput, /DSH plugin installation command/)
@@ -417,7 +421,10 @@ test('content write-back is not exposed to the main agent tool surface', async (
   })
 
   assert.equal(tools.has('knowledge_write'), false)
-  assert.deepEqual([...tools.keys()].sort(), [
+  assert.deepEqual([...tools.keys()], ['knowledge'])
+  const exec = { agent: { session: { id: 'discovery', header: {}, snapshotEvents: () => [] } }, signal: new AbortController().signal }
+  const directory = JSON.parse(await tools.get('knowledge').execute({ action: 'list' }, exec))
+  assert.deepEqual(directory.operations.map(item => item.name).sort(), [
     'knowledge_base_create', 'knowledge_base_search', 'knowledge_base_update', 'knowledge_document_group_assign', 'knowledge_document_groups', 'knowledge_document_status', 'knowledge_note_confirm', 'knowledge_note_create',
     'knowledge_note_delete', 'knowledge_note_list', 'knowledge_note_move', 'knowledge_note_preview', 'knowledge_note_read',
     'knowledge_note_references', 'knowledge_note_search', 'knowledge_note_update', 'knowledge_read', 'knowledge_record_incident', 'knowledge_search',

@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { ToolMap } from './fixtures/tool-map.mjs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -106,7 +107,7 @@ test('tool and automatic recall return the same passage, readable location and s
     assert.doesNotMatch(output, /😀服务说明/)
   }
   assert.ok(formatKnowledgeEntry(entry, mounts[0], hits[0].passage.offset, 500).includes(hits[0].passage.text))
-  const tools = new Map()
+  const tools = new ToolMap()
   registerKnowledgeTools({ tools: { register(tool) { tools.set(tool.name, tool) } }, llm: {} }, provider, codec, new KnowledgeNoteHandleCodec(Buffer.alloc(32, 8)))
   const read = tools.get('knowledge_read')
   const exec = { agent, signal: new AbortController().signal }
