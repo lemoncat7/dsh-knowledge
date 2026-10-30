@@ -75,7 +75,7 @@
   },
   "engines": {
     "node": "^22.19.0 || >=24.0.0",
-    "dsh": "^0.2.1-rc.2"
+    "dsh": ">=0.2.1-rc.2 <0.2.2-0"
   },
   "scripts": {
     "build": "node --check web/app.js && tsc -p tsconfig.json && node scripts/build-client.mjs",

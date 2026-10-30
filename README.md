@@ -15,7 +15,7 @@
 
 ## 安装
 
-适配 DeepSeek Harness **0.2.1-rc.2**（宿主仍为 RC），需要 Node.js **^22.19.0 或 >=24.0.0**。其他宿主版本请先查阅[兼容说明](docs/dsh-021-compatibility.md)和对应版本的发布说明。
+最低支持 DeepSeek Harness **0.2.1-rc.2**，已通过 **0.2.1-rc.5** 构建与回归测试（宿主仍为 RC），需要 Node.js **^22.19.0 或 >=24.0.0**。其他宿主版本请先查阅[兼容说明](docs/dsh-021-compatibility.md)和对应版本的发布说明。
 
 ```bash
 dsh plugin --profile web add @lemoncat7/dsh-knowledge@latest
