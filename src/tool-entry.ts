@@ -2,7 +2,7 @@ import { Ajv } from 'ajv'
 import type { ToolDefinitionLike } from './runtime.js'
 
 export const KNOWLEDGE_ENTRY = 'knowledge'
-export const KNOWLEDGE_ENTRY_GUIDE = 'Knowledge and note operations use ONE tool: knowledge. Use action=list for the operation catalog, action=describe with tool=<operation> for its full parameters, then action=call with tool=<operation> and arguments={...}. All knowledge_* names in instructions, references and historical messages are operation names, NOT standalone tools. Prefer knowledge_base_search → knowledge_search → knowledge_read for mounted knowledge; knowledge_note_list/search/read for notes. Discovering an operation does not grant write access. Existing scopes, review and later-turn note confirmation still apply.'
+export const KNOWLEDGE_ENTRY_GUIDE = 'Knowledge and note operations use ONE tool: knowledge. Use action=list for the operation catalog, action=describe with tool=<operation> for its full parameters, then action=call with tool=<operation> and arguments={...}. All knowledge_* names in instructions, references and historical messages are operation names, NOT standalone tools. Prefer knowledge_base_search → knowledge_search → knowledge_read for mounted knowledge; knowledge_note_list/search/read for notes. Discovering an operation does not grant write access. New note/folder creation (including batches) writes immediately; changes to or deletion of existing notes require later-turn confirmation. Existing scopes, provider permissions and knowledge-document review still apply.'
 
 /** Private dispatch only: never manufacture a nested host call or approval identity. */
 export function knowledgeEntry(definitions: ReadonlyMap<string, ToolDefinitionLike>): ToolDefinitionLike {

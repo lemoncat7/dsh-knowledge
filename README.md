@@ -36,3 +36,7 @@ dsh plugin --profile web add @lemoncat7/dsh-knowledge@latest
 - [笔记 @ 引用](docs/note-mentions.md)
 - [版本与发布说明](https://github.com/lemoncat7/dsh-knowledge/releases)
 - [发布维护约定](docs/releases/README.md)
+
+### 2.17.2
+
+新建笔记/目录及批量创建免确认；修改与删除已有内容仍需确认。详见 [版本说明](docs/releases/2.17.2.md)。

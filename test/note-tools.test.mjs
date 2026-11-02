@@ -34,13 +34,9 @@ test('note changes require later conversational confirmation and preserve exact 
   const run = async (name, args) => JSON.parse(await tools.get(name).execute(args, exec))
   const confirm = id => run('knowledge_note_confirm', { confirmationId: id })
   directUserTurn(session, 1, '整理一下吧')
-  const plan = await run('knowledge_note_create', { kind: 'document', name: '课程', content: '保留原文' })
-  assert.equal(plan.modified, false)
-  assert.deepEqual(await p.listNotes({ parentId: null }), [])
-  await assert.rejects(() => confirm(plan.confirmationId), /下一轮/)
-  directUserTurn(session, 2, '可以')
-  const created = await confirm(plan.confirmationId)
-  await assert.rejects(() => confirm(plan.confirmationId), /失效/)
+  const created = await run('knowledge_note_create', { kind: 'document', name: '课程', content: '保留原文' })
+  assert.equal(created.operation, 'created')
+  assert.equal((await p.listNotes({ parentId: null })).length, 1)
   const handle = created.note.handle
   const initial = await run('knowledge_note_read', { noteHandle: handle })
   const change = await run('knowledge_note_update', { noteHandle: handle, operation: 'append_content', expectedVersion: initial.note.version, value: '\\n补充图文' })
@@ -113,8 +109,8 @@ test('AI note deletion preserves notes referenced by knowledge documents', async
   const search = await tools.get('knowledge_note_search').execute({ query: '原始依据' }, exec)
   const handle = /handle: (n1\.[^\s,)]+)/.exec(search)?.[1]
   assert.ok(handle)
-  await assert.rejects(
-    () => tools.get('knowledge_note_delete').execute({ noteHandle: handle }, exec),
-    /referenced by 1 knowledge document/,
-  )
+  const plan = JSON.parse(await tools.get('knowledge_note_delete').execute({ noteHandle: handle }, exec))
+  assert.equal(plan.status, 'pending_confirmation')
+  directUserTurn(session, 2, '确认')
+  await assert.rejects(() => tools.get('knowledge_note_confirm').execute({confirmationId:plan.confirmationId},exec), /referenced by 1 knowledge document/)
 })
