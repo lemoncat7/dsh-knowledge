@@ -1006,27 +1006,12 @@ html,
   background: transparent;
 }
 .notes-browser-scrim { display: none; }
-.notes-browser { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); overflow: hidden; border-right: 1px solid var(--glass-separator); background: transparent; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+.notes-browser { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); overflow: hidden; border-right: 1px solid var(--glass-separator); background: transparent; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
 .notes-browser-header { min-height: 68px; display: grid; gap: 8px; padding: 10px 10px 7px; }
 .notes-browser-header > div:first-child { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .notes-browser-header h2 { margin: 0; font-size: 13px; font-weight: 650; }
 .notes-browser-header span { color: var(--text-tertiary); font-size: 10px; }
-.notes-browser-actions { display: flex; align-items: center; gap: 4px; }
-.notes-agent-guide { display: grid; gap: 18px; color: var(--text-secondary); }
-.notes-agent-guide-rule { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 12px; align-items: start; }
-.notes-agent-guide-index { display: grid; place-items: center; width: 30px; height: 30px; border: 1px solid var(--glass-border); border-radius: 9px; background: var(--material-control); color: var(--text-tertiary); font: 650 9px/1 var(--font-mono); box-shadow: var(--shadow-control); }
-.notes-agent-guide h3 { margin: 0 0 5px; color: var(--text); font-size: 13px; }
-.notes-agent-guide p { margin: 0; font-size: 12px; line-height: 1.65; }
-.notes-agent-capabilities { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.notes-agent-capability { min-width: 0; display: grid; gap: 4px; border: 1px solid var(--glass-border); border-radius: 11px; padding: 12px; background: var(--material-panel); box-shadow: var(--shadow-soft); }
-.notes-agent-capability strong { color: var(--text); font-size: 12px; }
-.notes-agent-capability span { color: var(--text-tertiary); font-size: 10px; line-height: 1.55; }
-.notes-agent-examples { display: grid; gap: 8px; }
-.notes-agent-examples ul { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
-.notes-agent-examples li { min-width: 0; display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 9px; align-items: start; }
-.notes-agent-examples li > span { border-radius: 6px; padding: 4px 5px; background: var(--surface-soft); color: var(--text-tertiary); font-size: 9px; font-weight: 650; text-align: center; }
-.notes-agent-examples code { min-width: 0; border: 1px solid var(--glass-border); border-radius: 8px; padding: 8px 10px; background: var(--surface-editor); color: var(--text-secondary); font: 11px/1.6 var(--font-mono); white-space: normal; overflow-wrap: anywhere; }
-.notes-agent-guide-note { border-left: 2px solid var(--border-strong); padding: 7px 0 7px 11px; color: var(--text-tertiary); }
+.notes-browser-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .notes-search { padding: 1px 10px 7px; }
 .notes-search .input { width: 100%; height: 34px; }
 .notes-tree { min-width: 0; max-width: 100%; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 2px 5px 16px; }
@@ -1314,7 +1299,6 @@ html,
 .notes-selection-block-menu .notes-selection-control { text-align: left; }
 .notes-selection-link-form { min-width: min(390px, calc(100vw - 26px)); display: grid; grid-template-columns: minmax(150px, 1fr) auto auto; align-items: center; gap: 4px; border-top: 1px solid var(--separator); margin-top: 4px; padding-top: 4px; }
 .notes-selection-link-error { grid-column: 1 / -1; color: var(--danger); font-size: 10px; }
-.dialog.notes-agent-guide-dialog { width: min(620px, calc(100vw - 40px)); }
 .dialog.notes-share-dialog { width: min(560px, calc(100vw - 40px)); }
 .notes-share-dialog-body { display: grid; gap: 16px; }
 .notes-share-dialog-kind { min-width: 0; display: grid; grid-template-columns: 46px minmax(0, 1fr); align-items: center; gap: 12px; }

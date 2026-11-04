@@ -91,7 +91,6 @@ try {
   await visit('notes')
   await inspect('新建笔记',()=>page.locator('.notes-content-actions').getByRole('button',{name:'新建文档',exact:true}).click(),{compact:true})
   await inspect('新建目录',()=>page.locator('.notes-content-actions').getByRole('button',{name:'新建目录',exact:true}).click(),{compact:true})
-  await inspect('笔记指令',()=>page.getByRole('button',{name:'会话指令',exact:true}).click())
   await visit('shares')
   await inspect('导入分享',()=>page.getByRole('button',{name:'从分享导入',exact:true}).click())
   await visit('notes',{noteId:note.id})

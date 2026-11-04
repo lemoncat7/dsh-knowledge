@@ -124,11 +124,6 @@ try {
   if (!await tree(note.id).isVisible()) await tree(folder.id).locator('.notes-tree-row').click()
   await tree(note.id).dragTo(page.locator('.notes-content.is-folder'), { targetPosition: { x: 500, y: 450 } })
   await waitNote(folder.id)
-  await page.getByRole('button', { name: '会话指令', exact: true }).click()
-  const guide = page.getByRole('dialog')
-  assert.match(await guide.innerText(), /一份完整预览，一次确认/)
-  assert.doesNotMatch(await guide.innerText(), /授权也不会从上一轮延续/)
-  await guide.getByRole('button', { name: '知道了' }).click()
   const upload = await page.evaluateHandle(() => {
     const transfer = new DataTransfer()
     transfer.items.add(new File(['external upload'], '拖放导入.txt', { type: 'text/plain' }))
@@ -139,7 +134,7 @@ try {
   await upload.dispose()
   for (let i = 0; i < 100 && !(await provider.listNotes({ parentId: nested.id })).some(n => n.name === '拖放导入.txt'); i++) await delay(50)
   assert.ok((await provider.listNotes({ parentId: nested.id })).some(n => n.name === '拖放导入.txt'))
-  console.log('PASS notes: list folder, tree whitespace, expanded region, nearest nested folder, content area, updated guide')
+  console.log('PASS notes: list folder, tree whitespace, expanded region, nearest nested folder, content area')
   console.log('PASS external file drag still imports into the target directory')
 
   await page.locator('[data-nav-view="candidates"]').click(); await ready('candidates')

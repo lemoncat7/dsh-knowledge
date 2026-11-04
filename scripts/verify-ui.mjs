@@ -75,6 +75,18 @@ try {
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'horizontal page overflow')
     if (width === 375) assert.equal(await page.locator('.notes-editor-outline').evaluate(node => getComputedStyle(node).backgroundColor), 'rgb(244, 244, 244)', 'mobile outline must occlude the document')
+    const directoryLayout = await page.locator('.notes-browser').evaluate(node => {
+      const search = node.querySelector('.notes-search').getBoundingClientRect()
+      const tree = node.querySelector('.notes-tree').getBoundingClientRect()
+      const buttons = [...node.querySelectorAll('.notes-browser-actions .button')]
+      const bounds = node.getBoundingClientRect()
+      return { gap: tree.top - search.bottom, searchHeight: search.height, treeHeight: tree.height,
+        clipped: buttons.some(button => button.getBoundingClientRect().right > bounds.right + 1) }
+    })
+    assert.ok(directoryLayout.searchHeight < 60 && directoryLayout.gap < 12 && directoryLayout.treeHeight > 80,
+      `${width}: directory pushed below search: ${JSON.stringify(directoryLayout)}`)
+    assert.equal(directoryLayout.clipped, false, `${width}: directory actions clipped`)
+    assert.equal(await page.getByRole('button', { name: '会话指令', exact: true }).count(), 0)
     const toolbar = page.locator('.notes-document-toolbar')
     assert.equal(await page.locator('.notes-document-scroll').evaluate(node => getComputedStyle(node).backgroundColor),
       scheme === 'dark' ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.12)', 'reading tint must follow the color scheme')

@@ -2432,7 +2432,6 @@ function renderNotes() {
           actionButton('目录', () => openCreateNoteFolder(), 'small'),
           actionButton('导入', () => fileInput.click(), 'ghost small'),
           actionButton('同步与本地文件', openNoteWorkspaceStatus, 'ghost small'),
-          actionButton('会话指令', openNoteAgentGuide, 'ghost small'),
           fileInput,
         ),
       ),
@@ -2457,43 +2456,6 @@ function renderNotes() {
     renderNoteTransfer(),
   )
   return element('section', { class: 'notes-page', 'aria-label': '笔记工作区' }, workspace)
-}
-
-function openNoteAgentGuide() {
-  const capabilityRows = [
-    ['笔记文档', '浏览、读取、创建、整篇修改、追加、重命名、移动、删除'],
-    ['笔记目录', '创建、重命名、移动、删除'],
-  ].map(([label, detail]) => element('div', { class: 'notes-agent-capability' },
-    element('strong', {}, label), element('span', {}, detail)))
-  const examples = [
-    ['创建', '在笔记工作区的「发布资料」目录里，新建笔记文档「上线检查.md」，内容是：……'],
-    ['整篇修改', '请整体优化笔记「发布资料/上线检查.md」的结构和表述，把全部修改合成一份预览，说明修改位置和前后差异，等我确认后统一保存。'],
-    ['确认', '确认，按刚才的方案修改。'],
-    ['目录', '把笔记目录「发布资料」重命名为「发布归档」。'],
-  ].map(([label, text]) => element('li', {}, element('span', {}, label), element('code', {}, text)))
-  const body = element('div', { class: 'notes-agent-guide' },
-    element('section', { class: 'notes-agent-guide-rule' },
-      element('span', { class: 'notes-agent-guide-index', 'aria-hidden': 'true' }, '01'),
-      element('div', {},
-        element('h3', {}, '用名称、路径或 @ 引用指定笔记'),
-        element('p', {}, '会话可以浏览和读取笔记，不需要为每次查看单独授权。用 @ 引用选择目标最准确；也可以写名称，重名时补全“目录/子目录/文档名”，无需填写内部编号。'))),
-    element('section', { class: 'notes-agent-guide-rule' },
-      element('span', { class: 'notes-agent-guide-index', 'aria-hidden': 'true' }, '02'),
-      element('div', {},
-        element('h3', {}, '同一篇笔记，一份完整预览，一次确认'),
-        element('p', {}, '创建、修改或移动前，会话先给出完整变更方案；修改预览应说明受影响的位置和具体前后差异，不应逐章逐段重复询问。你在下一轮确认后，才执行刚才的方案。若改变要求、插入其他对话，或方案过期、服务重启，需要重新预览。'))),
-    element('div', { class: 'notes-agent-capabilities', 'aria-label': '会话可执行的笔记操作' }, capabilityRows),
-    element('section', { class: 'notes-agent-examples' },
-      element('h3', {}, '可以直接这样说'),
-      element('ul', {}, examples)),
-    element('p', { class: 'notes-agent-guide-note' }, '请区分笔记工作区与本地文件。删除仍需明确提出删除要求；修改后的内容可以在笔记的历史版本中查看。'))
-  return openModal({
-    title: '让会话整理笔记',
-    description: '自然描述需求，先检查完整预览，再确认保存。',
-    body,
-    cancelLabel: '知道了',
-    className: 'notes-agent-guide-dialog',
-  })
 }
 
 async function loadNoteShares(signal) {
