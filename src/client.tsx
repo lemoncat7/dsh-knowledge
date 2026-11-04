@@ -91,7 +91,7 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
     name: 'sidebar.footer.action',
     id: 'knowledge',
-    order: -10,
+    order: 21, // Immediately after the appearance entry (order 20).
   }, props => <KnowledgeLauncher {...props} workspace={workspace} activity={activity!} docked={supportsDockedPanels(ctx)} />))
 
   // DSH 0.1.7 retired `settings.plugin.item`; `settings.plugins.tab` exists on
