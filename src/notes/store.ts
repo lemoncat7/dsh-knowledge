@@ -38,6 +38,7 @@ export class NoteStore {
     this.db = new DatabaseSync(join(rootPath, 'notes.sqlite'))
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
     this.migrate()
+    this.db.exec('CREATE TABLE IF NOT EXISTS note_version_sources(note_id TEXT NOT NULL, version INTEGER NOT NULL, source TEXT NOT NULL, PRIMARY KEY(note_id,version));')
     this.db.exec(`CREATE TABLE IF NOT EXISTS note_sync_content(note_id TEXT NOT NULL REFERENCES note_nodes(id) ON DELETE CASCADE, version INTEGER NOT NULL, content BLOB NOT NULL, PRIMARY KEY(note_id,version));
       CREATE TABLE IF NOT EXISTS note_sync_receipts(actor TEXT NOT NULL, operation_id TEXT NOT NULL, digest TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(actor,operation_id));
       CREATE TABLE IF NOT EXISTS note_sync_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -279,16 +280,20 @@ export class NoteStore {
     return this.enqueueContentMutation(id, () => this.read(id))
   }
 
-  async updateContent(id: string, content: Uint8Array, expectedVersion?: number): Promise<NoteNode> {
+  async updateContent(id: string, content: Uint8Array, expectedVersion?: number, source = '应用修改'): Promise<NoteNode> {
     const bytes = Buffer.from(content)
     return this.enqueueContentMutation(id, () => {
       if (expectedVersion !== undefined && this.requireNode(id).version !== normalizeVersion(expectedVersion)) {
         throw conflict('笔记已被修改，请重新读取并合并后保存')
       }
-      return this.updateContentNow(id, bytes)
+      return this.updateContentNow(id, bytes, source)
     })
   }
 
+  private versionSource(id: string, version: number): {source?: string} {
+    const row = this.db.prepare('SELECT source FROM note_version_sources WHERE note_id=? AND version=?').get(id, version) as {source: string} | undefined
+    return row ?? {}
+  }
   listVersions(id: string, limit = 100): NoteVersion[] {
     this.assertOpen()
     this.requireNode(id)
@@ -299,7 +304,7 @@ export class NoteStore {
       WHERE note_id=?
       ORDER BY version DESC
       LIMIT ?
-    `).all(id, boundedLimit) as SqlRow[]).map(mapNoteVersion)
+    `).all(id, boundedLimit) as SqlRow[]).map(row => ({...mapNoteVersion(row), ...this.versionSource(id, Number(row.version))}))
   }
 
   async readVersion(id: string, version: number): Promise<{ node: NoteNode; version: NoteVersion; content: Buffer }> {
@@ -312,7 +317,7 @@ export class NoteStore {
       WHERE note_id=? AND version=?
     `).get(id, normalizedVersion) as SqlRow | undefined
     if (row === undefined) throw notFound(`note version "${id}@${normalizedVersion}" was not found`)
-    const snapshot = mapNoteVersion(row)
+    const snapshot = {...mapNoteVersion(row), ...this.versionSource(id, normalizedVersion)}
     try {
       const blob = this.db.prepare('SELECT content FROM note_sync_content WHERE note_id=? AND version=?').get(id,normalizedVersion) as {content:Uint8Array}|undefined
       const content = blob ? Buffer.from(blob.content) : await readFile(this.versionPath(id, normalizedVersion))
@@ -333,11 +338,11 @@ export class NoteStore {
         throw conflict(`note node "${id}" changed after its history was opened`)
       }
       const historical = await this.readVersion(id, version)
-      return this.updateContentNow(id, historical.content)
+      return this.updateContentNow(id, historical.content, '恢复历史')
     })
   }
 
-  private async updateContentNow(id: string, content: Buffer): Promise<NoteNode> {
+  private async updateContentNow(id: string, content: Buffer, source = '应用修改'): Promise<NoteNode> {
     const node = this.get(id)
     if (node === undefined) throw notFound(`note node "${id}" was not found`)
     if (!isEditableNoteNode(node)) throw inputError('only text-based note files can be edited')
@@ -360,6 +365,7 @@ export class NoteStore {
           INSERT INTO note_versions(note_id,version,name,media_type,size,sha256,created_at)
           VALUES(?,?,?,?,?,?,?)
         `).run(id, version, node.name, node.mediaType, content.byteLength, sha256, updatedAt)
+        this.db.prepare('INSERT OR REPLACE INTO note_version_sources VALUES(?,?,?)').run(id, version, source)
         const result = this.db.prepare('UPDATE note_nodes SET size=?, sha256=?, version=?, updated_at=? WHERE id=? AND version=?')
           .run(content.byteLength, sha256, version, updatedAt, id, node.version)
         if (result.changes !== 1) throw conflict(`note node "${id}" changed while it was being saved`)
@@ -374,6 +380,24 @@ export class NoteStore {
       await rm(snapshotPath, { force: true }).catch(() => {})
       throw error
     }
+  }
+
+  relocate(id: string, name: string, parentId: string | null, expected: string): Promise<NoteNode> {
+    return this.enqueueContentMutation(id, async () => {
+      const node = this.requireNode(id)
+      if (noteFingerprint(node) !== expected) throw conflict('笔记已变化，未应用外部路径操作')
+      const normalized = normalizeNoteName(name), parent = normalizeParentId(parentId)
+      if (parent !== null) {
+        this.assertFolder(parent)
+        if (parent === id || (node.kind === 'folder' && this.isDescendant(parent, id))) throw conflict('目录不能移动到自身内部')
+      }
+      this.assertNameAvailable(parent, normalized, id)
+      const updatedAt = new Date().toISOString()
+      this.db.prepare('UPDATE note_nodes SET name=?, parent_id=?, parent_key=?, updated_at=? WHERE id=?')
+        .run(normalized, parent, parentKey(parent), updatedAt, id)
+      const result = { ...node, name: normalized, parentId: parent, updatedAt }
+      return { ...result, editable: isEditableNoteNode(result) }
+    })
   }
 
   rename(id: string, name: string): NoteNode {

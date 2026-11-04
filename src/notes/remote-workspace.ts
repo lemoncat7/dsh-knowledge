@@ -23,7 +23,9 @@ export function acquireRemoteWorkspace(root: string, transport: NoteTransport) {
       {
         all: () => replica.all(),
         read: (id) => replica.read(id),
-        update: (id, b, v) => replica.change(id, { content: b }, v),
+        readVersion: (id, version) => replica.readVersion(id, version),
+        relocate: (id, name, parentId, expected) => replica.change(id, {name, parentId}, undefined, expected),
+        update: (id, b, v) => replica.change(id, { content: b }, v, undefined, '外部文件修改'),
         create: (k, n, p, b) => replica.create(k, n, p, b),
       },
       join(key, 'vault-index.json'),

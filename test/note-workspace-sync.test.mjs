@@ -177,10 +177,11 @@ test('Markdown vault supports OB-style atomic saves, imports, ignores app files 
     },
     join(f.root, 'vault-index.json'),
     false,
+    {stableMs:0, missingMs:30000, now:()=>Date.now()},
   )
   t.after(() => vault.close())
   await vault.scan()
-  const filename = (await readdir(dir))[0]
+  const filename = (await readdir(dir)).find(name=>!name.startsWith('.'))
   assert.match(filename, /\.md$/)
   assert.equal(await readFile(join(dir, filename), 'utf8'), '# hello\n')
   await writeFile(join(dir, filename), 'OB edited')
@@ -217,7 +218,7 @@ test('vault refuses symlinks and external removal never deletes the source note'
   )
   t.after(() => v.close())
   await v.scan()
-  const file = join(dir, (await readdir(dir))[0])
+  const file = join(dir, (await readdir(dir)).find(name=>!name.startsWith('.')))
   await rm(file)
   await v.scan()
   assert.ok(f.server.get(n.id))

@@ -224,7 +224,7 @@ function updateNoteTool(ctx: RuntimeContextLike, provider: KnowledgeProvider, co
         const plan = planNoteContentUpdate(original, operation, args)
         await approveNoteMutation(ctx, exec, 'knowledge_note_update', `${plan.summary}\n笔记：${node.name}\n版本：${expectedVersion}${purpose ? `\n本次修改目的：${purpose}` : ''}`, plan.preview)
         await assertNoteUnchanged(provider, node, exec.signal)
-        updated = await provider.updateNoteContent(node.id, new TextEncoder().encode(plan.content), exec.signal, expectedVersion)
+        updated = await provider.updateNoteContent(node.id, new TextEncoder().encode(plan.content), exec.signal, expectedVersion, 'AI 修改')
       }
       return mutationResult(provider, 'updated', updated, codec.encode(agent.session.id, updated.id))
     },

@@ -15,6 +15,7 @@ export interface NoteNode {
 }
 
 export interface NoteVersion {
+  source?: string
   noteId: string
   version: number
   name: string

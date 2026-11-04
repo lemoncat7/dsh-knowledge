@@ -43,6 +43,7 @@ export class NoteReplica {
     this.db = new DatabaseSync(path)
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS replica(id TEXT PRIMARY KEY,node TEXT NOT NULL,base TEXT,content BLOB NOT NULL,dirty INTEGER NOT NULL DEFAULT 0,deleted INTEGER NOT NULL DEFAULT 0,conflict TEXT,operation TEXT);
+      CREATE TABLE IF NOT EXISTS version_sources(id TEXT NOT NULL, version INTEGER NOT NULL, source TEXT NOT NULL, PRIMARY KEY(id,version));
       CREATE TABLE IF NOT EXISTS versions(id TEXT NOT NULL,version INTEGER NOT NULL,node TEXT NOT NULL,content BLOB NOT NULL,PRIMARY KEY(id,version));
       CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS incoming(id TEXT PRIMARY KEY,node TEXT NOT NULL,content BLOB NOT NULL);`)
@@ -146,6 +147,7 @@ export class NoteReplica {
     ).map((r) => {
       const n = JSON.parse(r.node) as NoteNode
       return {
+        ...(this.db.prepare('SELECT source FROM version_sources WHERE id=? AND version=?').get(n.id, n.version) as {source: string} | undefined),
         noteId: n.id,
         version: n.version,
         name: n.name,
@@ -231,11 +233,14 @@ export class NoteReplica {
     id: string,
     patch: { name?: string; parentId?: string | null; content?: Uint8Array },
     expectedVersion?: number,
+    expectedFingerprint?: string,
+    source = '应用修改',
   ) {
     return this.serial(() => {
       const row = this.row(id),
         node = this.get(id)
       if (!row || !node) throw syncError(404, '笔记不存在')
+      if (expectedFingerprint !== undefined && noteFingerprint(node) !== expectedFingerprint) throw syncError(409, '笔记路径或内容已变化')
       if (row.conflict || row.operation) throw syncError(409, '此笔记有待处理冲突或未确认操作，内容仍保留，请先同步')
       if (expectedVersion !== undefined && expectedVersion !== node.version)
         throw syncError(409, '笔记已变化，请合并后保存')
@@ -261,7 +266,10 @@ export class NoteReplica {
         version: node.version + 1,
         updatedAt: new Date().toISOString(),
       }
-      this.transaction(() => this.save(n, bytes, row.base ? JSON.parse(row.base) : null, true))
+      this.transaction(() => {
+        this.save(n, bytes, row.base ? JSON.parse(row.base) : null, true)
+        this.db.prepare('INSERT OR REPLACE INTO version_sources VALUES(?,?,?)').run(id, n.version, source)
+      })
       void this.sync()
       return n
     })

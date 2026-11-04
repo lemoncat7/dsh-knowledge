@@ -1,4 +1,5 @@
 export interface NoteHistoryItem {
+  source?: string
   noteId: string
   version: number
   name: string
@@ -116,7 +117,7 @@ export function createNoteHistoryView(options: NoteHistoryViewOptions): NoteHist
     if (!selected) return
     const current = selected.version === options.currentVersion
     detailTitle.textContent = `版本 ${selected.version}${current ? ' · 当前' : ''}`
-    detailMeta.textContent = `${options.formatDate(selected.createdAt)} · ${options.formatBytes(selected.size)}`
+    detailMeta.textContent = `${options.formatDate(selected.createdAt)} · ${options.formatBytes(selected.size)}${selected.source ? ` · ${selected.source}` : ''}`
     const sameContent = contentLoaded && selectedContent === options.currentContent
     restoreButton.disabled = pendingVersion !== undefined || current || !contentLoaded || sameContent
     restoreButton.textContent = current ? '当前版本' : sameContent ? '内容相同' : '恢复为新版本'
@@ -185,7 +186,7 @@ export function createNoteHistoryView(options: NoteHistoryViewOptions): NoteHist
     button.append(
       node('strong', '', `版本 ${version.version}${current ? ' · 当前' : ''}`),
       node('span', '', options.formatDate(version.createdAt)),
-      node('small', '', options.formatBytes(version.size)),
+      node('small', '', `${options.formatBytes(version.size)}${version.source ? ` · ${version.source}` : ''}`),
     )
     button.addEventListener('click', () => { void selectVersion(version) })
     versionList.append(button)

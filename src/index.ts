@@ -98,7 +98,9 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   const localNoteVault=managementProvider&&resolved.databasePath&&resolved.databasePath!==':memory:' ? new NoteVault(resolved.databasePath+'.note-workspaces/local/vault',{
     all:()=>managementProvider.notes.syncManifest().nodes,
     read:id=>managementProvider.readNote(id),
-    update:(id,bytes,version)=>managementProvider.updateNoteContent(id,bytes,undefined,version),
+    readVersion:(id,version)=>managementProvider.readNoteVersion(id,version),
+    relocate:(id,name,parent,expected)=>managementProvider.notes.relocate(id,name,parent,expected),
+    update:(id,bytes,version)=>managementProvider.updateNoteContent(id,bytes,undefined,version,'外部文件修改'),
     create:(kind,name,parentId,bytes)=>kind==='folder'?managementProvider.createNoteFolder(name,parentId):managementProvider.createNoteDocument(name,parentId,Buffer.from(bytes).toString('utf8')),
   },resolved.databasePath+'.note-workspaces/local/vault-index.json'):undefined
   const connectionProvider = (settings: KnowledgeConnectionSettings): { provider: KnowledgeProvider; owned: boolean } => {

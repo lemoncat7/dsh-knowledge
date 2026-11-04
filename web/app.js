@@ -2382,15 +2382,44 @@ async function openNoteWorkspaceStatus() {
     element('p', { role: 'status' }, status.mode === 'remote' ? `${status.message}；${status.pending || 0} 项待同步，${status.conflicts?.length || 0} 项冲突。` : '本地笔记工作区：正文和附件可通过下方目录访问。'),
     element('p', {}, '这是 DSH 所在服务器上的目录。Obsidian 选择“打开文件夹作为仓库”即可读取；其他电脑需要先挂载该目录。'),
     element('code', { style: 'overflow-wrap:anywhere' }, status.path || '未配置本地文件工作区'),
-    element('p', {}, '支持普通 Markdown 正文编辑和新建 Markdown。外部删除不会删除知识库原文；改名、移动和冲突请在工作区中处理。'),
+    element('p', {}, '支持 Markdown 编辑、新建及可识别的改名和移动。文件稳定后同步；删除需连续检查至少 30 秒，再移入可恢复的回收站。挂载异常时暂停同步。'),
     status.warning ? element('p', { role: 'alert' }, status.warning) : null,
-    status.externalConflicts ? element('p', { role: 'alert' }, `${status.externalConflicts} 个外部文件存在冲突，原文件未覆盖。请对照网页版本手动合并。`) : null,
-    status.externalMissing ? element('p', {}, `${status.externalMissing} 个本地文件已移走或删除；知识库原文仍保留。`) : null,
+    status.externalConflicts ? element('p', { role: 'alert' }, `${status.externalConflicts} 项外部变化需要处理，双方内容均保留。`) : null,
+    status.externalMissing ? element('p', {}, `${status.externalMissing} 个文件缺失，正在确认移动或删除。`) : null,
+    ...(status.externalIssues || []).map(item => element('div', {}, element('strong', {}, item.path), actionButton('查看冲突', () => openExternalNoteConflict(item), 'small'))),
+    (status.recycle || []).length ? element('details', {}, element('summary', {}, `回收站 · ${status.recycle.length} 项`), ...status.recycle.map(item => element('div', {}, element('span', {}, item.path), actionButton('恢复', async () => { await api('note-workspace/recycle/restore', { method: 'POST', body: { id: item.id } }); modal.close(); await loadNotes(); renderShell(); await openNoteWorkspaceStatus() }, 'small')))) : null,
+    (status.events || []).length ? element('details', {}, element('summary', {}, '最近文件活动'), ...status.events.slice(0, 30).map(item => element('p', {}, `${formatDate(item.time)} · ${item.action} · ${item.path}`))) : null,
     ...(status.conflicts || []).map(item => element('div', {}, element('strong', {}, item.name), element('p', {}, item.reason), actionButton('处理冲突', () => openNoteWorkspaceConflict(item), 'small'))),
   )
   let modal
   modal = openModal({ title: '笔记同步与本地文件', body, cancelLabel: '关闭', primaryLabel: '立即同步', onPrimary: async () => { await api('note-workspace', { method: 'POST' }); modal.close(); await openNoteWorkspaceStatus(); return true } })
 }
+async function openExternalNoteConflict(item) {
+  const detail = await api(`note-workspace/external?id=${encodeURIComponent(item.id)}`)
+  let dialog
+  const choose = async choice => {
+    await api('note-workspace/external/resolve', { method: 'POST', body: { id: item.id, choice, fingerprint: detail.fingerprint, externalHash: detail.externalHash } })
+    dialog.close(); await loadNotes(); renderShell()
+  }
+  const body = element('div', { class: 'sync-conflict-body' },
+    element('p', {}, '确认时会重新检查双方版本；被替换的外部文件保留在 .dsh-history，知识库原版本保留在页面历史中。'),
+    element('div', { class: 'sync-merge-columns' },
+      element('section', {}, element('h3', {}, '知识库版本'), element('textarea', { class: 'input sync-merge-content', readonly: true, 'aria-label': '知识库版本' }, detail.applicationText)),
+      element('section', {}, element('h3', {}, '外部文件'), detail.externalText === null ? element('p', {}, '原路径文件已不存在；请先检查是否改名或移动。') : element('textarea', { class: 'input sync-merge-content', readonly: true, 'aria-label': '外部文件版本' }, detail.externalText))),
+    actionButton(detail.externalText === null ? '恢复知识库文件到原路径' : '采用知识库版本', () => choose('application'), 'small'),
+    detail.externalText === null ? null : actionButton('采用外部版本', () => choose('external'), 'small'))
+  if (detail.externalText === null && detail.candidates?.length) {
+    const picker = element('select', { class: 'select', 'aria-label': '文件移动后的路径' }, ...detail.candidates.map(candidate => element('option', { value: candidate.path }, candidate.path)))
+    body.append(element('p', {}, '如果文件只是改名或移动，请选择新路径，继续使用原笔记和历史。'), picker,
+      actionButton('关联选中的路径', async () => {
+        const candidate = detail.candidates.find(candidate => candidate.path === picker.value)
+        await api('note-workspace/external/link', { method: 'POST', body: { id: item.id, path: candidate.path, signature: candidate.signature, fingerprint: detail.fingerprint } })
+        dialog.close(); await loadNotes(); renderShell()
+      }, 'small'))
+  }
+  dialog = openModal({ title: `外部文件冲突：${item.path}`, body, cancelLabel: '暂不处理' })
+}
+
 async function openNoteWorkspaceConflict(item) {
   const detail = await api(`note-workspace/conflict?id=${encodeURIComponent(item.id)}`)
   const body = element('div', { class: 'sync-conflict-body' },
@@ -3781,9 +3810,10 @@ async function openNoteHistory(node) {
     pending.replaceChildren()
     feedbackTimer = window.setTimeout(() => { if (!closed) pending.textContent = '正在读取页面历史…' }, 180)
     try {
-      const [current, versions] = await Promise.all([
+      const [current, versions, externalOrigins] = await Promise.all([
         state.notes.selectedNode?.id === node.id ? state.notes.selectedNode : api(`notes/${encodeURIComponent(node.id)}`, { signal: controller.signal }),
         api(`notes/${encodeURIComponent(node.id)}/versions?limit=100`, { signal: controller.signal }),
+        api('note-workspace', { signal: controller.signal }).catch(() => null),
         resources.script('note-history', 'DshKnowledgeNoteHistory'), loadChangeReview(), loadMarkdownPreview(),
       ])
       if (closed) return
@@ -3799,7 +3829,7 @@ async function openNoteHistory(node) {
         }).then(blob => blob.text())
       if (closed) return
       view = window.DshKnowledgeNoteHistory.createNoteHistoryView({
-        versions,
+        versions: versions.map(version => ({ ...version, source: version.source || externalOrigins?.events?.find(item => item.id === node.id && item.version === version.version && /修改|合并|采用/.test(item.action))?.action })),
         currentVersion: current.version,
         currentContent, currentContentKnown: true,
         loadContent: async (version, signal) => {

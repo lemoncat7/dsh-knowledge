@@ -339,9 +339,9 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     return this.request<NoteNode>('notes/documents', { method: 'POST', body: { name, parentId, content }, signal })
   }
 
-  async updateNoteContent(id: string, content: Uint8Array, signal?: AbortSignal, expectedVersion?: number): Promise<NoteNode> {
-    if(this.noteReplica)return this.noteReplica.change(id,{content},expectedVersion)
-    const query = expectedVersion === undefined ? '' : `?expectedVersion=${expectedVersion}`
+  async updateNoteContent(id: string, content: Uint8Array, signal?: AbortSignal, expectedVersion?: number, source = '应用修改'): Promise<NoteNode> {
+    if(this.noteReplica)return this.noteReplica.change(id,{content},expectedVersion,undefined,source)
+    const query = `?origin=${encodeURIComponent(source)}${expectedVersion === undefined ? '' : `&expectedVersion=${expectedVersion}`}`
     const response = await this.requestBytes(`notes/${encodeURIComponent(id)}/content${query}`, {
       method: 'PUT', binaryBody: content, signal, accept: 'application/json',
     })

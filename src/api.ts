@@ -289,7 +289,7 @@ async function dispatch(
     if (id !== undefined && method === 'PUT' && segments[2] === 'content' && segments.length === 3) {
       requirePermission(actor.permissions, 'write')
       const expectedVersion = url.searchParams.has('expectedVersion') ? integerParam(url, 'expectedVersion', 1, 1, Number.MAX_SAFE_INTEGER) : undefined
-      return sendJson(res, 200, await provider.notes.updateContent(id, await readBinary(req, MAX_NOTE_BODY_BYTES), expectedVersion))
+      return sendJson(res, 200, await provider.notes.updateContent(id, await readBinary(req, MAX_NOTE_BODY_BYTES), expectedVersion, ['AI 修改', '应用修改'].includes(url.searchParams.get('origin') ?? '') ? url.searchParams.get('origin')! : req.headers['x-dsh-knowledge-client'] === 'management-web' ? '网页修改' : 'API 修改'))
     }
     if (id !== undefined && method === 'GET' && segments[2] === 'versions' && segments.length === 3) {
       requirePermission(actor.permissions, 'read')

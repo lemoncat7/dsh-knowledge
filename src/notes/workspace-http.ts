@@ -75,6 +75,27 @@ export async function handleNoteWorkspace(
     } else if (method !== 'GET') throw syncError(405, '不支持此操作')
     return json({ ...r?.status(), ...v?.status(), mode: r ? 'remote' : 'local' })
   }
+  if (path === 'note-workspace/external' && method === 'GET') {
+    if (!v) throw syncError(409, '本地文件工作区未启用')
+    return json(await v.conflictDetail(text(url.searchParams.get('id'))))
+  }
+  if (path === 'note-workspace/external/resolve' && method === 'POST') {
+    if (!v) throw syncError(409, '本地文件工作区未启用')
+    const b = await object()
+    await v.resolveExternal(text(b.id), text(b.choice), text(b.fingerprint), b.externalHash === null ? null : text(b.externalHash))
+    return json({ok: true})
+  }
+  if (path === 'note-workspace/external/link' && method === 'POST') {
+    if (!v) throw syncError(409, '本地文件工作区未启用')
+    const b = await object()
+    await v.linkExternalPath(text(b.id), text(b.path), text(b.signature), text(b.fingerprint))
+    return json({ok: true})
+  }
+  if (path === 'note-workspace/recycle/restore' && method === 'POST') {
+    if (!v) throw syncError(409, '本地文件工作区未启用')
+    await v.restore(text((await object()).id))
+    return json({ok: true})
+  }
   if (path === 'note-workspace/conflict' && method === 'GET') {
     if (!r) throw syncError(409, '当前不是远程工作区')
     return json(await r.conflictDetail(text(url.searchParams.get('id'))))
@@ -153,7 +174,7 @@ export async function handleNoteWorkspace(
       return binary(n.content, n.node.mediaType ?? 'application/octet-stream')
     }
     if (method === 'PUT')
-      return json(await r.change(id, { content: await body() }, version(url.searchParams.get('expectedVersion'))))
+      return json(await r.change(id, { content: await body() }, version(url.searchParams.get('expectedVersion')), undefined, '网页修改'))
   }
   if (method === 'PATCH' && parts.length === 2) {
     const b = await object()

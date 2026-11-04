@@ -1048,9 +1048,9 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     return this.notes.createDocument(name, parentId, content)
   }
 
-  async updateNoteContent(id: string, content: Uint8Array, _signal?: AbortSignal, expectedVersion?: number): Promise<NoteNode> {
+  async updateNoteContent(id: string, content: Uint8Array, _signal?: AbortSignal, expectedVersion?: number, source = '应用修改'): Promise<NoteNode> {
     this.assertOpen()
-    return this.notes.updateContent(id, content, expectedVersion)
+    return this.notes.updateContent(id, content, expectedVersion, source)
   }
 
   async renameNote(id: string, name: string): Promise<NoteNode> {
