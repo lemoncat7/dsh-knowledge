@@ -274,6 +274,10 @@ async function dispatch(
         policy,
       ))
     }
+    if (method === 'GET' && segments[1] === 'revision' && segments.length === 2) {
+      requirePermission(actor.permissions, 'read')
+      return sendJson(res, 200, {version: provider.notes.syncManifest().revision, updatedAt: ''})
+    }
     const id = segments[1]
     if (id !== undefined && method === 'GET' && segments.length === 2) {
       requirePermission(actor.permissions, 'read')

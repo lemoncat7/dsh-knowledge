@@ -2360,6 +2360,91 @@ function confirmDeleteDocument(workspace, editor) {
   })
 }
 
+let noteListRevision = ''
+const noteListIdentity = {}
+let noteDragging = false
+// Poll metadata only. The editor is never rebuilt for a directory-only change.
+async function refreshNotesFromServer(signal, valid) {
+  const selectedId = state.notes.selectedId, selectedIdentity = state.notes.selectedNode, query = state.notes.query.trim(), navigation = navigationRequest
+  const expansion = [...state.notes.expandedFolders].sort().join('|')
+  const lengths = new Map([...state.notes.children].map(([key, nodes]) => [key, nodes.length]))
+  const searchLength = state.notes.searchResults.length
+  const keys = new Set(['root', ...state.notes.expandedFolders])
+  if (state.notes.currentFolderId) keys.add(state.notes.currentFolderId)
+  const originalPages = new Map([...keys].map(key => [key, notePages.get(key)]))
+  const stillCurrent = () => valid() && state.view === 'notes' && navigationRequest === navigation && state.notes.selectedId === selectedId && state.notes.query.trim() === query
+    && state.notes.selectedNode === selectedIdentity && [...state.notes.expandedFolders].sort().join('|') === expansion
+    && state.notes.searchResults.length === searchLength && [...keys].every(key => (state.notes.children.get(key)?.length || 0) === (lengths.get(key) || 0))
+    && !noteDragging && [...originalPages].every(([key, page]) => notePages.get(key) === page && !page?.loading)
+  const readPage = async (parentId, count, search = '') => {
+    const items = []; let result
+    do {
+      const params = new URLSearchParams({limit: '40', paged: '1'})
+      if (parentId) params.set('parentId', parentId)
+      if (search) params.set('q', search)
+      if (result?.nextCursor) params.set('cursor', result.nextCursor)
+      result = await api(`notes?${params}`, {signal})
+      items.push(...result.items)
+    } while (result.nextCursor && items.length < count)
+    return {...result, items}
+  }
+  const pages = new Map()
+  // Bound parallel work rather than making one request per cached folder at once.
+  const queue = [...keys]
+  await Promise.all([0, 1].map(async () => {
+    while (queue.length) {
+      const key = queue.shift()
+      try { pages.set(key, await readPage(key === 'root' ? null : key, Math.max(40, state.notes.children.get(key)?.length || 0))) }
+      catch (error) { if (error.status === 404) pages.set(key, {items: [], total: 0, nextCursor: ''}); else throw error }
+    }
+  }))
+  const search = query ? await readPage(null, Math.max(40, state.notes.searchResults.length), query) : null
+  let selected = null
+  if (selectedId) {
+    try { selected = await api(`notes/${encodeURIComponent(selectedId)}`, {signal}) }
+    catch(error) { if (error.status !== 404) throw error }
+  }
+  const breadcrumbs = [], seen = new Set()
+  let parent = selected?.parentId
+  while (parent) {
+    if (seen.has(parent) || seen.size > 24) throw new Error('笔记目录关系异常')
+    seen.add(parent)
+    const node = await api(`notes/${encodeURIComponent(parent)}`, {signal})
+    breadcrumbs.unshift(node); parent = node.parentId
+  }
+  if (selected?.kind === 'folder') breadcrumbs.push(selected)
+  if (!stillCurrent()) return false
+  for (const key of state.notes.loadedFolders) if (!keys.has(key)) { state.notes.loadedFolders.delete(key); state.notes.children.delete(key); notePages.delete(key) }
+  for (const [key, result] of pages) {
+    state.notes.children.set(key, result.items); state.notes.loadedFolders.add(key)
+    notePages.set(key, {nextCursor: result.nextCursor || '', total: result.total, loading: false, error: ''})
+  }
+  if (search) { state.notes.searchResults = search.items; noteSearchPage = {nextCursor: search.nextCursor || '', total: search.total, loading: false, error: ''} }
+  const tree = document.querySelector('.notes-tree')
+  if (tree) { const top = tree.scrollTop; tree.replaceChildren(query ? renderNoteSearchResults() : renderNoteTreeBranch(null)); tree.scrollTop = top }
+  const total = document.querySelector('.notes-browser-header > div:first-child > span')
+  if (total) total.textContent = `${pages.get('root')?.total ?? 0} 个根目录项目`
+  if (selected && !state.notes.titleDirty && !state.notes.renaming) {
+    Object.assign(state.notes.selectedNode, selected)
+    state.notes.breadcrumbs = breadcrumbs
+    const title = document.querySelector('.notes-document-title')
+    if (title && document.activeElement !== title) title.textContent = editableNoteTitle(selected)
+    document.querySelector('.notes-document-toolbar .notes-breadcrumb')?.replaceWith(renderNoteDocumentBreadcrumb(selected))
+  }
+  if (!selected && selectedId) {
+    if (state.notes.dirty || state.notes.titleDirty || state.notes.saving) {
+      documentSyncState = {key: `note:${selectedId}`, status: 'missing'}; renderDocumentSyncNotice()
+    } else { releaseNoteEditors(); clearNoteSelection(); state.notes.currentFolderId = null }
+  }
+  if (!state.notes.selectedNode || state.notes.selectedNode.kind === 'folder') {
+    const content = document.querySelector('.notes-content'), top = content?.scrollTop || 0
+    content?.replaceWith(renderNoteFolderContent(state.notes.selectedNode))
+    const replacement = document.querySelector('.notes-content'); if (replacement) replacement.scrollTop = top
+  }
+  documentSync.wake()
+  return true
+}
+
 let noteWorkspaceStatus
 function noteWorkspaceStatusText() {
   const s = noteWorkspaceStatus
@@ -5070,7 +5155,7 @@ function currentSyncTarget() {
     if (!node?.editable || state.notes.loadingNodeId) return null
     return { key: `note:${node.id}`, id: node.id, kind: 'note', identity: node,
       version: state.notes.contentVersion ?? node.version, updatedAt: node.updatedAt,
-      busy: () => state.notes.dirty || state.notes.saving || state.notes.titleDirty || state.notes.renaming || focused() }
+      busy: () => state.notes.dirty || state.notes.saving || state.notes.titleDirty || state.notes.renaming || !!document.activeElement?.closest('[contenteditable="true"], [contenteditable="plaintext-only"], textarea, [role="dialog"]') }
   }
   const workspace = activeDocumentWorkspace()
   const editor = workspace?.view.editor
@@ -5113,6 +5198,7 @@ function applySyncSnapshot(target, snapshot, draft) {
     const items = documentWorkspaceDocuments(target.workspace)
     setDocumentWorkspaceDocuments(target.workspace, items.map(item => item.id === target.id ? { ...item, title: target.identity.title, version: entry.version, updatedAt: entry.updatedAt } : item))
   }
+  if (target.kind === 'note') noteListRevision = ''
   documentSyncState = { key: target.key, status: draft ? '' : 'synced' }
   renderShell()
 }
@@ -5179,6 +5265,28 @@ const documentSync = createDocumentSync({
     renderDocumentSyncNotice()
   },
 })
+const noteListSync = createDocumentSync({
+  interval: 2000,
+  current: () => state.view === 'notes' && !state.loading && (AUTH_MODE === 'same-origin' || state.token) ? {
+    key: 'note-list', identity: noteListIdentity, version: noteListRevision, updatedAt: '',
+    busy: () => noteDragging || !!state.notes.loadingNodeId || !!document.querySelector('[role="dialog"]') || [...notePages.values()].some(page => page.loading) || noteSearchPage.loading,
+  } : null,
+  check: (_target, signal) => api('notes/revision', {signal}),
+  refresh: async (_target, signal, valid) => {
+    const before = await api('notes/revision', {signal})
+    if (await refreshNotesFromServer(signal, valid)) noteListRevision = before.version
+  },
+  notify: () => {},
+})
+document.addEventListener('dragstart', () => { noteDragging = true })
+document.addEventListener('dragend', () => { noteDragging = false; noteListSync.wake() })
+document.addEventListener('drop', () => { noteDragging = false })
+document.addEventListener('visibilitychange', () => { if (document.hidden) noteListSync.pause(); else noteListSync.wake() })
+window.addEventListener('focus', () => noteListSync.wake())
+window.addEventListener('online', () => noteListSync.wake())
+window.addEventListener('pagehide', () => noteListSync.pause())
+window.addEventListener('pageshow', () => noteListSync.wake())
+
 document.addEventListener('visibilitychange', () => { if (document.hidden) documentSync.pause(); else documentSync.wake() })
 document.addEventListener('visibilitychange', () => { if (!document.hidden) void refreshCandidateCount() })
 window.addEventListener('focus', () => { void refreshCandidateCount() })
@@ -5196,4 +5304,4 @@ window.addEventListener('beforeunload', event => {
 })
 
 installDragRecovery()
-void installHostThemeBridge().then(() => boot()).then(() => documentSync.wake())
+void installHostThemeBridge().then(() => boot()).then(() => { documentSync.wake(); noteListSync.wake() })

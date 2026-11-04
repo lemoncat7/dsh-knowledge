@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { NoteReplica } from './replica.js'
 import type { NoteVault } from './vault.js'
 import type { NoteListRequest } from './domain.js'
-import { syncError, hash } from './sync-protocol.js'
+import { syncError, hash, treeFingerprint } from './sync-protocol.js'
 import { decodePageCursor, encodePageCursor } from '../page-cursor.js'
 export interface NoteWorkspace {
   replica?: NoteReplica | undefined
@@ -113,6 +113,7 @@ export async function handleNoteWorkspace(
     return json({ ok: true })
   }
   if (!r || parts[0] !== 'notes') return false
+  if (method === 'GET' && parts.length === 2 && parts[1] === 'revision') return json({version: treeFingerprint(r.all()), updatedAt: ''})
   if (method === 'GET' && parts.length === 1) {
     const request: NoteListRequest = {
       parentId: url.searchParams.get('parentId'),
