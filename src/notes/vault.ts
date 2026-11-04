@@ -1,3 +1,4 @@
+import {moveVaultEntry, type VaultMove} from './vault-move.js'
 import {installVaultFile} from './vault-file.js'
 import { constants, watch, type FSWatcher } from 'node:fs'
 import { randomUUID } from 'node:crypto'
@@ -23,6 +24,7 @@ interface Mapping {
   hash: string | null
   version: number
   kind: NoteNode['kind']
+  pendingMove?: VaultMove
   identity?: string
   name?: string
   parentId?: string | null
@@ -151,7 +153,7 @@ export class NoteVault {
     }
     this.warning = ''
     await this.verifyRoot()
-    const snapshot = await snapshotVault(this.path, this.previousSnapshot)
+    let snapshot = await snapshotVault(this.path, this.previousSnapshot)
     await this.verifyRoot()
     this.previousSnapshot = snapshot
     this.blockedDirectories = this.mappings.filter(m => m.kind === 'folder' && m.identity && snapshot.has(m.path) && snapshot.get(m.path)!.identity !== m.identity).map(m => m.path)
@@ -160,12 +162,17 @@ export class NoteVault {
       this.warning = '子目录身份或挂载发生变化，已暂停该目录同步，请确认后恢复或关联'
     }
     let nodes = await this.notes.all()
+    const removed = await this.reconcileNativeDeletes(nodes, snapshot)
+    if (await this.reconcileNativePaths(nodes, snapshot) || removed) {
+      snapshot = await snapshotVault(this.path)
+      this.previousSnapshot = snapshot
+    }
     await this.reconcilePaths(snapshot, nodes)
     nodes = await this.notes.all()
     const known = new Map(nodes.map((n) => [n.id, n]))
     // Import external edits before exporting. Dirty files are never overwritten.
     for (const m of this.mappings) {
-      if (m.kind === 'folder' || this.recycled(m.path) || this.blocked(m.path)) continue
+      if (m.kind === 'folder' || m.pendingMove || this.recycled(m.path) || this.blocked(m.path)) continue
       const path = join(this.path, m.path)
       const unchanged = snapshot.get(m.path)
       if (unchanged && unchanged.digest === m.hash && !m.conflict) {
@@ -261,7 +268,7 @@ export class NoteVault {
     for (const n of nodes) {
       if (n.id === this.trashFolder || this.inTrash(n, nodes)) continue
       let m = this.mappings.find((m) => m.id === n.id)
-      if (m?.conflict || m?.missing || m?.trash || m && this.blocked(m.path)) continue
+      if (m?.conflict || m?.missing || m?.trash || m?.pendingMove || m && this.blocked(m.path)) continue
       const rel = m?.path ?? pathFor(n),
         path = join(this.path, rel)
       await this.safe(path, true)
@@ -343,14 +350,114 @@ export class NoteVault {
     }
     await walk('', null, 0)
     for (const m of this.mappings) {
-      if (m.trash || m.missing || m.conflict || this.blocked(m.path)) continue
+      if (m.trash || m.missing || m.conflict || m.pendingMove || this.blocked(m.path)) continue
       const n = nodes.find(n => n.id === m.id)
       if (n) { m.name ??= n.name; if (m.parentId === undefined) m.parentId = n.parentId }
       try { m.identity = (await vaultIdentity(join(this.path, m.path))).identity } catch { /* Next complete scan decides. */ }
     }
     await this.persist()
   }
-  private record(node: NoteNode, path: string, action: string) {
+  private async reconcileNativeDeletes(nodes: NoteNode[], snapshot: Map<string, VaultEntry>) {
+    let changed = false
+    for (const m of [...this.mappings].sort((a,b) => a.path.length - b.path.length)) {
+      if (nodes.some(n => n.id === m.id) || !this.mappings.includes(m)) continue
+      // Never treat a deleted parent as permission to archive a still-live child.
+      const affected = this.mappings.filter(x => x.path === m.path || x.path.startsWith(m.path + sep))
+      if (affected.some(x => nodes.some(n => n.id === x.id))) { m.conflict = true; continue }
+      try {
+        if (m.pendingMove && !m.pendingMove.to.includes(sep + '.dsh-deleted' + sep)) {
+          await this.safe(m.pendingMove.stage, true); await this.safe(m.pendingMove.to, true); await this.safe(m.pendingMove.from, true)
+          await moveVaultEntry(m.pendingMove, () => this.persist())
+          const old = m.path, dest = relative(this.path, m.pendingMove.to)
+          for (const child of affected) child.path = dest + child.path.slice(old.length)
+          delete m.pendingMove
+          await this.persist()
+        }
+        if (!m.pendingMove) {
+          let entry: {identity: string; directory: boolean} | undefined = snapshot.get(m.path)
+          if (!entry) {
+            try { const actual = await vaultIdentity(join(this.path, m.path)); entry = {identity: actual.identity, directory: actual.stat.isDirectory()} }
+            catch(e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
+          }
+          if (entry) {
+            const op = randomUUID()
+            m.pendingMove = {from: join(this.path,m.path), to: join(this.path,'.dsh-deleted',op), stage: join(this.path,'.dsh-moves',op), identity: entry.identity, directory: entry.directory, name: m.name ?? basename(m.path), parentId: m.parentId ?? null}
+            await this.persist()
+          }
+        }
+        if (m.pendingMove) {
+          await this.verifyRoot()
+          await this.safe(m.pendingMove.from,true); await this.safe(m.pendingMove.to,true); await this.safe(m.pendingMove.stage,true)
+          await mkdir(dirname(m.pendingMove.to), {recursive: true, mode: 0o700})
+          await atomicWriteFile(m.pendingMove.to + '.json', JSON.stringify({noteId: m.id, originalPath: m.path, archivedAt: new Date().toISOString()}), {mode: 0o600})
+          await moveVaultEntry(m.pendingMove, () => this.persist())
+        }
+        this.record(m, m.path, '原生删除：磁盘副本归档到 .dsh-deleted')
+        this.mappings = this.mappings.filter(x => !affected.includes(x))
+        await this.persist()
+        changed = true
+      } catch(e) { m.conflict = true; this.warning = e instanceof Error ? e.message : '原生删除归档失败，文件已保留' }
+    }
+    return changed
+  }
+  private nativeComponent(n: NoteNode) {
+    const clean = n.name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/[. ]+$/g, '').slice(0, 100) || '未命名'
+    const ext = n.kind === 'document' ? /\.(md|markdown)$/i.test(clean) ? extname(clean) : '.md' : n.kind === 'file' ? extname(clean) : ''
+    const stem = ext && clean.endsWith(ext) ? clean.slice(0, -ext.length) : clean
+    return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(stem) ? `${stem} [${n.id.slice(5,13)}]${ext}` : stem + ext
+  }
+  private async reconcileNativePaths(nodes: NoteNode[], snapshot: Map<string, VaultEntry>) {
+    let changed = false
+    const wanted = (n: NoteNode, seen = new Set<string>()): string => {
+      if (seen.has(n.id)) throw Error('笔记目录循环')
+      seen.add(n.id)
+      const parent = nodes.find(p => p.id === n.parentId)
+      return parent ? join(wanted(parent, seen), this.nativeComponent(n)) : this.nativeComponent(n)
+    }
+    // Finish parents first; update descendant mappings as one journal write.
+    const ordered = [...this.mappings].sort((a,b) => a.path.split(sep).length - b.path.split(sep).length)
+    for (const m of ordered) {
+      const n = nodes.find(n => n.id === m.id)
+      if (!n || m.trash || this.recycled(m.path) || this.inTrash(n, nodes) || this.blockedDirectories.some(dir => m.path === dir || m.path.startsWith(dir + sep))) continue
+      const target = wanted(n)
+      if (!m.pendingMove && target === m.path) continue
+      // An external rename has priority only when the native metadata did not change.
+      if (!m.pendingMove && n.name === m.name && n.parentId === m.parentId && !snapshot.has(m.path)) continue
+      // A parent move may have failed; do not pull its children out individually.
+      if (this.mappings.some(p => p !== m && p.pendingMove && m.path.startsWith(p.path + sep))) continue
+      try {
+        if (!m.pendingMove) {
+          const entry = snapshot.get(m.path)
+          if (!entry) { m.conflict = true; continue }
+          await this.safe(join(this.path, target), true)
+          const op = randomUUID()
+          m.pendingMove = {from: join(this.path, m.path), to: join(this.path, target), stage: join(this.path, dirname(m.path), '.dsh-moves', op), identity: entry.identity, directory: entry.directory, name: n.name, parentId: n.parentId}
+          await this.persist()
+        }
+        const move = m.pendingMove
+        await this.verifyRoot()
+        await this.safe(move.from, true); await this.safe(move.to, true); await this.safe(move.stage, true)
+        await moveVaultEntry(move, () => this.persist())
+        const old = m.path, destination = relative(this.path, move.to)
+        const affected = this.mappings.filter(child => child.path === old || move.directory && child.path.startsWith(old + sep))
+        for (const child of affected) {
+          child.path = destination + child.path.slice(old.length)
+          child.missing = false; child.conflict = false
+          delete child.missingSince; delete child.missingScans
+        }
+        m.name = move.name; m.parentId = move.parentId; m.identity = move.identity
+        delete m.pendingMove
+        this.record(n, destination, '原生改名或移动同步到文件')
+        await this.persist()
+        changed = true
+      } catch(e) {
+        m.conflict = true
+        this.warning = e instanceof Error ? e.message : '原生路径同步失败，内容保留'
+      }
+    }
+    return changed
+  }
+  private record(node: Pick<NoteNode, 'id' | 'version'>, path: string, action: string) {
     this.events.push({ id: node.id, version: node.version, path, action, time: new Date(this.timing.now()).toISOString() })
     this.events = this.events.slice(-500)
   }
@@ -363,7 +470,7 @@ export class NoteVault {
     return now - old.since >= this.timing.stableMs
   }
   private blocked(path: string) {
-    return path.split(sep).some(part => part.startsWith('.')) || this.blockedDirectories.some(dir => path === dir || path.startsWith(dir + sep))
+    return path.split(sep).some(part => part.startsWith('.')) || this.mappings.some(m => m.pendingMove && (path === m.path || path.startsWith(m.path + sep) || path === relative(this.path, m.pendingMove.to) || path.startsWith(relative(this.path, m.pendingMove.to) + sep))) || this.blockedDirectories.some(dir => path === dir || path.startsWith(dir + sep))
   }
   private recycled(path: string) {
     return this.mappings.some(m => m.trash && (path === m.path || path.startsWith(m.path + sep)))
@@ -429,14 +536,14 @@ export class NoteVault {
   }
   private async reconcilePaths(snapshot: Map<string, VaultEntry>, nodes: NoteNode[]) {
     for (const key of this.observations.keys()) if (!snapshot.has(key)) this.observations.delete(key)
-    const missing = this.mappings.filter(m => !m.trash && !this.recycled(m.path) && !this.blocked(m.path) && !snapshot.has(m.path))
+    const missing = this.mappings.filter(m => !m.trash && !m.pendingMove && !this.recycled(m.path) && !this.blocked(m.path) && !snapshot.has(m.path))
     for (const m of missing) {
       m.missing = true
       m.missingSince ??= this.timing.now()
       m.missingScans = (m.missingScans ?? 0) + 1
     }
     const mapped = new Set(this.mappings.map(m => m.path))
-    const fresh = [...snapshot.values()].filter(e => !mapped.has(e.path) && !this.recycled(e.path))
+    const fresh = [...snapshot.values()].filter(e => !mapped.has(e.path) && !this.recycled(e.path) && !this.blocked(e.path))
     // Parents first: a directory rename carries all descendants without losing note IDs.
     for (const m of missing.sort((a,b) => a.path.length - b.path.length)) {
       if (snapshot.has(m.path) || this.recycled(m.path)) continue
