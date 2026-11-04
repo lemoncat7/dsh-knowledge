@@ -40,3 +40,7 @@ dsh plugin --profile web add @lemoncat7/dsh-knowledge@latest
 ### 2.17.2
 
 新建笔记/目录及批量创建免确认；修改与删除已有内容仍需确认。详见 [版本说明](docs/releases/2.17.2.md)。
+
+## 2.18.0 笔记离线副本与本地文件
+
+笔记工作区增加远程补同步和可供 Obsidian 打开的 Markdown 目录。支持范围、冲突规则和 schema 升级注意事项见 [说明](docs/note-workspace-sync.md)。

@@ -71,7 +71,7 @@ test('unmounted document links are not fetched or opened', async () => {
 test('notes initially fetch only the root metadata; no shares, children or content', async () => {
   const calls = []
   const state = { notes: { children: new Map(), loadedFolders: new Set(), selectedId: '' } }
-  const { loadNotes } = functions(['loadNotes', 'loadNoteChildren'], { state, notePages: new Map(), api: async path => { calls.push(path); return { items: [{ id: 'folder', kind: 'folder' }], total: 1 } } })
+  const { loadNotes } = functions(['loadNotes', 'loadNoteChildren'], { refreshNoteWorkspaceStatus: async () => {}, state, notePages: new Map(), api: async path => { calls.push(path); return { items: [{ id: 'folder', kind: 'folder' }], total: 1 } } })
   await loadNotes(); await loadNotes()
   assert.deepEqual(calls, ['notes?limit=40&paged=1', 'notes?limit=40&paged=1'])
   assert.equal(state.notes.children.get('root').length, 1)

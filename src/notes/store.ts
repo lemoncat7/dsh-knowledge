@@ -1,3 +1,4 @@
+import { hash, noteFingerprint, treeFingerprint, syncError, type NoteSyncChange, type NoteManifest } from './sync-protocol.js'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { constants as fileConstants, copyFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { open, readFile, rename, rm } from 'node:fs/promises'
@@ -37,6 +38,11 @@ export class NoteStore {
     this.db = new DatabaseSync(join(rootPath, 'notes.sqlite'))
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
     this.migrate()
+    this.db.exec(`CREATE TABLE IF NOT EXISTS note_sync_content(note_id TEXT NOT NULL REFERENCES note_nodes(id) ON DELETE CASCADE, version INTEGER NOT NULL, content BLOB NOT NULL, PRIMARY KEY(note_id,version));
+      CREATE TABLE IF NOT EXISTS note_sync_receipts(actor TEXT NOT NULL, operation_id TEXT NOT NULL, digest TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(actor,operation_id));
+      CREATE TABLE IF NOT EXISTS note_sync_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+      PRAGMA user_version=4;`)
+    this.db.prepare("INSERT OR IGNORE INTO note_sync_meta VALUES('instance',?)").run(randomUUID())
     this.db.exec("CREATE INDEX IF NOT EXISTS note_page_order ON note_nodes(parent_key, (CASE kind WHEN 'folder' THEN 0 ELSE 1 END), name COLLATE NOCASE, id);")
   }
 
@@ -236,7 +242,8 @@ export class NoteStore {
     if (node === undefined) throw notFound(`note node "${id}" was not found`)
     if (node.kind === 'folder') throw inputError('folders do not have file content')
     try {
-      const content = await readFile(this.objectPath(id))
+      const blob = this.db.prepare('SELECT content FROM note_sync_content WHERE note_id=? AND version=?').get(id,node.version) as {content:Uint8Array}|undefined
+      const content = blob ? Buffer.from(blob.content) : await readFile(this.objectPath(id))
       if (content.byteLength !== node.size) throw new Error(`note node "${id}" has an invalid stored size`)
       return { node, content }
     } catch (error) {
@@ -251,6 +258,8 @@ export class NoteStore {
     if (node.kind === 'folder') throw inputError('folders do not have file content')
     const limit = Number.isInteger(maximumBytes) ? Math.min(MAX_NOTE_BYTES, Math.max(1, maximumBytes)) : 512 * 1024
     const size = Math.min(node.size, limit)
+    const blob = this.db.prepare('SELECT content FROM note_sync_content WHERE note_id=? AND version=?').get(id,node.version) as {content:Uint8Array}|undefined
+    if(blob) return {node,content:Buffer.from(blob.content).subarray(0,size),truncated:node.size>size}
     const content = Buffer.alloc(size)
     let file: Awaited<ReturnType<typeof open>> | undefined
     try {
@@ -305,7 +314,8 @@ export class NoteStore {
     if (row === undefined) throw notFound(`note version "${id}@${normalizedVersion}" was not found`)
     const snapshot = mapNoteVersion(row)
     try {
-      const content = await readFile(this.versionPath(id, normalizedVersion))
+      const blob = this.db.prepare('SELECT content FROM note_sync_content WHERE note_id=? AND version=?').get(id,normalizedVersion) as {content:Uint8Array}|undefined
+      const content = blob ? Buffer.from(blob.content) : await readFile(this.versionPath(id, normalizedVersion))
       if (content.byteLength !== snapshot.size || createHash('sha256').update(content).digest('hex') !== snapshot.sha256) {
         throw new Error(`note version "${id}@${normalizedVersion}" has invalid stored content`)
       }
@@ -456,6 +466,58 @@ export class NoteStore {
       throw error
     }
     for (const item of retired) await rm(item.temporary, { recursive: true, force: true })
+  }
+
+  syncManifest(): NoteManifest {
+    const nodes = (this.db.prepare(`SELECT ${NOTE_COLUMNS} FROM note_nodes ORDER BY id LIMIT 10001`).all() as SqlRow[]).map(mapNoteNode)
+    if(nodes.length>10000) throw syncError(413,'第一版离线工作区最多支持 10000 个笔记节点；未截断或删除任何内容')
+    return {protocol:1,instance:String((this.db.prepare("SELECT value FROM note_sync_meta WHERE key='instance'").get() as SqlRow).value),revision:treeFingerprint(nodes),nodes}
+  }
+
+  /** Content, metadata and deduplication receipt commit in one SQLite transaction. */
+  applySyncChange(actor:string, change:NoteSyncChange): NoteNode|null {
+    if(!change || typeof change.operationId!=='string' || !/^[a-f0-9-]{36}$/.test(change.operationId) || !isNoteId(change.id)
+      || !(change.base===null || typeof change.base==='string' && /^[a-f0-9]{64}$/.test(change.base))) throw syncError(400,'invalid note sync operation')
+    if(change.instance!==this.syncManifest().instance)throw syncError(409,'远程数据库身份不匹配，已停止同步')
+    const digest=hash(JSON.stringify(change))
+    const receipt=this.db.prepare('SELECT digest,result FROM note_sync_receipts WHERE actor=? AND operation_id=?').get(actor,change.operationId) as SqlRow|undefined
+    if(receipt){if(receipt.digest!==digest)throw syncError(409,'operation ID was reused with different content');return JSON.parse(String(receipt.result)) as NoteNode|null}
+    if(this.contentMutationTails.size)throw syncError(423,'笔记正在保存，请稍后重试同步')
+    const current=this.get(change.id)
+    if(noteFingerprint(current)!==change.base)throw syncError(409,'远程笔记已变化，本地内容保留，请处理冲突')
+    const value=change.value
+    let result:NoteNode|null=null, bytes:Buffer|undefined
+    if(value!==null){
+      if(!value || !['folder','document','file'].includes(value.kind) || typeof value.content!=='string')throw syncError(400,'invalid note sync value')
+      const name=normalizeNoteName(value.name),parentId=normalizeParentId(value.parentId)
+      if(parentId!==null){this.assertFolder(parentId);if(parentId===change.id || this.isDescendant(parentId,change.id))throw syncError(409,'目录不能移动到自身内部')}
+      this.assertNameAvailable(parentId,name,change.id)
+      if(current && (current.kind!==value.kind || current.mediaType!==value.mediaType))throw syncError(409,'同步不能改变笔记类型')
+      bytes=Buffer.from(value.content,'base64')
+      if(bytes.toString('base64')!==value.content || bytes.length>MAX_NOTE_BYTES)throw syncError(413,'invalid or oversized note content')
+      if(value.kind==='folder'&&bytes.length)throw syncError(400,'folder cannot have content')
+      const mediaType=value.kind==='folder'?null:normalizeMediaType(value.mediaType??'application/octet-stream')
+      const sha256=value.kind==='folder'?null:hash(bytes)
+      const changed=!current||current.sha256!==sha256
+      const now=new Date().toISOString()
+      result={id:change.id,kind:value.kind,name,parentId,mediaType,sha256,size:bytes.length,version:current ? current.version+(changed?1:0):1,createdAt:current?.createdAt??now,updatedAt:now,editable:isEditableNoteNode({kind:value.kind,name,mediaType})}
+    }else if(current && change.subtree!==treeFingerprint(this.subtree(change.id)))throw syncError(409,'待删除目录内容已变化')
+    this.db.exec('BEGIN IMMEDIATE')
+    try{
+      if(result){
+        this.db.prepare(`INSERT INTO note_nodes(id,parent_id,parent_key,kind,name,media_type,size,sha256,version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+          ON CONFLICT(id) DO UPDATE SET parent_id=excluded.parent_id,parent_key=excluded.parent_key,name=excluded.name,size=excluded.size,sha256=excluded.sha256,version=excluded.version,updated_at=excluded.updated_at`)
+          .run(result.id,result.parentId,parentKey(result.parentId),result.kind,result.name,result.mediaType,result.size,result.sha256,result.version,result.createdAt,result.updatedAt)
+        if(result.kind!=='folder'){
+          this.db.prepare('INSERT OR REPLACE INTO note_sync_content VALUES(?,?,?)').run(result.id,result.version,bytes!)
+          if(result.editable)this.db.prepare('INSERT OR REPLACE INTO note_versions VALUES(?,?,?,?,?,?,?)').run(result.id,result.version,result.name,result.mediaType,result.size,result.sha256,result.updatedAt)
+        }
+      }else if(current){
+        this.db.prepare(`WITH RECURSIVE children(id) AS (SELECT id FROM note_nodes WHERE id=? UNION ALL SELECT n.id FROM note_nodes n JOIN children c ON n.parent_id=c.id) DELETE FROM note_nodes WHERE id IN (SELECT id FROM children)`).run(change.id)
+      }
+      this.db.prepare('INSERT INTO note_sync_receipts VALUES(?,?,?,?)').run(actor,change.operationId,digest,JSON.stringify(result))
+      this.db.exec('COMMIT');return result
+    }catch(error){this.db.exec('ROLLBACK');throw error}
   }
 
   async close(): Promise<void> {
@@ -617,7 +679,7 @@ export class NoteStore {
 
   private migrate(): void {
     let version = Number((this.db.prepare('PRAGMA user_version').get() as SqlRow).user_version ?? 0)
-    if (version > 3) throw new Error(`note database schema ${version} is newer than this plugin supports`)
+    if (version > 4) throw new Error(`note database schema ${version} is newer than this plugin supports`)
     if (version === 0) this.db.exec(`
       BEGIN IMMEDIATE;
       CREATE TABLE note_nodes (

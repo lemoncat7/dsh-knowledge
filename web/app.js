@@ -607,6 +607,7 @@ async function loadDocuments(signal, onPhase = () => {}) {
 }
 
 async function loadNotes(signal, onPhase = () => {}) {
+  void refreshNoteWorkspaceStatus()
   onPhase('正在读取顶层目录', .36)
   await loadNoteChildren(null, true, { signal })
   if (state.notes.selectedId) {
@@ -2359,6 +2360,52 @@ function confirmDeleteDocument(workspace, editor) {
   })
 }
 
+let noteWorkspaceStatus
+function noteWorkspaceStatusText() {
+  const s = noteWorkspaceStatus
+  if (!s) return '正在检查同步状态'
+  if (s.mode !== 'remote') return s.warning || '已保存至本机 · 支持 Markdown 文件编辑'
+  if (s.conflicts?.length) return `${s.conflicts.length} 项同步冲突 · 双方内容已保留`
+  if (s.pending) return `已保存至本机 · ${s.pending} 项待同步`
+  return s.state === 'online' ? '远程已同步 · 本机副本已保存' : s.message
+}
+async function refreshNoteWorkspaceStatus() {
+  if (state.view !== 'notes' || document.hidden) return
+  try { noteWorkspaceStatus = await api('note-workspace') } catch { noteWorkspaceStatus = { mode: 'remote', message: '暂时无法读取同步状态' } }
+  for (const node of document.querySelectorAll('[data-note-workspace-status]')) node.textContent = noteWorkspaceStatusText()
+}
+setInterval(() => { void refreshNoteWorkspaceStatus() }, 15000)
+
+async function openNoteWorkspaceStatus() {
+  const status = await api('note-workspace')
+  const body = element('div', { class: 'sync-conflict-body' },
+    element('p', { role: 'status' }, status.mode === 'remote' ? `${status.message}；${status.pending || 0} 项待同步，${status.conflicts?.length || 0} 项冲突。` : '本地笔记工作区：正文和附件可通过下方目录访问。'),
+    element('p', {}, '这是 DSH 所在服务器上的目录。Obsidian 选择“打开文件夹作为仓库”即可读取；其他电脑需要先挂载该目录。'),
+    element('code', { style: 'overflow-wrap:anywhere' }, status.path || '未配置本地文件工作区'),
+    element('p', {}, '支持普通 Markdown 正文编辑和新建 Markdown。外部删除不会删除知识库原文；改名、移动和冲突请在工作区中处理。'),
+    status.warning ? element('p', { role: 'alert' }, status.warning) : null,
+    status.externalConflicts ? element('p', { role: 'alert' }, `${status.externalConflicts} 个外部文件存在冲突，原文件未覆盖。请对照网页版本手动合并。`) : null,
+    status.externalMissing ? element('p', {}, `${status.externalMissing} 个本地文件已移走或删除；知识库原文仍保留。`) : null,
+    ...(status.conflicts || []).map(item => element('div', {}, element('strong', {}, item.name), element('p', {}, item.reason), actionButton('处理冲突', () => openNoteWorkspaceConflict(item), 'small'))),
+  )
+  let modal
+  modal = openModal({ title: '笔记同步与本地文件', body, cancelLabel: '关闭', primaryLabel: '立即同步', onPrimary: async () => { await api('note-workspace', { method: 'POST' }); modal.close(); await openNoteWorkspaceStatus(); return true } })
+}
+async function openNoteWorkspaceConflict(item) {
+  const detail = await api(`note-workspace/conflict?id=${encodeURIComponent(item.id)}`)
+  const body = element('div', { class: 'sync-conflict-body' },
+    element('p', {}, '双方内容保留。选择远程版本后，本地旧内容仍保存在历史版本中。'),
+    element('div', { class: 'sync-merge-columns' },
+      element('section', {}, element('h3', {}, '本地版本'), element('textarea', { class: 'input sync-merge-content', readonly: true, 'aria-label': '本地冲突内容' }, detail.localText)),
+      element('section', {}, element('h3', {}, '远程版本'), element('textarea', { class: 'input sync-merge-content', readonly: true, 'aria-label': '远程冲突内容' }, detail.remoteText))),
+  )
+  const choose = choice => openConfirm({ title: choice === 'local' ? '用本地版本更新远程？' : '使用远程版本？', message: '提交时会再次核对双方版本。内容变化后需要重新查看，不会直接覆盖新修改。', confirmLabel: '确认', danger: true,
+    onConfirm: async () => { await api('note-workspace/resolve', { method: 'POST', body: { id: item.id, choice, remoteFingerprint: detail.remoteFingerprint, localVersion: detail.localVersion } }); await loadNotes(); renderShell() } })
+  body.append(actionButton('使用远程版本', () => choose('remote'), 'small'))
+  if(detail.canKeepLocal) body.append(actionButton('使用本地版本', () => choose('local'), 'small'))
+  openModal({ title: `处理冲突：${item.name}`, body, cancelLabel: '暂不处理' })
+}
+
 function renderNotes() {
   const fileInput = element('input', {
     class: 'visually-hidden', type: 'file', multiple: true, tabindex: '-1',
@@ -2384,10 +2431,12 @@ function renderNotes() {
           actionButton('新建', () => openCreateNoteDocument(), 'primary small'),
           actionButton('目录', () => openCreateNoteFolder(), 'small'),
           actionButton('导入', () => fileInput.click(), 'ghost small'),
+          actionButton('同步与本地文件', openNoteWorkspaceStatus, 'ghost small'),
           actionButton('会话指令', openNoteAgentGuide, 'ghost small'),
           fileInput,
         ),
       ),
+      element('p', { class: 'notes-save-state', role: 'status', 'aria-live': 'polite', 'data-note-workspace-status': '' }, noteWorkspaceStatusText()),
       element('div', { class: 'notes-search' }, element('input', {
         class: 'input', type: 'search', value: state.notes.query, placeholder: '搜索笔记文档', 'aria-label': '搜索笔记文档',
         onInput: event => scheduleNoteSearch(event.target.value),
@@ -3738,7 +3787,8 @@ async function saveNoteDocument() {
     if (size) size.textContent = formatBytes(updated.size)
     if (updatedAt) updatedAt.textContent = formatDate(updated.updatedAt)
     syncNoteEditorChrome()
-    showToast('文件已保存。')
+    void refreshNoteWorkspaceStatus()
+    showToast('文件已保存至本机；远程同步状态见目录下方。')
     return !state.notes.dirty
   } catch (error) {
     showToast(friendlyError(error), 'error')

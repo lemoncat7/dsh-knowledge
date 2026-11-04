@@ -1,3 +1,4 @@
+import {handleNoteWorkspace,type NoteWorkspace} from './notes/workspace-http.js'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { KnowledgeConnectionSettings } from './connection.js'
 import type { RuntimeContextLike } from './runtime.js'
@@ -14,6 +15,7 @@ export function registerRemoteManagementProxy(
     current(): { writebackProvider?: string; writebackModel?: string }
     update(patch: { writebackProvider?: string | null; writebackModel?: string | null }): Promise<{ writebackProvider?: string; writebackModel?: string }>
   },
+  workspace?:()=>NoteWorkspace,
 ): () => void {
   const webServer = ctx.webServer ?? ctx.get('webServer') as RuntimeContextLike['webServer']
   if (webServer === undefined) throw new Error('remote knowledge management requires the DSH webServer service')
@@ -21,7 +23,7 @@ export function registerRemoteManagementProxy(
     kind: 'prefix',
     path: prefix,
     handler: async (req, res) => {
-      try { await dispatch(prefix, current(), localService, req, res) } catch (error) { sendError(res, error) }
+      try { await dispatch(prefix, current(), localService, req, res,workspace?.()) } catch (error) { sendError(res, error) }
     },
   })
 }
@@ -35,6 +37,7 @@ async function dispatch(
   },
   req: IncomingMessage,
   res: ServerResponse,
+  workspace?:NoteWorkspace,
 ): Promise<void> {
   assertManagementRequest(req)
   if (settings.backend !== 'remote' || settings.remoteUrl === undefined || settings.remoteToken === undefined) {
@@ -45,6 +48,7 @@ async function dispatch(
   // Journal uses its own Host-authenticated browser gateway, never this generic proxy.
   if (/^worklog(?:\/|$)/i.test(decodeURIComponent(relative))) throw httpError(404, '请通过日报工作区访问。')
   const method = req.method ?? 'GET'
+  if(workspace && await handleNoteWorkspace(workspace,relative,incoming,req,res))return
   if (relative === 'service') {
     if (method === 'GET') {
       const local = localService.current()

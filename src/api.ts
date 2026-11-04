@@ -1,3 +1,4 @@
+import {handleNoteWorkspace,type NoteWorkspace} from './notes/workspace-http.js'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
   DEFAULT_KNOWLEDGE_BASE_ID, isKnowledgeType, normalizeDraft, normalizeKnowledgeBaseDraft,
@@ -20,6 +21,8 @@ const MAX_SHARED_NOTE_PREVIEW_BYTES = 512 * 1024
 export const LOCAL_MANAGEMENT_API_PREFIX = '/knowledge-local/v1'
 
 export interface KnowledgeApiOptions {
+  noteWorkspace?:NoteWorkspace
+
   worklog?: (method: string, path: string, data: Record<string, unknown>, query: URLSearchParams) => Promise<unknown>
   shareRequestPolicy?: () => NoteShareRequestPolicy
   authMode?: 'bearer' | 'same-origin'
@@ -119,6 +122,22 @@ async function dispatch(
   }
 
   const actor = options.authMode === 'same-origin' ? authenticateSameOrigin(req) : authenticateBearer(provider, req)
+
+  if(options.authMode==='same-origin' && options.noteWorkspace && await handleNoteWorkspace(options.noteWorkspace,relative,url,req,res))return
+
+  if (segments[0] === 'note-sync') {
+    if(method==='GET' && segments.length===1){requirePermission(actor.permissions,'read');return sendJson(res,200,provider.notes.syncManifest())}
+    if(method==='POST' && segments.length===1){
+      const body=JSON.parse((await readBinary(req,90*1024*1024)).toString('utf8')) as import('./notes/sync-protocol.js').NoteSyncChange
+      requirePermission(actor.permissions,body?.value===null?'admin':'write')
+      if(body?.value===null && provider.notes.get(body.id)){
+        const refs=await noteReferencesForSubtree(provider,body.id)
+        if(refs.length)throw httpError(409,'笔记仍被知识文档引用，不能同步删除')
+      }
+      return sendJson(res,200,provider.notes.applySyncChange(actor.id,body))
+    }
+    throw httpError(405,'unsupported note sync method')
+  }
 
   if (segments[0] === 'retrieval-index') {
     requirePermission(actor.permissions, 'read')

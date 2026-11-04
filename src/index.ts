@@ -1,3 +1,4 @@
+import { NoteVault } from './notes/vault.js'
 import type { Context } from '@deepseek-ai/cordis'
 import { createHash, randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
@@ -94,6 +95,12 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   const managementProvider = resolved.databasePath === undefined || resolved.databasePath.trim().length === 0
     ? undefined
     : new LocalKnowledgeProvider(resolved.databasePath)
+  const localNoteVault=managementProvider&&resolved.databasePath&&resolved.databasePath!==':memory:' ? new NoteVault(resolved.databasePath+'.note-workspaces/local/vault',{
+    all:()=>managementProvider.notes.syncManifest().nodes,
+    read:id=>managementProvider.readNote(id),
+    update:(id,bytes,version)=>managementProvider.updateNoteContent(id,bytes,undefined,version),
+    create:(kind,name,parentId,bytes)=>kind==='folder'?managementProvider.createNoteFolder(name,parentId):managementProvider.createNoteDocument(name,parentId,Buffer.from(bytes).toString('utf8')),
+  },resolved.databasePath+'.note-workspaces/local/vault-index.json'):undefined
   const connectionProvider = (settings: KnowledgeConnectionSettings): { provider: KnowledgeProvider; owned: boolean } => {
     if (settings.backend === 'local' && managementProvider !== undefined) {
       return { provider: managementProvider, owned: false }
@@ -285,10 +292,11 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
         disposeManagementApi = registerRemoteManagementProxy(httpRuntime, LOCAL_MANAGEMENT_API_PREFIX, () => activeConnection, {
           current: publicApiView,
           update: updateClientSettings,
-        })
+        },()=>({replica:(provider as import('./remote-provider.js').RemoteKnowledgeProvider).noteReplica,vault:(provider as import('./remote-provider.js').RemoteKnowledgeProvider).noteVault}))
       } else if (managementProvider !== undefined) {
         disposeManagementApi = registerKnowledgeApi(httpRuntime, managementProvider, LOCAL_MANAGEMENT_API_PREFIX, {
           authMode: 'same-origin',
+          ...(localNoteVault?{noteWorkspace:{vault:localNoteVault}}:{}),
           service: { current: publicApiView, update: updateClientSettings },
           shareRequestPolicy: () => ({ trustedPrivateOrigins: trustedShareOrigins }),
         })
@@ -425,6 +433,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
     await writebackQueue?.close()
     await coordinator.close()
     await providerRouter.close()
+    await localNoteVault?.close()
     await managementProvider?.close()
   }, 'dsh-knowledge.close')
 

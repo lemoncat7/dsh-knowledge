@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
@@ -56,6 +58,7 @@ export function createConnectionProvider(
       url: settings.remoteUrl as string,
       token: settings.remoteToken as string,
       timeoutMs: settings.remoteTimeoutMs,
+      ...(config.databasePath&&config.databasePath!==':memory:' ? {workspaceRoot:join(config.databasePath+'.note-workspaces',createHash('sha256').update((settings.remoteUrl??'')+'\0'+(settings.remoteToken??'')).digest('hex'))}:{}),
     })
 }
 

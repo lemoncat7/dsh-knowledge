@@ -1,3 +1,6 @@
+import {acquireRemoteWorkspace} from './notes/remote-workspace.js'
+import { NoteReplica } from './notes/replica.js'
+import { NoteVault } from './notes/vault.js'
 import type {
   CandidateProposal,
   CandidateBatchReviewResult,
@@ -50,10 +53,14 @@ export interface RemoteProviderOptions {
   url: string
   token: string
   timeoutMs: number
+  workspaceRoot?: string
 }
 
 export class RemoteKnowledgeProvider implements KnowledgeProvider {
   readonly mode = 'remote' as const
+  readonly noteReplica:NoteReplica|undefined
+  readonly noteVault:NoteVault|undefined
+  private readonly releaseNoteWorkspace:(()=>Promise<void>)|undefined
   async recordRecallIncident(id: string, value: import('./recall-ranking.js').FrictionInput, signal?: AbortSignal): Promise<{ id: string }> {
     return this.request(`recall/${encodeURIComponent(id)}/feedback`, { method: 'POST', body: value, signal })
   }
@@ -61,6 +68,10 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
 
   constructor(private readonly options: RemoteProviderOptions) {
     this.baseUrl = normalizeRemoteKnowledgeUrl(options.url)
+    if(options.workspaceRoot){
+      const workspace=acquireRemoteWorkspace(options.workspaceRoot,async(path,method,body)=>path.endsWith('/content')?this.requestBytes(path):this.request(path,{method,body}))
+      this.noteReplica=workspace.replica;this.noteVault=workspace.vault;this.releaseNoteWorkspace=workspace.release
+    }
   }
 
   async recordRecallUsage(usage: import('./recall-ranking.js').RecallUsage, signal?: AbortSignal): Promise<void> {
@@ -263,6 +274,7 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
   }
 
   async listNotes(request: NoteListRequest = {}, signal?: AbortSignal): Promise<NoteNode[]> {
+    if(this.noteReplica)return this.noteReplica.list(request)
     const params = new URLSearchParams({ limit: String(request.limit ?? 200) })
     const query = request.query?.trim()
     if (query) params.set('q', query)
@@ -274,6 +286,7 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
   }
 
   async getNote(id: string, signal?: AbortSignal): Promise<NoteNode | undefined> {
+    if(this.noteReplica)return this.noteReplica.get(id)
     try {
       return await this.request<NoteNode>(`notes/${encodeURIComponent(id)}`, { signal })
     } catch (error) {
@@ -283,6 +296,7 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
   }
 
   async readNote(id: string, signal?: AbortSignal): Promise<{ node: NoteNode; content: Uint8Array }> {
+    if(this.noteReplica)return this.noteReplica.read(id)
     const node = await this.getNote(id, signal)
     if (node === undefined) throw new RemoteProviderError(`note node "${id}" was not found`, 404)
     const content = await this.requestBytes(node.editable ? `notes/${encodeURIComponent(id)}/versions/${node.version}/content` : `notes/${encodeURIComponent(id)}/content`, { signal })
@@ -290,11 +304,13 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
   }
 
   async listNoteVersions(id: string, limit = 100, signal?: AbortSignal): Promise<NoteVersion[]> {
+    if(this.noteReplica)return this.noteReplica.versions(id,limit)
     const params = new URLSearchParams({ limit: String(limit) })
     return this.request<NoteVersion[]>(`notes/${encodeURIComponent(id)}/versions?${params}`, { signal })
   }
 
   async readNoteVersion(id: string, version: number, signal?: AbortSignal): Promise<{ node: NoteNode; version: NoteVersion; content: Uint8Array }> {
+    if(this.noteReplica)return this.noteReplica.readVersion(id,version)
     const [node, versions, content] = await Promise.all([
       this.getNote(id, signal),
       this.listNoteVersions(id, 200, signal),
@@ -307,20 +323,24 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
   }
 
   async restoreNoteVersion(id: string, version: number, expectedVersion?: number, signal?: AbortSignal): Promise<NoteNode> {
+    if(this.noteReplica)return this.noteReplica.restore(id,version,expectedVersion)
     return this.request<NoteNode>(`notes/${encodeURIComponent(id)}/versions/${version}/restore`, {
       method: 'POST', body: { expectedVersion }, signal,
     })
   }
 
   async createNoteFolder(name: string, parentId: string | null = null, signal?: AbortSignal): Promise<NoteNode> {
+    if(this.noteReplica)return this.noteReplica.create('folder',name,parentId)
     return this.request<NoteNode>('notes/folders', { method: 'POST', body: { name, parentId }, signal })
   }
 
   async createNoteDocument(name: string, parentId: string | null = null, content = '', signal?: AbortSignal): Promise<NoteNode> {
+    if(this.noteReplica)return this.noteReplica.create('document',name,parentId,Buffer.from(content))
     return this.request<NoteNode>('notes/documents', { method: 'POST', body: { name, parentId, content }, signal })
   }
 
   async updateNoteContent(id: string, content: Uint8Array, signal?: AbortSignal, expectedVersion?: number): Promise<NoteNode> {
+    if(this.noteReplica)return this.noteReplica.change(id,{content},expectedVersion)
     const query = expectedVersion === undefined ? '' : `?expectedVersion=${expectedVersion}`
     const response = await this.requestBytes(`notes/${encodeURIComponent(id)}/content${query}`, {
       method: 'PUT', binaryBody: content, signal, accept: 'application/json',
@@ -329,18 +349,22 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
   }
 
   async renameNote(id: string, name: string, signal?: AbortSignal): Promise<NoteNode> {
+    if(this.noteReplica)return this.noteReplica.change(id,{name})
     return this.request<NoteNode>(`notes/${encodeURIComponent(id)}`, { method: 'PATCH', body: { name }, signal })
   }
 
   async moveNote(id: string, parentId: string | null, signal?: AbortSignal): Promise<NoteNode> {
+    if(this.noteReplica)return this.noteReplica.change(id,{parentId})
     return this.request<NoteNode>(`notes/${encodeURIComponent(id)}`, { method: 'PATCH', body: { parentId }, signal })
   }
 
   async deleteNote(id: string, signal?: AbortSignal): Promise<void> {
+    if(this.noteReplica)return this.noteReplica.delete(id)
     await this.request<unknown>(`notes/${encodeURIComponent(id)}`, { method: 'DELETE', signal })
   }
 
   async searchNotes(query: string, limit: number, signal?: AbortSignal): Promise<NoteNode[]> {
+    if(this.noteReplica)return this.noteReplica.list({query,limit,recursive:true}).filter(n=>n.kind!=='folder')
     const params = new URLSearchParams({ q: query, limit: String(limit) })
     return this.request<NoteNode[]>(`notes?${params}`, { signal })
   }
@@ -426,7 +450,7 @@ export class RemoteKnowledgeProvider implements KnowledgeProvider {
     }
   }
 
-  async close(): Promise<void> {}
+  async close(): Promise<void> {await this.releaseNoteWorkspace?.()}
 
   private async request<T>(
     path: string,
