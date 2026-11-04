@@ -326,3 +326,28 @@ test('a failed temporary write keeps the original and removes the incomplete fil
  try{await assert.rejects(()=>installVaultFile(path,bytes('replacement'),hash('original')),e=>e.code==='ENOSPC')}finally{prototype.writeFile=original}
  assert.equal(await readFile(path,'utf8'),'original');assert.deepEqual(await readdir(root),['note.md'])
 })
+test('remote web rename, move and delete reach the client vault without editing on the client', async t => {
+  const f = await fixture(t)
+  const source = await f.server.createFolder('原目录'), target = await f.server.createFolder('目标目录')
+  const note = await f.server.createDocument('原笔记', source.id, '正文')
+  await f.client.sync()
+  const path = join(f.root, 'remote-client-vault')
+  const vault = new NoteVault(path, {
+    all: () => f.client.all(), read: id => f.client.read(id), readVersion: (id,v) => f.client.readVersion(id,v),
+    update: (id,b,v) => f.client.change(id,{content:b},v), create: (k,n,p,b) => f.client.create(k,n,p,b),
+    relocate: (id,name,parentId,expected) => f.client.change(id,{name,parentId},undefined,expected),
+  },join(f.root,'remote-client-index.json'),false,{stableMs:0,missingMs:30000,now:()=>Date.now()})
+  t.after(()=>vault.close())
+  await vault.scan()
+  assert.equal(await readFile(join(path,'原目录/原笔记.md'),'utf8'),'正文')
+  f.server.rename(note.id,'改名.md');f.server.move(note.id,target.id)
+  await f.client.sync();await vault.scan()
+  assert.equal(await readFile(join(path,'目标目录/改名.md'),'utf8'),'正文')
+  await assert.rejects(readFile(join(path,'原目录/原笔记.md')))
+  f.server.rename(target.id,'移动后的目录')
+  await f.client.sync();await vault.scan()
+  assert.equal(await readFile(join(path,'移动后的目录/改名.md'),'utf8'),'正文')
+  await f.server.delete(note.id);await f.client.sync();await vault.scan()
+  await assert.rejects(readFile(join(path,'移动后的目录/改名.md')))
+  assert.equal(vault.status().externalConflicts,0)
+})
