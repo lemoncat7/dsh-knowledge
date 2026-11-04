@@ -1837,6 +1837,7 @@ html,
 
 @media (min-width: 1121px) and (hover: hover), (min-width: 1401px) {
   .app-shell[data-sidebar-hidden="true"] { grid-template-columns: 0 0 minmax(0, 1fr); }
+  .app-shell[data-sidebar-hidden="true"] > .main { margin-inline: var(--chrome-inset); }
   .app-shell[data-sidebar-hidden="true"] > .sidebar {
     opacity: 0;
     transform: translateX(calc(-100% - var(--chrome-inset)));

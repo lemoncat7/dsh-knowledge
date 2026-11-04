@@ -52,6 +52,16 @@ try {
   })
   await page.locator('.ProseMirror').waitFor()
   await verifySelectionMaterial(page)
+  await page.setViewportSize({ width: 1440, height: 850 })
+  const sidebarLeft = (await page.locator('.sidebar').boundingBox()).x
+  await page.locator('.pane-toggle-button[data-pane="main"]').click()
+  await page.waitForFunction(() => Math.abs(document.querySelector('.main').getBoundingClientRect().x - 8) < 0.1)
+  const collapsedMain = await page.locator('.main').boundingBox()
+  assert.equal(collapsedMain.x, sidebarLeft, 'collapsed panel must align with sidebar outer edge')
+  assert.equal(1440 - collapsedMain.x - collapsedMain.width, sidebarLeft, 'collapsed gutters must be symmetric')
+  await page.locator('.pane-toggle-button[data-pane="main"]').click()
+
+  await page.setViewportSize({ width: 1280, height: 850 })
   // Exercise ordinary motion, not only the accessibility override.
   await page.emulateMedia({ reducedMotion: 'no-preference' })
   await page.evaluate(() => { window.resizeEditor = document.querySelector('.ProseMirror') })
