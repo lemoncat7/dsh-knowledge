@@ -1,3 +1,4 @@
+import {dispatchTool} from './runtime-022.mjs'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -101,9 +102,9 @@ test('real DSH runtime registers only entry and host denial prevents execution',
   t.after(async () => { await runtime.dispose(); await prompt.dispose() })
   ctx.tools.register(f.entry)
   const request = { ...f.exec, callId: 'entry-test', name: 'knowledge', arguments: { action: 'list' } }
-  assert.equal((await ctx.tools.execute(request)).isError, false)
+  assert.equal((await dispatchTool(ctx.tools, request)).isError, false)
   const dispose = ctx.on('tools/pre-execute', () => ({ kind: 'deny', reason: 'test denial' }))
-  assert.equal((await ctx.tools.execute({ ...request, callId: 'denied' })).isError, true)
+  assert.equal((await dispatchTool(ctx.tools, { ...request, callId: 'denied' })).isError, true)
   dispose()
-  assert.equal((await ctx.tools.execute({ ...request, callId: 'legacy', name: 'knowledge_search' })).isError, true)
+  assert.equal((await dispatchTool(ctx.tools, { ...request, callId: 'legacy', name: 'knowledge_search' })).isError, true)
 })

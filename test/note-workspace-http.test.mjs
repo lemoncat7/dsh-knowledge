@@ -76,8 +76,18 @@ test('authenticated HTTP, remote agent tools and browser share one durable note 
   const page = await fetch(url + `/local/notes/${node.id}/content`, { headers })
   assert.equal(await page.text(), '# 工具编辑')
   assert.equal(page.headers.get('content-security-policy'), "default-src 'none'; sandbox")
-  await remote.noteVault.scan()
-  assert.equal(await readFile(join(root, 'workspace/vault/浏览器新建.md'), 'utf8'), '# 工具编辑')
+  // The vault intentionally waits for a stable file before replacing it, so an
+  // editor's in-progress save cannot be overwritten. Verify eventual projection.
+  const projectedPath = join(root, 'workspace/vault/浏览器新建.md')
+  const deadline = Date.now() + 8000
+  let projected
+  do {
+    await remote.noteVault.scan()
+    projected = await readFile(projectedPath, 'utf8').catch(e => { if (e.code !== 'ENOENT') throw e })
+    if (projected === '# 工具编辑') break
+    await new Promise(resolve => setTimeout(resolve, 100))
+  } while (Date.now() < deadline)
+  assert.equal(projected, '# 工具编辑', JSON.stringify(remote.noteVault.status()))
   const status = await fetch(url + '/local/note-workspace', { headers }).then((r) => r.json())
   assert.equal(status.pending, 0)
   assert.equal(status.state, 'online')

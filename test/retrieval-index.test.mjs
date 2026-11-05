@@ -39,7 +39,7 @@ test('bounded index batches use one savepoint and preserve surrounding rollback'
   assert.equal(index.status().pending, 3)
   assert.equal(statements.filter(s => s === 'SAVEPOINT knowledge_passage_batch').length, 1)
   assert.equal(statements.filter(s => s === 'RELEASE knowledge_passage_batch').length, 1)
-  index.processBatch()
+  while(index.processBatch()) {}
   statements.length = 0
   assert.equal(index.processBatch(), 0)
   assert.deepEqual(statements, [], 'idle work must not start write transactions')

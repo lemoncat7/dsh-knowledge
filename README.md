@@ -44,3 +44,8 @@ dsh plugin --profile web add @lemoncat7/dsh-knowledge@latest
 ## 2.18.0 笔记离线副本与本地文件
 
 笔记工作区增加远程补同步和可供 Obsidian 打开的 Markdown 目录。支持范围、冲突规则和 schema 升级注意事项见 [说明](docs/note-workspace-sync.md)。
+
+
+## DSH 0.2.2-rc.1
+
+2.19.4 支持 DSH 0.2.2-rc.1，要求 Node.js >=24.9.0。[兼容说明](docs/compatibility-0.2.2-rc.1.md)。
