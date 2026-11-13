@@ -70,6 +70,23 @@ test('new source APIs remain central and preserve read/write permissions', async
   await assert.rejects(requestCentral(readOnly, 'POST', '/exclude-batch', { ids: [id], excluded: true }), e => e.status === 403)
 })
 
+test('report reading follows the central HTTP read permission without requiring write access',async t=>{
+  const c=await central(t)
+  c.store.save('2026-11-14','中央已生成的日报',0)
+  const reader=client(t,{...c.connection,remoteToken:c.tokens.read})
+  const signal=new AbortController().signal
+  const list=await reader.service.read('/reports',new URLSearchParams(),signal)
+  assert.equal(list.source,'remote');assert.equal(list.items[0].day,'2026-11-14')
+  const report=await reader.service.read('/report',new URLSearchParams({day:'2026-11-14'}),signal)
+  assert.equal(report.markdown,'中央已生成的日报')
+  const writer=client(t,{...c.connection,remoteToken:c.tokens.write})
+  assert.equal((await writer.service.read('/reports',new URLSearchParams(),signal)).total,1,'existing write permission includes read')
+  const denied=client(t,{...c.connection,remoteToken:'invalid-or-revoked-token'})
+  await assert.rejects(denied.service.read('/reports',new URLSearchParams(),signal),error=>error.status===401)
+  await assert.rejects(requestCentral({...c.connection,remoteToken:c.tokens.read},'POST','/generate',{day:'2026-11-14'}),error=>error.status===403)
+  assert.equal(c.calls(),0,'reading must not schedule or run a model')
+})
+
 test('multiple collectors share central records, model catalog and report; never run local models', async t => {
   const c = await central(t), a = client(t, c.connection), b = client(t, c.connection)
   a.service.collect(session('same-id'), 1); b.service.collect(session('same-id'), 1)

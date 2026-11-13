@@ -13,12 +13,12 @@ import { LocalKnowledgeProvider } from '../lib/local-provider.js'
 import { KnowledgeHandleCodec } from '../lib/retrieval.js'
 import { KnowledgeNoteHandleCodec } from '../lib/note-reference-handle.js'
 
-async function fixture(t, writeMode = 'direct') {
+async function fixture(t, writeMode = 'direct', readWorklog) {
   const root = await mkdtemp(join(tmpdir(), 'knowledge-entry-'))
   const provider = new LocalKnowledgeProvider(join(root, 'db.sqlite'))
   t.after(async () => { await provider.close(); await rm(root, { recursive: true, force: true }) })
   const registered = new Map(), codec = new KnowledgeHandleCodec(Buffer.alloc(32, 1))
-  registerKnowledgeTools({ tools: { register(tool) { registered.set(tool.name, tool); return () => registered.delete(tool.name) } }, llm: {} }, provider, codec, new KnowledgeNoteHandleCodec(Buffer.alloc(32, 2)))
+  registerKnowledgeTools({ tools: { register(tool) { registered.set(tool.name, tool); return () => registered.delete(tool.name) } }, llm: {} }, provider, codec, new KnowledgeNoteHandleCodec(Buffer.alloc(32, 2)), readWorklog)
   const session = { id: 'entry-session', header: {}, snapshotEvents: () => [] }
   const exec = { agent: { session }, signal: new AbortController().signal }
   const mount = { targetKind: 'session', targetId: session.id, knowledgeBaseId: 'default', enabled: true, recallEnabled: true, writeMode, includeTags: ['allowed'], excludeTags: [], extractionInstructions: '' }
@@ -36,7 +36,7 @@ test('one public registration, complete lazy catalog and no document/provider di
   const listed = await f.entry.execute({ action: 'list' }, f.exec)
   assert.doesNotMatch(listed, /PRIVATE BODY|private title/)
   const operations = JSON.parse(listed).operations
-  assert.equal(operations.length, 19)
+  assert.equal(operations.length, 21)
   assert.ok(operations.every(item => !('parameters' in item)))
   let expanded = 0
   for (const operation of operations) {
@@ -107,4 +107,20 @@ test('real DSH runtime registers only entry and host denial prevents execution',
   assert.equal((await dispatchTool(ctx.tools, { ...request, callId: 'denied' })).isError, true)
   dispose()
   assert.equal((await dispatchTool(ctx.tools, { ...request, callId: 'legacy', name: 'knowledge_search' })).isError, true)
+})
+
+
+test('worklog reads use the registered host entry and respect host denial', async t => {
+  let reads=0
+  const f=await fixture(t,'none',async(path,q,signal)=>{reads++;signal.throwIfAborted();assert.equal(path,'/report');assert.equal(q.get('day'),'2026-11-14');return {day:'2026-11-14',exists:true,markdown:'日报正文'}})
+  const ctx=new Context(),prompt=ctx.plugin(SystemPrompt);await prompt
+  const runtime=ctx.plugin(ToolRuntime);await runtime
+  t.after(async()=>{await runtime.dispose();await prompt.dispose()})
+  ctx.tools.register(f.entry)
+  const request={...f.exec,callId:'journal-read',name:'knowledge',arguments:{action:'call',tool:'knowledge_worklog_read',arguments:{day:'2026-11-14'}}}
+  const response=await dispatchTool(ctx.tools,request)
+  assert.equal(response.isError,false);assert.match(JSON.stringify(response),/日报正文/);assert.equal(reads,1)
+  const dispose=ctx.on('tools/pre-execute',()=>({kind:'deny',reason:'test denial'}))
+  assert.equal((await dispatchTool(ctx.tools,{...request,callId:'denied-read'})).isError,true);assert.equal(reads,1)
+  dispose()
 })

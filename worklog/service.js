@@ -27,6 +27,24 @@ export class JournalService {
     if (method === 'GET' && path === '/state') return { ...value, config: pick(value.config, sharedKeys), projects: [] }
     return value
   }
+  async read(path, query, signal) {
+    signal.throwIfAborted()
+    if (!['/reports', '/report'].includes(path)) throw fail('不支持的日报读取操作', 400)
+    const connection = { ...this.current() }
+    if (connection.paused) throw fail('知识库连接正在切换，请稍后重试', 409)
+    const key = value => JSON.stringify([value.backend,value.remoteUrl,value.remoteToken])
+    const target = destination(connection)
+    let value
+    try {
+      value = target
+        ? await this.request(connection,'GET',path,undefined,query,signal)
+        : await this.central('GET',path,{},query)
+    } catch (error) { signal.throwIfAborted(); throw error }
+    signal.throwIfAborted()
+    const current = this.current()
+    if (current.paused || key(current)!==key(connection)) throw fail('知识库连接已变化，请重新读取日报',409)
+    return { ...value,source:target?'remote':'local' }
+  }
   collectorState() {
     const target = destination(this.current())
     return { remote: !!target, sourceId: this.store.originId(), capture: pick(this.store.config(), captureKeys),

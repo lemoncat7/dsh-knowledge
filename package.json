@@ -1,6 +1,6 @@
 {
   "name": "@lemoncat7/dsh-knowledge",
-  "version": "2.19.5",
+  "version": "2.19.7",
   "description": "Local and remote knowledge bases for DeepSeek Harness, with scoped recall, controlled write-back, and a Web management console",
   "keywords": [
     "deepseek-harness",
@@ -52,7 +52,10 @@
     "docs/releases/2.14.1.md",
     "docs/compatibility-0.2.2-rc.1.md",
     "docs/compatibility-0.2.2-rc.2.md",
-    "docs/releases/2.19.5.md"
+    "docs/releases/2.19.5.md",
+    "docs/host-compatibility-policy.md",
+    "docs/releases/2.19.6.md",
+    "docs/releases/2.19.7.md"
   ],
   "dsh": {
     "bundle": {
@@ -77,8 +80,7 @@
     }
   },
   "engines": {
-    "node": ">=24.9.0",
-    "dsh": "=0.2.2-rc.1 || =0.2.2-rc.2"
+    "node": ">=24.9.0"
   },
   "scripts": {
     "build": "node --check web/app.js && tsc -p tsconfig.json && node scripts/build-client.mjs",
@@ -96,10 +98,10 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.1.0",
-    "@deepseek-ai/dsh-agent": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-client-ui-renderer": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-settings": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-tools": "^0.2.2-rc.1"
+    "@deepseek-ai/dsh-agent": "*",
+    "@deepseek-ai/dsh-client-ui-renderer": "*",
+    "@deepseek-ai/dsh-settings": "*",
+    "@deepseek-ai/dsh-tools": "*"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",

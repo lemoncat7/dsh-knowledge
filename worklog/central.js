@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { dayOf, fail, text, validDay } from './domain.js'
 import { sourceRoutes } from './sources.js'
+import { reportReadRoutes } from './report-read.js'
 
 export const sharedKeys = ['timezone', 'provider', 'model', 'scheduleEnabled', 'scheduleTime', 'scheduleCatchup', 'scheduleFallbackEnabled']
 export const captureKeys = ['enabled', 'scope', 'projects', 'recursiveProjects', 'excludedSessions']
@@ -30,6 +31,8 @@ export function incomingRecord(value, sourceId, timezone) {
 /** Only called after Host or Knowledge bearer authorization. Never trusts client model routes. */
 export function createCentral(store, worker, models) {
   return async (method, path, data = {}, query = new URLSearchParams()) => {
+    const reportResult = reportReadRoutes(store, method, path, query)
+    if (reportResult !== undefined) return reportResult
     const sourceResult = sourceRoutes(store, method, path, data, query)
     if (sourceResult !== undefined) return sourceResult
     if (method === 'GET') {
