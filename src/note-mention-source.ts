@@ -35,7 +35,7 @@ export function createNoteMentionSource(openNote: (id: string) => void, request:
       return body.items.slice(0, 20).map((item: unknown) => {
         if (!isObject(item) || typeof item.id !== 'string' || !isNoteId(item.id) || typeof item.name !== 'string' || typeof item.parent !== 'string') throw new Error('笔记搜索返回了无效文档。')
         return {
-          name: item.name, icon: 'file' as const, section: '笔记文档', description: item.parent,
+          name: item.name, icon: 'file' as const, section: '笔记与文本文件', description: item.parent,
           value: JSON.stringify({ id: item.id, name: item.name, sessionId: session.sessionId, sourceKey } satisfies NoteMention),
         }
       })

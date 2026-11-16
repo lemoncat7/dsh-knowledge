@@ -17,7 +17,7 @@ test('@ source lists only the note endpoint and inserts stable references, not f
     })
   })
   const candidates = await source.candidates(session, request())
-  assert.equal(candidates[0].section, '笔记文档')
+  assert.equal(candidates[0].section, '笔记与文本文件')
   assert.equal(candidates[0].description, '项目 A')
   const result = source.onPick(pick(candidates[0])).insert
   assert.equal(result.source, NOTE_MENTION_SOURCE)

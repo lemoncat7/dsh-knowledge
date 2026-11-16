@@ -218,6 +218,7 @@ async function dispatch(
         limit: integerParam(url, 'limit', 200, 1, 500),
         ...kind === null ? {} : { kind },
         ...url.searchParams.get('recursive') === '1' ? { recursive: true } : {},
+        ...url.searchParams.get('editableOnly') === '1' ? { editableOnly: true } : {},
       }
       return sendJson(res, 200, url.searchParams.get('paged') === '1'
         ? provider.notes.listPage(request, url.searchParams.get('cursor') || undefined)

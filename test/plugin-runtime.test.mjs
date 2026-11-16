@@ -193,6 +193,7 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
 
   assert.deepEqual([...tools.keys()], ['knowledge'])
   const toolExec = { agent: { session }, signal: new AbortController().signal }
+  const operation = name => ({ execute: (arguments_, exec) => tools.get('knowledge').execute({ action: 'call', tool: name, arguments: arguments_ }, exec) })
   const directory = JSON.parse(await tools.get('knowledge').execute({ action: 'list' }, toolExec))
   assert.deepEqual(directory.operations.map(item => item.name).sort(), [
     'knowledge_base_create',
@@ -213,9 +214,11 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
     'knowledge_read',
     'knowledge_record_incident',
     'knowledge_search',
+    'knowledge_worklog_list',
+    'knowledge_worklog_read',
   ])
   await assert.rejects(
-    tools.get('knowledge_base_create').execute({ name: 'Unauthorized base' }, toolExec),
+    operation('knowledge_base_create').execute({ name: 'Unauthorized base' }, toolExec),
     /requires an explicit request in the current direct user message/,
   )
   session.events.push(
@@ -225,7 +228,7 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
     } },
   )
   await assert.rejects(
-    tools.get('knowledge_base_create').execute({
+    operation('knowledge_base_create').execute({
       name: 'Invalid model base', useCurrentSessionModel: false, writebackProvider: 'missing', writebackModel: 'unknown-model',
     }, toolExec),
     /write-back model missing\/unknown-model is unavailable/,
@@ -236,14 +239,14 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
     { writebackProvider: 'other-machine', writebackModel: 'unavailable' },
     { useCurrentSessionModel: true, writebackProvider: 'other-machine' },
   ]) {
-    const inherited = JSON.parse(await tools.get('knowledge_base_create').execute({ name: `Inherited route ${fields.useCurrentSessionModel ?? 'default'}`, ...fields }, toolExec))
+    const inherited = JSON.parse(await operation('knowledge_base_create').execute({ name: `Inherited route ${fields.useCurrentSessionModel ?? 'default'}`, ...fields }, toolExec))
     assert.equal(inherited.knowledgeBase.writebackProvider, undefined)
     assert.equal(inherited.knowledgeBase.writebackModel, undefined)
     assert.match(inherited.warning, /ignored/)
   }
-  await assert.rejects(tools.get('knowledge_base_create').execute({ name: 'Bad mode', useCurrentSessionModel: 'false' }, toolExec), /must be (?:a )?boolean/)
-  await assert.rejects(tools.get('knowledge_base_create').execute({ name: 'Incomplete route', useCurrentSessionModel: false, writebackProvider: 'missing' }, toolExec), /writebackModel/)
-  const created = JSON.parse(await tools.get('knowledge_base_create').execute({
+  await assert.rejects(operation('knowledge_base_create').execute({ name: 'Bad mode', useCurrentSessionModel: 'false' }, toolExec), /must be (?:a )?boolean/)
+  await assert.rejects(operation('knowledge_base_create').execute({ name: 'Incomplete route', useCurrentSessionModel: false, writebackProvider: 'missing' }, toolExec), /writebackModel/)
+  const created = JSON.parse(await operation('knowledge_base_create').execute({
     name: 'Tool-managed base',
     description: 'Reusable knowledge managed through DSH tools.',
     defaultTags: ['DSH', 'tools', 'dsh'],
@@ -257,7 +260,7 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
   assert.deepEqual(created.knowledgeBase.defaultTags, ['dsh', 'tools'])
 
   await assert.rejects(
-    tools.get('knowledge_base_update').execute({ base: created.knowledgeBase.id, name: 'Unauthorized update' }, {
+    operation('knowledge_base_update').execute({ base: created.knowledgeBase.id, name: 'Unauthorized update' }, {
       agent: { session: { ...session, events: session.events.slice(0, 4) } },
       signal: new AbortController().signal,
     }),
@@ -269,7 +272,7 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
       id: 'update-base', role: 'user', content: [{ type: 'text', text: '把这个知识库修改为新的名称和描述。' }], source: { kind: 'user' },
     } },
   )
-  const updated = JSON.parse(await tools.get('knowledge_base_update').execute({
+  const updated = JSON.parse(await operation('knowledge_base_update').execute({
     base: created.knowledgeBase.id,
     name: 'Updated tool-managed base',
     description: 'Updated routing description.',
@@ -284,22 +287,22 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
   assert.deepEqual(updated.knowledgeBase.defaultTags, ['dsh', 'updated'])
   assert.equal(updated.knowledgeBase.extractionInstructions, '')
 
-  const baseSearchOutput = await tools.get('knowledge_base_search').execute({ query: 'DSH plugin installation' }, toolExec)
+  const baseSearchOutput = await operation('knowledge_base_search').execute({ query: 'DSH plugin installation' }, toolExec)
   assert.match(baseSearchOutput, /Only reusable DSH plugin installation/)
   assert.match(baseSearchOutput, /id: default/)
   assert.doesNotMatch(baseSearchOutput, /Install profile plugins with/)
   await assert.rejects(
-    tools.get('knowledge_search').execute({ query: 'DSH plugin installation' }, toolExec),
+    operation('knowledge_search').execute({ query: 'DSH plugin installation' }, toolExec),
     /(?:base must be a non-empty string|required property 'base')/,
   )
-  const searchOutput = await tools.get('knowledge_search').execute({ query: 'DSH plugin installation', base: 'default' }, toolExec)
+  const searchOutput = await operation('knowledge_search').execute({ query: 'DSH plugin installation', base: 'default' }, toolExec)
   assert.match(searchOutput, /DSH plugin installation command/)
   const handle = /handle: (k1\.[^\s]+)/.exec(searchOutput)?.[1]
   assert.ok(handle)
-  const readOutput = await tools.get('knowledge_read').execute({ handle }, toolExec)
+  const readOutput = await operation('knowledge_read').execute({ handle }, toolExec)
   assert.match(readOutput, /Install profile plugins with dsh plugin/)
   await assert.rejects(
-    tools.get('knowledge_read').execute({ handle }, {
+    operation('knowledge_read').execute({ handle }, {
       agent: { session: { ...session, id: 'another-session' } },
       signal: new AbortController().signal,
     }),
@@ -428,6 +431,7 @@ test('content write-back is not exposed to the main agent tool surface', async (
     'knowledge_base_create', 'knowledge_base_search', 'knowledge_base_update', 'knowledge_document_group_assign', 'knowledge_document_groups', 'knowledge_document_status', 'knowledge_note_confirm', 'knowledge_note_create',
     'knowledge_note_delete', 'knowledge_note_list', 'knowledge_note_move', 'knowledge_note_preview', 'knowledge_note_read',
     'knowledge_note_references', 'knowledge_note_search', 'knowledge_note_update', 'knowledge_read', 'knowledge_record_incident', 'knowledge_search',
+    'knowledge_worklog_list', 'knowledge_worklog_read',
   ])
 })
 

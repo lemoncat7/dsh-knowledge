@@ -41,13 +41,16 @@ const note = {
   editable: true, size: 24, sha256: 'def', version: 2, createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-02T00:00:00Z',
 }
 
-test('note mentions search documents only and issue fresh session-bound handles without reading content', async t => {
+test('note mentions include editable uploads and issue fresh session-bound handles without reading content', async t => {
   const codec = new KnowledgeNoteHandleCodec(Buffer.alloc(32, 1))
   let sourceKey = 'a'.repeat(64), current = note
+  const upload = { ...note, id: `note_${'b'.repeat(32)}`, kind: 'file', name: '上传设计.md' }
+  const binary = { ...note, id: `note_${'c'.repeat(32)}`, kind: 'file', name: '设计附件.pdf', mediaType: 'application/pdf', editable: false }
+  const folder = { ...note, id: `note_${'d'.repeat(32)}`, kind: 'folder', name: '设计目录', mediaType: null, editable: false }
   const requests = []
   const server = await activityServer({
-    async listNotes(request) { requests.push(request); return [note, { ...note, id: 'file', kind: 'file' }, { ...note, id: 'folder', kind: 'folder' }] },
-    async getNote(id) { return id === note.id ? current : undefined },
+    async listNotes(request) { requests.push(request); return [note, upload, binary, folder] },
+    async getNote(id) { return id === note.id ? current : id === upload.id ? upload : id === binary.id ? binary : id === folder.id ? folder : undefined },
     async readNote() { assert.fail('mentions must not read full note content') },
     async resolveMounts() { assert.fail('note mentions must not require knowledge mounts') },
   }, { codec, sourceKey: () => sourceKey })
@@ -55,10 +58,11 @@ test('note mentions search documents only and issue fresh session-bound handles 
   const headers = { 'x-dsh-knowledge-client': 'conversation-web' }
   const path = `${server.url}/note-mentions?sessionId=session-a&q=设计`
   const result = await (await fetch(path, { headers })).json()
-  assert.equal(result.items.length, 1)
+  assert.equal(result.items.length, 2)
   assert.equal(result.items[0].id, note.id)
   assert.equal(result.items[0].parent, '根目录')
-  assert.deepEqual(requests[0], { query: '设计', kind: 'document', recursive: true, limit: 20 })
+  assert.equal(result.items[1].id, upload.id)
+  assert.deepEqual(requests[0], { query: '设计', editableOnly: true, recursive: true, limit: 20 })
   assert.equal(JSON.stringify(result).includes('n1.'), false)
   current = { ...note, name: '重新命名.md' }
   const refUrl = `${server.url}/note-mentions/${note.id}?sessionId=session-a&sourceKey=${sourceKey}`
@@ -68,6 +72,11 @@ test('note mentions search documents only and issue fresh session-bound handles 
   assert.equal(codec.decode(handle, 'session-a').noteId, note.id)
   assert.throws(() => codec.decode(handle, 'session-b'), /does not belong/)
   assert.match(serialized.text, /不授权修改或删除/)
+  const uploadRef = await (await fetch(`${server.url}/note-mentions/${upload.id}?sessionId=session-a&sourceKey=${sourceKey}`, { headers })).json()
+  assert.equal(codec.decode(uploadRef.text.match(/noteHandle: (n1\.[\w.-]+)/)[1], 'session-a').noteId, upload.id)
+  for (const blocked of [binary, folder]) {
+    assert.equal((await fetch(`${server.url}/note-mentions/${blocked.id}?sessionId=session-a&sourceKey=${sourceKey}`, { headers })).status, 404)
+  }
   assert.equal((await fetch(path)).status, 401)
   assert.equal((await fetch(path, { headers: { ...headers, origin: 'https://attacker.example', 'sec-fetch-site': 'cross-site' } })).status, 403)
   assert.equal((await fetch(refUrl, { method: 'POST', headers })).status, 405)

@@ -23,6 +23,36 @@ test('document-only recursive search filters before limiting and excludes folder
   assert.deepEqual(store.list({ query: '%', kind: 'document' }), [])
 })
 
+test('editable upload mentions filter before limiting and retain native version history', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-note-editable-'))
+  const store = new NoteStore(root)
+  t.after(async () => { await store.close(); await rm(root, { recursive: true, force: true }) })
+  const parent = await store.createFolder('资料目录')
+  for (let i = 0; i < 25; i++) {
+    await store.createFolder(`a-${i}`, parent.id)
+    await store.upload({ name: `a-${i}.pdf`, parentId: parent.id, mediaType: 'application/pdf', content: Buffer.from('%PDF') })
+  }
+  const files = []
+  for (const name of ['b-markdown.md', 'c-plain.txt', 'd-config.json', 'e-code.py']) {
+    files.push(await store.upload({ name, parentId: parent.id, mediaType: 'application/octet-stream', content: Buffer.from('original UTF-8 text') }))
+  }
+  const request = { editableOnly: true, recursive: true, limit: 2 }
+  assert.deepEqual(store.list(request).map(n => n.id), files.slice(0, 2).map(n => n.id))
+  assert.deepEqual(store.list({ ...request, query: 'config' }).map(n => n.id), [files[2].id])
+  const page = store.listPage(request)
+  assert.equal(page.total, 4)
+  assert.deepEqual(page.items.map(n => n.id), files.slice(0, 2).map(n => n.id))
+  assert.deepEqual(store.listPage(request, page.nextCursor).items.map(n => n.id), files.slice(2).map(n => n.id))
+  assert.throws(() => store.listPage({ ...request, editableOnly: false }, page.nextCursor), /分页位置已失效/)
+  const markdown = files[0]
+  const changed = await store.updateContent(markdown.id, Buffer.from('# revised'), 1)
+  assert.equal(changed.kind, 'file')
+  assert.deepEqual(store.listVersions(markdown.id).map(v => v.version), [2, 1])
+  const restored = await store.restoreVersion(markdown.id, 1, 2)
+  assert.equal(restored.version, 3)
+  assert.equal((await store.read(markdown.id)).content.toString(), 'original UTF-8 text')
+})
+
 test('note store provides a stable, nested document tree independent from knowledge bases', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-note-store-'))
   const store = new NoteStore(root)

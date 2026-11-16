@@ -36,6 +36,9 @@ export class NoteStore {
     mkdirSync(this.objectsPath, { recursive: true, mode: 0o700 })
     mkdirSync(this.versionsPath, { recursive: true, mode: 0o700 })
     this.db = new DatabaseSync(join(rootPath, 'notes.sqlite'))
+    this.db.function('note_is_editable', { deterministic: true }, (kind, name, mediaType) =>
+      isEditableNoteNode({ kind: String(kind) as NoteNodeKind, name: String(name),
+        mediaType: mediaType === null ? null : String(mediaType) }) ? 1 : 0)
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
     this.migrate()
     this.db.exec('CREATE TABLE IF NOT EXISTS note_version_sources(note_id TEXT NOT NULL, version INTEGER NOT NULL, source TEXT NOT NULL, PRIMARY KEY(note_id,version));')
@@ -52,7 +55,7 @@ export class NoteStore {
     const query = request.query?.trim() ?? ''
     const limit = normalizeLimit(request.limit)
     if (request.kind !== undefined && !['folder', 'document', 'file'].includes(request.kind)) throw new Error('invalid note kind')
-    if (request.kind !== undefined || request.recursive) {
+    if (request.kind !== undefined || request.recursive || request.editableOnly) {
       const clauses: string[] = []
       const args: (string | number)[] = []
       if (query) { clauses.push("name LIKE ? ESCAPE '\\'"); args.push(`%${escapeLike(query)}%`) }
@@ -62,6 +65,7 @@ export class NoteStore {
         clauses.push('parent_key = ?'); args.push(parentKey(parentId))
       }
       if (request.kind !== undefined) { clauses.push('kind = ?'); args.push(request.kind) }
+      if (request.editableOnly) clauses.push('note_is_editable(kind,name,media_type) = 1')
       return (this.db.prepare(`SELECT ${NOTE_COLUMNS} FROM note_nodes
         ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
         ORDER BY CASE kind WHEN 'folder' THEN 0 ELSE 1 END, name COLLATE NOCASE, id LIMIT ?
@@ -98,7 +102,7 @@ export class NoteStore {
     this.assertOpen()
     const query = request.query?.trim() || ''
     const parentId = normalizeParentId(request.parentId)
-    const scope = JSON.stringify(['notes', query, query || request.recursive ? null : parentId, request.kind || '', Boolean(request.recursive)])
+    const scope = JSON.stringify(['notes', query, query || request.recursive ? null : parentId, request.kind || '', Boolean(request.recursive), Boolean(request.editableOnly)])
     const after = decodePageCursor(cursor, scope, ['number', 'string', 'string'])
     const conditions: string[] = [], args: (string | number)[] = []
     if (request.kind && !['folder', 'document', 'file'].includes(request.kind)) throw new Error('invalid note kind')
@@ -108,6 +112,7 @@ export class NoteStore {
       conditions.push('parent_key = ?'); args.push(parentKey(parentId))
     }
     if (request.kind) { conditions.push('kind = ?'); args.push(request.kind) }
+    if (request.editableOnly) conditions.push('note_is_editable(kind,name,media_type) = 1')
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
     const total = Number((this.db.prepare(`SELECT count(*) AS total FROM note_nodes ${where}`).get(...args) as SqlRow).total)
     const rank = "CASE kind WHEN 'folder' THEN 0 ELSE 1 END"

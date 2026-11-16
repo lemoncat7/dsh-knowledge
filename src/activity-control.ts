@@ -54,9 +54,9 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, provider: Kno
     if (segments.length === 1) {
       const query = url.searchParams.get('q')?.trim() ?? ''
       if (query.length > 255) throw httpError(400, '笔记搜索词过长。')
-      const notes = await provider.listNotes({ query, kind: 'document', recursive: true, limit: 20 })
+      const notes = await provider.listNotes({ query, editableOnly: true, recursive: true, limit: 20 })
       // Defense in depth for older remote services that ignore the new filter.
-      const documents = notes.filter(node => node.kind === 'document').slice(0, 20)
+      const documents = notes.filter(isEditableNoteNode).slice(0, 20)
       const parents = new Map<string, Promise<string>>()
       const pathFor = (id: string | null): Promise<string> => {
         if (id === null) return Promise.resolve('根目录')
@@ -78,7 +78,7 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, provider: Kno
       if (!isNoteId(id)) throw httpError(400, '笔记引用格式无效。')
       if (url.searchParams.get('sourceKey') !== sourceKey) throw httpError(409, '知识库连接已切换，请重新选择笔记引用。')
       const node = await provider.getNote(id)
-      if (!node || node.kind !== 'document') throw httpError(404, '引用的笔记文档已不存在，请重新选择。')
+      if (!node || !isEditableNoteNode(node)) throw httpError(404, '引用的笔记或文本文件已不存在或不再支持引用，请重新选择。')
       if (sourceKey !== mentions.sourceKey()) throw httpError(409, '知识库连接已切换，请重新选择笔记引用。')
       // Mint at submission, not search time: drafts survive server restarts and renames.
       const handle = mentions.codec.encode(sessionId, node.id)
