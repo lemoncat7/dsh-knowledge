@@ -159,6 +159,9 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   registerKnowledgeTools(runtime, provider, handleCodec, noteHandleCodec, (path,query,signal) => {
     if (!journalRuntime) throw connectionError(503, '工作日报读取服务尚未就绪')
     return journalRuntime.read(path,query,signal)
+  }, (method,path,data,query,signal) => {
+    if (!journalRuntime) throw connectionError(503, '工作日历服务尚未就绪')
+    return journalRuntime.calendar(method,path,data,query,signal)
   })
   runtime.provide?.(KNOWLEDGE_TRACKING_SERVICE, createKnowledgeTrackingService(provider))
   runtime.provide?.(KNOWLEDGE_MOUNT_MANAGEMENT_SERVICE, createKnowledgeMountManagement(provider, () => providerRouter.revision))

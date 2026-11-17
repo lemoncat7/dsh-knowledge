@@ -49,3 +49,7 @@ dsh plugin --profile web add @lemoncat7/dsh-knowledge@latest
 ## 宿主兼容策略
 
 DSH 更新后不再为了补版本声明单独发布插件；按实际接口和功能验证、修复。[策略及历史测试入口](docs/host-compatibility-policy.md)。
+
+### 工作日历
+
+工作记录新增每日目标与时间段日历，支持月/周视图、进度、改期、标签和回收站。AI 通过统一入口的 `knowledge_calendar` 操作管理；可导出 `.ics`，预留外部日历适配器。详见 [工作日历](docs/work-calendar.md)。

@@ -295,3 +295,20 @@ test('central redirect is rejected without forwarding authorization to another s
   await assert.rejects(requestCentral({ backend: 'remote', remoteUrl: `http://127.0.0.1:${redirect.address().port}`, remoteToken: 'private-token-for-test', remoteTimeoutMs: 1000 }, 'GET', '/state'), /重定向/)
   assert.equal(leaked, false)
 })
+
+test('calendar HTTP respects remote read/write permissions and selected central identity', async t => {
+  const c = await central(t), a = client(t, c.connection)
+  const info = await a.service.browser('GET', '/calendar-info')
+  assert.equal(info.calendarId, c.store.calendar.calendarId)
+  assert.notEqual(info.calendarId, a.store.calendar.calendarId)
+  const data = { requestId: 'http-create', calendarId: info.calendarId, event: { title: '每天目标', day: '2026-11-17' } }
+  const read = { ...c.connection, remoteToken: c.tokens.read }, write = { ...c.connection, remoteToken: c.tokens.write }
+  await assert.rejects(requestCentral(read, 'POST', '/calendar-create', data), e => e.status === 403)
+  const first = await requestCentral(write, 'POST', '/calendar-create', data)
+  assert.equal(first.event.title, '每天目标')
+  const page = await requestCentral(read, 'GET', '/calendar', undefined, new URLSearchParams({ from: '2026-11-17', to: '2026-11-18' }))
+  assert.equal(page.total, 1); assert.equal(a.store.calendar.info().cursor, 0)
+  await assert.rejects(requestCentral(read, 'GET', '/calendar-event', undefined, new URLSearchParams({ id: 'missing' })), e => e.status === 404 && /目标不存在/.test(e.message))
+  await assert.rejects(requestCentral(read, 'POST', '/calendar-delete', { requestId: 'http-delete', id: first.event.id, revision: 1 }), e => e.status === 403)
+  assert.equal((await requestCentral(read, 'GET', '/calendar-export', undefined, new URLSearchParams({ from: '2026-11-17', to: '2026-11-18' }))).count, 1)
+})

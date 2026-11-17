@@ -1,6 +1,6 @@
 {
   "name": "@lemoncat7/dsh-knowledge",
-  "version": "2.20.0",
+  "version": "2.21.3",
   "description": "Local and remote knowledge bases for DeepSeek Harness, with scoped recall, controlled write-back, and a Web management console",
   "keywords": [
     "deepseek-harness",
@@ -26,7 +26,11 @@
       "default": "./lib/client.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./calendar": {
+      "types": "./lib/calendar-protocol.d.ts",
+      "default": "./lib/calendar-protocol.js"
+    }
   },
   "files": [
     "docs/releases/2.15.5.md",
@@ -57,7 +61,12 @@
     "docs/releases/2.19.6.md",
     "docs/releases/2.19.7.md",
     "docs/releases/2.19.8.md",
-    "docs/releases/2.20.0.md"
+    "docs/releases/2.20.0.md",
+    "docs/releases/2.21.0.md",
+    "docs/releases/2.21.1.md",
+    "docs/releases/2.21.2.md",
+    "docs/releases/2.21.3.md",
+    "docs/work-calendar.md"
   ],
   "dsh": {
     "bundle": {

@@ -1,3 +1,4 @@
+import { CalendarStore } from './calendar/store.js'
 import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -28,6 +29,7 @@ export class Store {
     this.db.exec('CREATE TABLE IF NOT EXISTS journal_imports (id TEXT PRIMARY KEY)')
     this.db.exec('CREATE TABLE IF NOT EXISTS local_projects (id TEXT PRIMARY KEY)')
     this.db.exec('CREATE INDEX IF NOT EXISTS jobs_day ON jobs(day); CREATE INDEX IF NOT EXISTS records_day_excluded ON records(day,excluded)')
+    this.calendar = new CalendarStore(this.db, () => this.config().timezone)
     this.migrateLocalProjects()
     // Existing installations opt into the new fallback once, without replaying
     // earlier days or changing an explicitly saved off switch.

@@ -1,3 +1,4 @@
+import { calendarPaths } from './calendar/routes.js'
 import { capture, settings, fail } from './domain.js'
 import { createCentral, pick, captureKeys, sharedKeys, sharedRevision } from './central.js'
 import { Outbox } from './outbox.js'
@@ -45,6 +46,24 @@ export class JournalService {
     if (current.paused || key(current)!==key(connection)) throw fail('知识库连接已变化，请重新读取日报',409)
     return { ...value,source:target?'remote':'local' }
   }
+  async calendar(method, path, data, query, signal) {
+    signal.throwIfAborted()
+    if (!calendarPaths.has(path) || !['GET', 'POST'].includes(method)) throw fail('日历操作无效')
+    const connection = { ...this.current() }, key = value => JSON.stringify([value.backend, value.remoteUrl, value.remoteToken])
+    if (connection.paused) throw fail('知识库连接正在切换，请稍后重试', 409)
+    const target = destination(connection)
+    let value
+    try { value = target ? await this.request(connection, method, path, method === 'POST' ? data : undefined, query, signal) : await this.central(method, path, data, query) }
+    catch (e) {
+      if (method === 'POST') throw fail(`${e.message}。如果请求可能已发送，请在原连接用同一 requestId 和相同参数核对或重试，不要改用新编号。`, e.status || 502)
+      signal.throwIfAborted(); throw e
+    }
+    const current = this.current()
+    if (current.paused || key(current) !== key(connection)) throw fail(method === 'POST' ? '连接已变化，操作可能已在原目标完成；请恢复原连接并用同一 requestId 核对，不要在新连接重放' : '知识库连接已变化，请重新读取日历', 409)
+    if (method === 'GET') signal.throwIfAborted()
+    // A confirmed write stays confirmed even if cancellation arrives after commit.
+    return { ...value, source: target ? 'remote' : 'local' }
+  }
   collectorState() {
     const target = destination(this.current())
     return { remote: !!target, sourceId: this.store.originId(), capture: pick(this.store.config(), captureKeys),
@@ -54,6 +73,7 @@ export class JournalService {
       localReports: this.store.db.prepare('SELECT count(*) AS n FROM reports').get().n }
   }
   async browser(method, path, data = {}, query = new URLSearchParams()) {
+    if (calendarPaths.has(path)) return this.calendar(method, path, data, query, new AbortController().signal)
     if (this.current().paused) throw fail('知识库连接正在切换，请稍后重试', 409)
     const connection = { ...this.current() }, target = destination(connection)
     if (method === 'GET' && path === '/collector-state') return this.collectorState()

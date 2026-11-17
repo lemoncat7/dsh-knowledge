@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { KnowledgeConnectionSettings } from './connection.js'
 export interface JournalRuntime {
   dispatch(method: string, path: string, data: Record<string, unknown>, query: URLSearchParams): Promise<unknown>
+  calendar(method: 'GET' | 'POST', path: string, data: Record<string, unknown>, query: URLSearchParams, signal: AbortSignal): Promise<unknown>
   read(path: '/reports' | '/report', query: URLSearchParams, signal: AbortSignal): Promise<unknown>
   isRunning(): boolean
 }

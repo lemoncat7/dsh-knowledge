@@ -8,7 +8,8 @@ export function destination(connection) {
 }
 
 export async function requestCentral(connection, method, path, data, query = new URLSearchParams(), signal) {
-  const base = destination(connection)
+  const base = destination(connection), calendar = path.startsWith('/calendar')
+  const label = calendar ? '远程工作日历' : '中央日报'
   if (!base || !connection.remoteToken) throw fail('请先配置中央知识库连接', 409)
   const controller = new AbortController(), abort = () => controller.abort()
   if (signal?.aborted) controller.abort()
@@ -23,18 +24,18 @@ export async function requestCentral(connection, method, path, data, query = new
     const chunks = []; let size = 0
     for await (const chunk of response.body || []) {
       size += chunk.length
-      if (size > 10 * 1024 * 1024) { controller.abort(); throw fail('中央日报响应过大', 502) }
+      if (size > 10 * 1024 * 1024) { controller.abort(); throw fail(`${label}响应过大，请缩小查询范围`, 502) }
       chunks.push(Buffer.from(chunk))
     }
-    if (response.status >= 300 && response.status < 400) throw fail('中央日报接口发生重定向，请检查知识库地址；未转发凭据', 502)
-    if (response.status === 404) throw fail('中央知识库尚未支持统一日报，请先升级中央插件', 502)
-    if (response.status === 401 || response.status === 403) throw fail('中央日报授权不足或已失效，请检查知识库令牌权限', response.status)
+    if (response.status >= 300 && response.status < 400) throw fail(`${label}接口发生重定向，请检查知识库地址；未转发凭据`, 502)
+    if (response.status === 404 && !calendar) throw fail('中央知识库尚未支持统一日报，请先升级中央插件', 502)
+    if (response.status === 401 || response.status === 403) throw fail(`${label}授权不足或已失效，请检查知识库令牌权限`, response.status)
     let value
-    try { value = JSON.parse(Buffer.concat(chunks).toString()) } catch { throw fail('中央日报未返回有效 JSON，请检查中央服务', 502) }
-    if (!response.ok) throw fail(typeof value.error === 'string' ? value.error.slice(0, 500) : '中央日报请求失败', response.status)
+    try { value = JSON.parse(Buffer.concat(chunks).toString()) } catch { throw fail(calendar && response.status === 404 ? '远程服务未提供工作日历接口，请先升级远程插件' : `${label}未返回有效 JSON，请检查服务`, 502) }
+    if (!response.ok) throw fail(typeof value.error === 'string' ? value.error.slice(0, 500) : `${label}请求失败`, response.status)
     return value
   } catch (e) {
     if (e.status) throw e
-    throw fail('中央日报连接失败或超时；本地待上传素材仍保留，可稍后重试', 502)
+    throw fail(calendar ? '远程工作日历连接失败或超时，未切换至本地日历' : '中央日报连接失败或超时；本地待上传素材仍保留，可稍后重试', 502)
   } finally { clearTimeout(timeout); signal?.removeEventListener('abort', abort) }
 }

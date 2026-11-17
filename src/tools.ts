@@ -26,6 +26,7 @@ import { documentGroupTools } from './document-group-tools.js'
 import { recallIncidentTool } from './recall-incident-tool.js'
 import { usageRecorder } from './recall-usage.js'
 import { knowledgeEntry } from './tool-entry.js'
+import { calendarTools } from './calendar-tools.js'
 import { worklogTools } from './worklog-tools.js'
 import type { JournalRuntime } from './worklog-runtime.js'
 
@@ -41,6 +42,7 @@ export function registerKnowledgeTools(
   codec: KnowledgeHandleCodec,
   noteCodec: KnowledgeNoteHandleCodec,
   readWorklog?: JournalRuntime['read'],
+  calendar?: JournalRuntime['calendar'],
 ): void {
   const operations = new Map<string, ToolDefinitionLike>()
   const register = (tool: ToolDefinitionLike): (() => void) => {
@@ -59,6 +61,7 @@ export function registerKnowledgeTools(
   registerKnowledgeNoteTools(ctx, provider, noteCodec, codec, register)
   registerKnowledgeNoteReferenceTools(ctx, provider, codec, noteCodec, register)
   for (const tool of worklogTools(readWorklog)) register(tool)
+  for (const tool of calendarTools(calendar)) register(tool)
   ctx.tools.register(knowledgeEntry(operations))
 }
 

@@ -1,3 +1,4 @@
+import { calendarRoutes } from './calendar/routes.js'
 import { createHash } from 'node:crypto'
 import { dayOf, fail, text, validDay } from './domain.js'
 import { sourceRoutes } from './sources.js'
@@ -31,6 +32,8 @@ export function incomingRecord(value, sourceId, timezone) {
 /** Only called after Host or Knowledge bearer authorization. Never trusts client model routes. */
 export function createCentral(store, worker, models) {
   return async (method, path, data = {}, query = new URLSearchParams()) => {
+    const calendarResult = calendarRoutes(store, method, path, data, query)
+    if (calendarResult !== undefined) return calendarResult
     const reportResult = reportReadRoutes(store, method, path, query)
     if (reportResult !== undefined) return reportResult
     const sourceResult = sourceRoutes(store, method, path, data, query)

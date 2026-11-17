@@ -61,7 +61,7 @@ if (!pageParams.has('citation') && location.pathname.startsWith(`${WEB_PATH.repl
 const initialKnowledgeBaseId = pageParams.get('knowledgeBaseId')?.trim() || ''
 const initialDocumentId = pageParams.get('documentId')?.trim() || ''
 let pendingCitation = pageParams.get('citation')
-const initialView = ['notes', 'writeback', 'worklog', 'recall'].includes(pageParams.get('view')) ? pageParams.get('view') : 'entries'
+const initialView = ['notes', 'writeback', 'worklog', 'calendar', 'recall'].includes(pageParams.get('view')) ? pageParams.get('view') : 'entries'
 const initialNoteId = pageParams.get('noteId')?.trim() || ''
 const mountContext = {
   sessionId: pageParams.get('sessionId')?.trim() || '',
@@ -369,7 +369,7 @@ async function navigate(view) {
   if (view !== 'candidates') void refreshCandidateCount()
   try {
     if (view === 'writeback') ({ createWritebackWorkspace } = await resources.module('writeback-workspace'))
-    if (view === 'worklog') ({ createWorklogWorkspace } = await resources.module('worklog-workspace'))
+    if (view === 'worklog' || view === 'calendar') ({ createWorklogWorkspace } = await resources.module('worklog-workspace'))
     if (view === 'recall') ({ createRecallWorkspace } = await resources.module('recall-workspace'))
     if (view === 'entries' && pendingCitation !== null) {
       citationNavigation = await resources.module('citation-navigation')
@@ -1192,10 +1192,11 @@ function renderShell() {
     candidates: ['待审核', '确认 AI 提取结果后再写入知识文档'],
     writeback: ['回写任务', '查看本机队列，处理失败和阻塞的回写'],
     worklog: ['工作日报', '按日期整理工作进展、决定与交付，保留来源依据'],
+    calendar: ['工作日历', '记录每天的目标与时间安排，跟进完成进度'],
     tokens: ['访问管理', '管理其他客户端连接中央知识库的权限'],
   }
   const [title, subtitle] = titles[state.view]
-  const viewIndexes = { overview: '00', notes: '01', shares: '02', entries: '03', recall: '04', candidates: '05', writeback: '06', bases: '07', worklog: '08', tokens: '09' }
+  const viewIndexes = { overview: '00', notes: '01', shares: '02', entries: '03', recall: '04', candidates: '05', writeback: '06', bases: '07', calendar: '08', worklog: '09', tokens: '10' }
   const nextShell = element('div', {
     class: 'app-shell', 'data-menu-open': String(state.menuOpen),
     'data-view': state.view, 'data-loading': String(state.loading),
@@ -1399,7 +1400,7 @@ function renderSidebar() {
   const navGroups = [
     ['笔记工作区', [['notes', '笔记文档'], ['shares', '已分享']]],
     ['知识工作区', [['entries', '知识文档'], ['recall', '召回排行'], ['candidates', '待审核'], ['writeback', '回写任务'], ['bases', '知识库与挂载']]],
-    ['工作记录', [['worklog', '工作日报']]],
+    ['工作记录', [['calendar', '工作日历'], ['worklog', '工作日报']]],
     ['连接', [['tokens', '访问管理']].filter(([id]) => id !== 'tokens' || !state.service.remote)],
   ].filter(([, items]) => items.length)
   let navIndex = 0
@@ -1434,8 +1435,8 @@ function renderCurrentView() {
     } })
     return recallWorkspace.root
   }
-  if (state.view === 'worklog') {
-    worklogWorkspace = createWorklogWorkspace({ element, actionButton })
+  if (state.view === 'worklog' || state.view === 'calendar') {
+    worklogWorkspace = createWorklogWorkspace({ element, actionButton, view: state.view })
     return worklogWorkspace.root
   }
   if (state.view === 'writeback') {

@@ -9,10 +9,18 @@ import { ActionMenu } from './ActionMenu.jsx'
 import { defaults } from '../domain.js'
 import { Sources, SourceViewer } from './Sources.jsx'
 import { History } from './History.jsx'
+import { Calendar } from './Calendar.jsx'
 import { FailureDetails } from './FailureDetails.jsx'
 
 const statuses = { queued: '等待整理', running: '正在整理', failed: '整理失败', cancelled: '已取消', done: '整理完成' }
-export function Workspace({ close, openSession, embedded = false, currentProject = '' }) {
+export function Workspace({ view = 'worklog', ...props }) {
+  if (view !== 'calendar') return <Reports {...props} />
+  return <section className="dsh-worklog wl-workspace wc-workspace">
+    {!props.embedded && <header className="wl-toolbar"><h1>工作日历</h1><span className="wl-spacer" /><button onClick={props.close}>返回对话</button></header>}
+    <Calendar />
+  </section>
+}
+function Reports({ close, openSession, embedded = false, currentProject = '' }) {
   const editFormId = useId()
   const [state, setState] = useState(null), [day, setDay] = useState(''), [detail, setDetail] = useState(null)
   const [error, setError] = useState(''), [message, setMessage] = useState(''), [busy, setBusy] = useState(false)

@@ -198,7 +198,7 @@ test('plugin gates completed-turn extraction and keeps knowledge surface message
   assert.deepEqual(directory.operations.map(item => item.name).sort(), [
     'knowledge_base_create',
     'knowledge_base_search',
-    'knowledge_base_update',
+    'knowledge_base_update', 'knowledge_calendar',
     'knowledge_document_group_assign',
     'knowledge_document_groups',
     'knowledge_document_status',
@@ -428,7 +428,7 @@ test('content write-back is not exposed to the main agent tool surface', async (
   const exec = { agent: { session: { id: 'discovery', header: {}, snapshotEvents: () => [] } }, signal: new AbortController().signal }
   const directory = JSON.parse(await tools.get('knowledge').execute({ action: 'list' }, exec))
   assert.deepEqual(directory.operations.map(item => item.name).sort(), [
-    'knowledge_base_create', 'knowledge_base_search', 'knowledge_base_update', 'knowledge_document_group_assign', 'knowledge_document_groups', 'knowledge_document_status', 'knowledge_note_confirm', 'knowledge_note_create',
+    'knowledge_base_create', 'knowledge_base_search', 'knowledge_base_update', 'knowledge_calendar', 'knowledge_document_group_assign', 'knowledge_document_groups', 'knowledge_document_status', 'knowledge_note_confirm', 'knowledge_note_create',
     'knowledge_note_delete', 'knowledge_note_list', 'knowledge_note_move', 'knowledge_note_preview', 'knowledge_note_read',
     'knowledge_note_references', 'knowledge_note_search', 'knowledge_note_update', 'knowledge_read', 'knowledge_record_incident', 'knowledge_search',
     'knowledge_worklog_list', 'knowledge_worklog_read',

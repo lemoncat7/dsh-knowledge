@@ -36,7 +36,7 @@ test('one public registration, complete lazy catalog and no document/provider di
   const listed = await f.entry.execute({ action: 'list' }, f.exec)
   assert.doesNotMatch(listed, /PRIVATE BODY|private title/)
   const operations = JSON.parse(listed).operations
-  assert.equal(operations.length, 21)
+  assert.equal(operations.length, 22)
   assert.ok(operations.every(item => !('parameters' in item)))
   let expanded = 0
   for (const operation of operations) {
