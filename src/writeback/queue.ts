@@ -14,6 +14,8 @@ export interface WritebackStatus {
   destinations?: ExtractionWriteDestination[]
   nextAttemptAt?: number
   blockedBy?: string
+  buffered?: boolean
+  batchSize?: number
   cancelRequested?: boolean
 }
 export interface WritebackWork {
@@ -21,6 +23,7 @@ export interface WritebackWork {
   destination: string
 }
 interface Row { id: number; source_key: string; session_id: string; payload: string | null; plan: string | null; status: WritebackStatus['status']; attempts: number; next_at: number; view: string }
+export interface WritebackFrequency { everyTurns: number; idleSeconds: number; maxChars: number }
 const LEASE_MS = 60_000
 const MAX_ATTEMPTS = 5
 const retryDelay = (attempt: number): number => [5_000, 15_000, 60_000, 180_000][Math.min(3, Math.max(0, attempt - 1))]!
@@ -55,7 +58,7 @@ export class WritebackQueue {
       try { listener() } catch (error) { this.warn(`writeback status notification: ${String(error)}`) }
     }
   }
-  constructor(path: string, private readonly execute: (work: WritebackWork, checkpoint: ExtractionCheckpoint, signal: AbortSignal) => Promise<WritebackStatus>, private readonly warn: (message: string) => void = () => {}) {
+  constructor(path: string, private readonly execute: (work: WritebackWork, checkpoint: ExtractionCheckpoint, signal: AbortSignal) => Promise<WritebackStatus>, private readonly warn: (message: string) => void = () => {}, private readonly frequency: () => WritebackFrequency = () => ({everyTurns:1,idleSeconds:180,maxChars:30000})) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
     this.db = new DatabaseSync(path)
     if (path !== ':memory:') chmodSync(path, 0o600)
@@ -72,6 +75,8 @@ export class WritebackQueue {
       const columns = this.db.prepare('PRAGMA table_info(queue_jobs)').all() as { name: string }[]
       if (!columns.some(column => column.name === 'cancel_requested')) this.db.exec('ALTER TABLE queue_jobs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0')
       if (!columns.some(column => column.name === 'created_at')) this.db.exec('ALTER TABLE queue_jobs ADD COLUMN created_at INTEGER')
+      if (!columns.some(column => column.name === 'batching')) this.db.exec('ALTER TABLE queue_jobs ADD COLUMN batching INTEGER NOT NULL DEFAULT 0')
+      this.db.exec('CREATE TABLE IF NOT EXISTS queue_members(source_key TEXT PRIMARY KEY, leader_key TEXT NOT NULL)')
       this.db.exec('DROP INDEX IF EXISTS queue_management_order')
       this.db.exec('COMMIT')
     } catch (error) { this.db.exec('ROLLBACK'); this.db.close(); throw error }
@@ -83,9 +88,10 @@ export class WritebackQueue {
     if (existing) return existing
     const count = this.db.prepare("SELECT count(*) AS count FROM queue_jobs WHERE status NOT IN ('completed','cancelled')").get() as { count: number }
     if (count.count >= 1000) throw new Error('回写队列已满，请先处理失败任务；未删除任何未完成记录')
-    const view: WritebackStatus = { status: 'queued', summary: '知识库回写 · 等待回写', retryable: false }
-    this.db.prepare('INSERT OR IGNORE INTO queue_jobs(source_key,session_id,payload,status,view,created_at) VALUES(?,?,?,?,?,?)')
-      .run(work.snapshot.sourceKey, work.snapshot.sessionId, JSON.stringify(work), 'queued', JSON.stringify(view), Date.now())
+    const buffered=this.frequency().everyTurns>1
+    const view: WritebackStatus = { status: 'queued', summary: buffered?'知识库回写 · 累计对话，达到轮数或空闲时间后合并提取':'知识库回写 · 等待回写', retryable: false, ...(buffered?{buffered:true}:{}) }
+    this.db.prepare('INSERT OR IGNORE INTO queue_jobs(source_key,session_id,payload,status,view,created_at,batching,next_at) VALUES(?,?,?,?,?,?,?,?)')
+      .run(work.snapshot.sourceKey, work.snapshot.sessionId, JSON.stringify(work), 'queued', JSON.stringify(view), Date.now(),buffered?1:0,buffered?Date.now()+this.frequency().idleSeconds*1000:0)
     this.kick()
     return this.status(work.snapshot.sourceKey)!
   }
@@ -97,18 +103,30 @@ export class WritebackQueue {
     return this.status(sourceKey)!
   }
 
+  private leader(key:string):string { return (this.db.prepare('SELECT leader_key FROM queue_members WHERE source_key=?').get(key) as {leader_key:string}|undefined)?.leader_key ?? key }
+
   status(key: string): WritebackStatus | undefined {
-    const row = this.db.prepare('SELECT id,session_id,status,view FROM queue_jobs WHERE source_key=?').get(key) as Pick<Row, 'id' | 'session_id' | 'status' | 'view'> | undefined
+    key=this.leader(key)
+    const row = this.db.prepare('SELECT id,session_id,status,view,payload,batching FROM queue_jobs WHERE source_key=?').get(key) as (Pick<Row, 'id' | 'session_id' | 'status' | 'view'> & {payload:string|null;batching:number}) | undefined
     if (!row) return undefined
     const view = JSON.parse(row.view) as WritebackStatus
+    if(view.buffered&&row.payload){
+      const scope=(w:WritebackWork)=>JSON.stringify([w.destination,w.snapshot.projectId,w.snapshot.route])
+      const own=scope(JSON.parse(row.payload) as WritebackWork)
+      const members=(this.db.prepare("SELECT payload,created_at FROM queue_jobs WHERE session_id=? AND batching=1 AND status='queued'").all(row.session_id) as {payload:string;created_at:number}[]).filter(r=>scope(JSON.parse(r.payload) as WritebackWork)===own)
+      view.batchSize=members.length
+      view.nextAttemptAt=Math.max(...members.map(r=>r.created_at))+this.frequency().idleSeconds*1000
+      view.summary=`知识库回写 · 已累计 ${members.length}/${this.frequency().everyTurns} 轮，空闲后自动提取`
+    }
     const blocker = row.status === 'queued' ? this.db.prepare("SELECT source_key FROM queue_jobs WHERE session_id=? AND id<? AND status IN ('queued','running') ORDER BY id LIMIT 1").get(row.session_id, row.id) as { source_key: string } | undefined : undefined
-    if (blocker) {
+    if (blocker && !view.buffered) {
       return { ...view, blockedBy: blocker.source_key, summary: '知识库回写 · 等待本会话前一轮处理或自动重试；重试耗尽后自动继续' }
     }
     return view
   }
 
   retry(key: string): WritebackStatus {
+    key=this.leader(key)
     if (this.closed) throw new Error('知识库回写队列已关闭')
     const row = this.db.prepare('SELECT * FROM queue_jobs WHERE source_key=?').get(key) as unknown as Row | undefined
     if (!row) throw Object.assign(new Error('旧记录没有持久化内容快照，不能安全重试'), { status: 409 })
@@ -122,7 +140,7 @@ export class WritebackQueue {
 
   list(sessionId = '', offset = 0, limit = 50, status?: WritebackStatus['status']) {
     const args = sessionId ? [sessionId] : []
-    const conditions = sessionId ? ['session_id=?'] : []
+    const conditions = ["source_key NOT IN (SELECT source_key FROM queue_members)", ...(sessionId ? ['session_id=?'] : [])]
     if (status) { conditions.push('status=?'); args.push(status) }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
     const total = (this.db.prepare(`SELECT count(*) AS count FROM queue_jobs ${where}`).get(...args) as { count: number }).count
@@ -133,7 +151,7 @@ export class WritebackQueue {
   listPage(sessionId = '', status?: WritebackStatus['status'], cursor?: string, watch: string[] = []) {
     const scope = JSON.stringify(['writeback', sessionId, status || ''])
     const after = decodePageCursor(cursor, scope, ['number'])
-    const args: (string | number)[] = [], conditions: string[] = []
+    const args: (string | number)[] = [], conditions: string[] = ['source_key NOT IN (SELECT source_key FROM queue_members)']
     if (sessionId) { conditions.push('session_id=?'); args.push(sessionId) }
     if (status) { conditions.push('status=?'); args.push(status) }
     const total = Number((this.db.prepare(`SELECT count(*) AS count FROM queue_jobs ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''}`).get(...args) as { count: number }).count)
@@ -150,6 +168,7 @@ export class WritebackQueue {
   }
 
   cancel(key: string): WritebackStatus {
+    key=this.leader(key)
     if (this.closed) throw new Error('知识库回写队列已关闭')
     this.db.exec('BEGIN IMMEDIATE')
     try {
@@ -189,6 +208,58 @@ export class WritebackQueue {
       .catch(error => this.warn(`knowledge writeback worker: ${String(error)}`)).finally(() => { this.active = undefined })
   }
 
+  /** Explicit flush never reruns a completed batch. */
+  flush(key:string):WritebackStatus {
+    key=this.leader(key)
+    const row=this.db.prepare('SELECT session_id FROM queue_jobs WHERE source_key=?').get(key) as {session_id:string}|undefined
+    if(!row)throw Object.assign(Error('回写任务不存在'),{status:404})
+    this.db.prepare("UPDATE queue_jobs SET next_at=0 WHERE session_id=? AND batching=1 AND status='queued'").run(row.session_id)
+    this.kick();return this.status(key)!
+  }
+
+  /** Called under the queue lease transaction. Only fresh, unattempted snapshots
+   * can merge; retries keep their exact frozen payload/checkpoint. */
+  private prepareBatches(now:number):void {
+    const settings=this.frequency()
+    const rows=this.db.prepare("SELECT * FROM queue_jobs WHERE status='queued' AND batching=1 ORDER BY id").all() as unknown as Array<Row & {created_at:number}>
+    const groups=new Map<string,Array<Row & {created_at:number}>>()
+    for(const row of rows){const list=groups.get(row.session_id)??[];list.push(row);groups.set(row.session_id,list)}
+    const scope=(w:WritebackWork)=>JSON.stringify([w.destination,w.snapshot.sessionId,w.snapshot.projectId,w.snapshot.route])
+    for(const list of groups.values()) {
+      let offset=0
+      while(offset<list.length){
+        const first=list[offset]!,work=JSON.parse(first.payload!) as WritebackWork,batch=[first],works=[work]
+        let chars=work.snapshot.userText.length+work.snapshot.assistantText.length,boundary=false
+        while(offset+batch.length<list.length && batch.length<settings.everyTurns){
+          const row=list[offset+batch.length]!,next=JSON.parse(row.payload!) as WritebackWork
+          const size=next.snapshot.userText.length+next.snapshot.assistantText.length
+          if(scope(next)!==scope(work)||chars+size>settings.maxChars){boundary=true;break}
+          batch.push(row);works.push(next);chars+=size
+        }
+        const newest=batch.at(-1)!
+        const due=batch.some(r=>r.next_at===0)||now-newest.created_at>=settings.idleSeconds*1000
+        if(batch.length<settings.everyTurns&&!due&&!boundary&&chars<settings.maxChars)break
+        if(batch.length>1){
+          work.snapshot={...work.snapshot,
+            userText:works.map(w=>w.snapshot.userText).join('\n\n'),
+            assistantText:works.map(w=>w.snapshot.assistantText).join('\n\n'),
+            userTextTruncated:works.some(w=>w.snapshot.userTextTruncated),
+            turns:works.map(w=>({turn:w.snapshot.turn,user:w.snapshot.userText,assistant:w.snapshot.assistantText})),
+          }
+          // Do not misattribute the complete batch to the first assistant message.
+          delete work.snapshot.assistantMessageId
+          for(const follower of batch.slice(1)){
+            this.db.prepare('INSERT INTO queue_members(source_key,leader_key) VALUES(?,?)').run(follower.source_key,first.source_key)
+            this.db.prepare("UPDATE queue_jobs SET status='completed',batching=0,payload=NULL WHERE id=?").run(follower.id)
+          }
+        }
+        const view:WritebackStatus={status:'queued',summary:`知识库回写 · ${batch.length} 轮合并提取，等待执行`,retryable:false,batchSize:batch.length}
+        this.db.prepare('UPDATE queue_jobs SET payload=?,batching=0,next_at=0,view=? WHERE id=?').run(JSON.stringify(work),JSON.stringify(view),first.id)
+        offset+=batch.length
+      }
+    }
+  }
+
   private claim(): Row | undefined {
     this.db.exec('BEGIN IMMEDIATE')
     try {
@@ -199,7 +270,8 @@ export class WritebackQueue {
       for (const cancelled of this.db.prepare("SELECT source_key FROM queue_jobs WHERE status='running' AND cancel_requested=1").all() as { source_key: string }[]) this.finishCancellation(cancelled.source_key)
       this.db.prepare("UPDATE queue_jobs SET status='queued',next_at=0,view=? WHERE status='running'")
         .run(JSON.stringify({ status: 'queued', summary: '知识库回写 · 中断后等待恢复', retryable: false }))
-      const row = this.db.prepare(`SELECT j.* FROM queue_jobs j WHERE j.status='queued' AND j.next_at<=?
+      this.prepareBatches(now)
+      const row = this.db.prepare(`SELECT j.* FROM queue_jobs j WHERE j.status='queued' AND j.batching=0 AND j.next_at<=?
         AND NOT EXISTS(SELECT 1 FROM queue_jobs p WHERE p.session_id=j.session_id AND p.id<j.id AND p.status IN ('queued','running'))
         ORDER BY j.id LIMIT 1`).get(now) as unknown as Row | undefined
       if (!row) { this.db.exec('COMMIT'); return undefined }

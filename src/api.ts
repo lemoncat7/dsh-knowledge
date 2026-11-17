@@ -1,3 +1,4 @@
+import { normalizeWritebackFrequency } from './service-settings.js'
 import {handleNoteWorkspace,type NoteWorkspace} from './notes/workspace-http.js'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
@@ -27,8 +28,8 @@ export interface KnowledgeApiOptions {
   shareRequestPolicy?: () => NoteShareRequestPolicy
   authMode?: 'bearer' | 'same-origin'
   service?: {
-    current(): { publicApiEnabled: boolean; publicApiPrefix: string; writebackProvider?: string; writebackModel?: string }
-    update(patch: { publicApiEnabled?: boolean; writebackProvider?: string | null; writebackModel?: string | null }): Promise<{ publicApiEnabled: boolean; publicApiPrefix: string; writebackProvider?: string; writebackModel?: string }>
+    current(): { publicApiEnabled: boolean; publicApiPrefix: string; writebackProvider?: string; writebackModel?: string; extractionEveryTurns?:number; extractionIdleSeconds?:number }
+    update(patch: { publicApiEnabled?: boolean; writebackProvider?: string | null; writebackModel?: string | null; extractionEveryTurns?:number; extractionIdleSeconds?:number }): Promise<{ publicApiEnabled: boolean; publicApiPrefix: string; writebackProvider?: string; writebackModel?: string; extractionEveryTurns?:number; extractionIdleSeconds?:number }>
   }
 }
 
@@ -388,6 +389,7 @@ async function dispatch(
         ...body.publicApiEnabled === undefined ? {} : { publicApiEnabled: body.publicApiEnabled },
         ...writebackProvider === undefined ? {} : { writebackProvider },
         ...writebackModel === undefined ? {} : { writebackModel },
+        ...normalizeWritebackFrequency(body),
       }))
     }
   }

@@ -25,8 +25,8 @@ export function registerWritebackControl(ctx: RuntimeContextLike, queue: Writeba
         } else if (req.method === 'POST') {
           const key = url.searchParams.get('sourceKey')
           const action = url.searchParams.get('action')
-          if (!key || !['retry', 'cancel'].includes(action ?? '')) throw Object.assign(new Error('需要任务编号和有效操作'), { status: 400 })
-          result = action === 'retry' ? queue.retry(key) : queue.cancel(key)
+          if (!key || !['retry', 'cancel', 'flush'].includes(action ?? '')) throw Object.assign(new Error('需要任务编号和有效操作'), { status: 400 })
+          result = action === 'retry' ? queue.retry(key) : action === 'flush' ? queue.flush(key) : queue.cancel(key)
         } else { res.writeHead(405, { allow: 'GET, POST' }).end(); return }
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end(JSON.stringify(result))
       } catch (error) {

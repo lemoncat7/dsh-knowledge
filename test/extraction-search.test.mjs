@@ -53,3 +53,14 @@ test('writeback retrieves related knowledge with a bounded query but keeps the m
   assert.equal(modelCalls, 1)
   assert.equal((await provider.extractionJob('search-test:1')).status, 'failed')
 })
+
+test('batched extraction sends each ordered turn and later correction to the model',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'knowledge-batch-model-')),provider=new LocalKnowledgeProvider(join(root,'db.sqlite'))
+ t.after(async()=>{await provider.close();await rm(root,{recursive:true,force:true})})
+ await provider.upsertMount({targetKind:'session',targetId:'batched',knowledgeBaseId:'default',enabled:true,recallEnabled:true,writeMode:'audit',includeTags:[],excludeTags:[],extractionInstructions:''})
+ const turns=[{turn:1,user:'用旧地址',assistant:'记录旧地址'},{turn:2,user:'刚才错了，用新地址',assistant:'改为新地址'}];let calls=0
+ const ctx={logger:{debug(){},info(){},warn(){},error(){}},llm:{async *stream(request){calls++;const payload=JSON.parse(request.messages[0].content[0].text);assert.deepEqual(payload.conversation.turns,turns);assert.match(payload.conversation.instructions,/后续纠正或撤回优先/);yield {type:'text-delta',text:'{"candidates":[]}'};yield {type:'finish',reason:{kind:'stop'}}}}}
+ const coordinator=new ExtractionCoordinator(ctx,provider,{extractionMaxInputChars:20000,extractionMaxTokens:1000,extractionTimeoutMs:5000,defaultScope:'global'});t.after(()=>coordinator.close())
+ await coordinator.runSnapshot({sourceKey:'batched:1',sessionId:'batched',turn:1,turns,userText:turns.map(x=>x.user).join('\n'),assistantText:turns.map(x=>x.assistant).join('\n'),userTextTruncated:false,route:{provider:'mock',model:'mock'}},new AbortController().signal)
+ assert.equal(calls,1)
+})

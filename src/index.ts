@@ -1,3 +1,4 @@
+import { normalizeWritebackFrequency } from './service-settings.js'
 import { NoteVault } from './notes/vault.js'
 import type { Context } from '@deepseek-ai/cordis'
 import { createHash, randomBytes } from 'node:crypto'
@@ -149,7 +150,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
     if (job?.status === 'completed') return statusFromExtractionJob(job, false)
     if (job?.status === 'running') throw new WritebackDeferred('上一次远端回写租约尚未释放，等待恢复')
     throw new Error(job?.lastError ?? '未能确认远端回写状态，请重试')
-  }, message => runtime.logger.warn(message)) : undefined
+  }, message => runtime.logger.warn(message), () => ({everyTurns:clientSettings.extractionEveryTurns??1,idleSeconds:clientSettings.extractionIdleSeconds??180,maxChars:resolved.extractionMaxInputChars})) : undefined
   const handleCodec = new KnowledgeHandleCodec(randomBytes(32), () => createHash('sha256').update(destination()).digest('hex'))
   const noteHandleCodec = new KnowledgeNoteHandleCodec(randomBytes(32))
   const managementEmbedToken = randomBytes(32).toString('base64url')
@@ -238,6 +239,8 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
     const publicApiView = () => ({
       publicApiEnabled,
       publicApiPrefix: resolved.apiPrefix,
+      extractionEveryTurns:clientSettings.extractionEveryTurns??1,
+      extractionIdleSeconds:clientSettings.extractionIdleSeconds??180,
       ...clientSettings.writebackProvider && clientSettings.writebackModel
         ? { writebackProvider: clientSettings.writebackProvider, writebackModel: clientSettings.writebackModel }
         : {},
@@ -253,7 +256,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
         })
       }
     }
-    const updateClientSettings = async (patch: { publicApiEnabled?: boolean; writebackProvider?: string | null; writebackModel?: string | null }): Promise<ReturnType<typeof publicApiView>> => {
+    const updateClientSettings = async (patch: { publicApiEnabled?: boolean; writebackProvider?: string | null; writebackModel?: string | null; extractionEveryTurns?:number; extractionIdleSeconds?:number }): Promise<ReturnType<typeof publicApiView>> => {
       const enabled = patch.publicApiEnabled ?? publicApiEnabled
       if (enabled && activeConnection.backend !== 'local') throw connectionError(409, '请先把知识库来源切换为本地，再开启远程 API。')
       if (persistedServicePath === undefined) throw connectionError(409, '当前插件没有配置持久化路径，无法保存远程 API 状态。')
@@ -268,6 +271,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
       const previous = clientSettings
       const next: KnowledgeServiceSettings = {
         publicApiEnabled: enabled,
+        ...normalizeWritebackFrequency({...clientSettings,...patch}),
         ...!clearRoute && provider && model ? { writebackProvider: provider, writebackModel: model } : {},
       }
       if (enabled !== publicApiEnabled) applyPublicApiRoute(enabled)
@@ -369,7 +373,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
           if (req.method === 'POST') {
             if (!writebackQueue) throw connectionError(409, '知识库回写已停用')
             const source = writebackSources.get(key)
-            state = source ? writebackQueue.enqueue(source) : writebackQueue.retry(key)
+            state = source ? writebackQueue.enqueue(source) : writebackQueue.status(key)?.buffered ? writebackQueue.flush(key) : writebackQueue.retry(key)
             writebackSources.delete(key)
             writebackStatuses.delete(key)
           }

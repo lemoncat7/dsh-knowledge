@@ -127,7 +127,7 @@ function createNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleC
   }
   return {
     name: 'knowledge_note_create',
-    description: 'Create NEW notes or folders immediately, without a confirmation round. Single creation uses kind/name/content/parentFolderHandle. For batch generation use ONLY items (1–20 items, total content at most 1,000,000 characters); parentIndex can point to an earlier folder item. Existing notes are never overwritten. Batch creation is sequential, not atomic: on failure it stops and returns confirmed creations and an unconfirmed item. Inspect the destination before retrying an unconfirmed item; never replay the whole batch. Editing, renaming, moving and deleting EXISTING notes require confirmation through their own operations.',
+    description: 'Create NEW notes or folders immediately, without a confirmation round. Single creation uses kind/name/content/parentFolderHandle. For batch generation use ONLY items (1–20 items, total content at most 1,000,000 characters); parentIndex can point to an earlier folder item. Existing notes are never overwritten. Batch creation is sequential, not atomic: on failure it stops and returns confirmed creations and an unconfirmed item. Inspect the destination before retrying an unconfirmed item; never replay the whole batch. Use the corresponding operations for EXISTING notes: edits, renames and moves default to preview/confirmation unless explicitly delegated for the current target; permanent deletion always requires confirmation.',
     parameters: { type: 'object', additionalProperties: false, properties: {
       ...fields,
       items: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'object', additionalProperties: false, properties: {
@@ -180,7 +180,7 @@ function createNoteTool(provider: KnowledgeProvider, codec: KnowledgeNoteHandleC
 function updateNoteTool(ctx: RuntimeContextLike, provider: KnowledgeProvider, codec: KnowledgeNoteHandleCodec, knowledgeCodec: KnowledgeHandleCodec): ToolDefinitionLike {
   return {
     name: 'knowledge_note_update',
-    description: 'Propose ALL requested changes to one note together, with one before/after preview and ONE user confirmation. Read needed pages first and pass expectedVersion. Use batch_edit for multiple sections: all edits use the same original snapshot and are saved atomically. Use replace_content when the user requests a whole-document rewrite; do not split that request into chapter-by-chapter confirmations. Use replace_range for a single local change and append_content only for genuine additions. Show returned locations and before/after differences, not a bare confirmation request. Do not retry after rejection or write unchanged observations.',
+    description: 'Propose ALL requested changes to one note together, with one before/after preview and, by default, ONE user confirmation. Explicit scoped delegation can authorize the exact change without another confirmation. Read needed pages first and pass expectedVersion. Use batch_edit for multiple sections: all edits use the same original snapshot and are saved atomically. Use replace_content when the user requests a whole-document rewrite; do not split that request into chapter-by-chapter confirmations. Use replace_range for a single local change and append_content only for genuine additions. Show returned locations and before/after differences, not a bare confirmation request. Do not retry after rejection or write unchanged observations.',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
@@ -234,7 +234,7 @@ function updateNoteTool(ctx: RuntimeContextLike, provider: KnowledgeProvider, co
 function moveNoteTool(ctx: RuntimeContextLike, provider: KnowledgeProvider, codec: KnowledgeNoteHandleCodec): ToolDefinitionLike {
   return {
     name: 'knowledge_note_move',
-    description: 'Propose moving a note or folder; this tool requests one-shot user approval showing the item and destination, without prescribed user wording. Use exact signed handles. Omit targetFolderHandle for root. Do not retry after rejection.',
+    description: 'Propose moving a note or folder; by default this tool requests one-shot user approval showing the item and destination, without prescribed user wording. Explicit scoped delegation can authorize the exact move. Use exact signed handles. Omit targetFolderHandle for root. Do not retry after rejection.',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {

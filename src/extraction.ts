@@ -13,6 +13,7 @@ import { messageText, type MessageLike, type RuntimeContextLike, type SessionLik
 
 export interface TurnSnapshot {
   sourceKey: string
+  turns?: Array<{turn: number; user: string; assistant: string}>
   sessionId: string
   turn: number
   projectId?: string
@@ -367,8 +368,8 @@ async function extractWithLlm(
   const framed = JSON.stringify({
     defaultScope,
     writebackPolicy,
-    outputLanguage: 'Match the primary natural language and writing system used in conversation.user.',
-    conversation: { user: snapshot.userText, assistant: snapshot.assistantText },
+    outputLanguage: snapshot.turns ? 'Match the primary natural language and writing system used in conversation.turns[].user.' : 'Match the primary natural language and writing system used in conversation.user.',
+    conversation: snapshot.turns ? { turns: snapshot.turns, instructions: '按轮次先后理解同一会话；后续纠正或撤回优先，不把已经否定的旧内容记录为事实。' } : { user: snapshot.userText, assistant: snapshot.assistantText },
     sourceReferences: extractSourceReferences(snapshot.assistantText),
     destinations: mounts.map(mount => ({
       knowledgeBaseId: mount.knowledgeBaseId,
@@ -430,6 +431,8 @@ async function extractWithLlm(
       return []
     }
     if (item.action === 'finalize') {
+      // Batched history must not turn an older confirmation into lifecycle consent.
+      if (snapshot.turns) { diagnostics.policyRejected += 1; return [] }
       const target = targetId === undefined ? undefined : existingById.get(targetId)
       if (!target || snapshot.userTextTruncated || typeof item.confidence !== 'number' || item.confidence < .95
         || (item.state !== 'resolved' && item.state !== 'complete') || item.wholeDocument !== true

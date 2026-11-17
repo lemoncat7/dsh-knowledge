@@ -1,10 +1,11 @@
+import { resolveNoteConsent } from './note-consent.js'
 import { randomUUID } from 'node:crypto'
 import type { RuntimeContextLike, ToolDefinitionLike, ToolRunContextLike } from './runtime.js'
 import { currentDirectUserText } from './tool-authorization.js'
 import type { NoteMutationPreview } from './note-edit-plan.js'
 import { optionalToolInteger, requiredToolString, toolRecord } from './tool-input.js'
 
-const approved = new WeakMap<ToolRunContextLike, { reason: string; preview: string | undefined }>()
+const approved = new WeakMap<ToolRunContextLike, { reason: string; preview: string | undefined; userSeq: number }>()
 class Proposal extends Error {
   constructor(reason: string, readonly preview?: NoteMutationPreview) { super(reason) }
 }
@@ -28,19 +29,20 @@ export function isNoteConfirmation(text: string): boolean {
     .filter(s => /^(?:空行|空白)(?:那个|的|提案|操作|那个提案|那个操作|那个不)?(?:不需要|不要|不用了|取消)(?:了)?$/u.test(s) === false)
   const rest = clauses.join('，')
   if (/(?:不|别|取消|等等|等一下|先别|但是|不过|改成|改为|增加|另外|再加|假设|如果|是否|吗|你说|他说|她说|引用|[“”「」"']|？|\?|don't|not|cancel|instead|but)/iu.test(rest)) return false
-  return /^(?:确认|可以|可以的|好|好的|好呀|同意|按这个改|按这个修改|按这个执行|就这样改|执行吧|改吧|没问题|yes|ok|okay|go ahead|confirm)$/iu.test(rest)
+  return /^(?:确认|行|行的|行吧|可以|可以的|好|好的|好呀|同意|按这个改|按这个修改|按这个执行|就这样改|执行吧|改吧|没问题|yes|ok|okay|go ahead|confirm)$/iu.test(rest)
     || /(?:我(?:已经|已)?确认(?:了)?|我同意(?:了)?|确认(?:修改|执行)|同意(?:修改|执行)|按(?:这个|刚才的|上述)方案(?:修改|执行))$/u.test(rest)
 }
 export function requestNoteConfirmation(exec: ToolRunContextLike, reason: string, preview?: NoteMutationPreview): void {
   exec.signal.throwIfAborted()
   if (!approved.has(exec)) throw new Proposal(reason, preview)
+  if (exec.agent?.session.snapshotEvents().filter(e=>e.type==='user/message'&&(e.data as {source?:{kind?:string}}).source?.kind==='user').at(-1)?.seq !== approved.get(exec)?.userSeq) throw new Error('用户输入已变化；尚未修改笔记')
   if (approved.get(exec)?.reason !== reason || approved.get(exec)?.preview !== preview?.text) throw new Error('待确认目标已变化，请重新读取并提出方案；尚未修改笔记')
 }
 
 /** Pending plans are server-owned, session-bound, bounded and deliberately not
  * restored after restart. Confirmation never accepts replacement tool args. */
 export function noteConfirmationTools(ctx: RuntimeContextLike, register = (tool: ToolDefinitionLike) => ctx.tools.register(tool)): (tool: ToolDefinitionLike) => ToolDefinitionLike {
-  const pending = new Map<string, { id: string; turn: number; users: number; expires: number; tool: ToolDefinitionLike; args: unknown; reason: string; preview: NoteMutationPreview | undefined; previewReadUntil: number }>()
+  const pending = new Map<string, { id: string; turn: number; users: number; userSeq: number; expires: number; tool: ToolDefinitionLike; args: unknown; reason: string; preview: NoteMutationPreview | undefined; previewReadUntil: number }>()
   const turnOf = (exec: ToolRunContextLike) => exec.agent!.session.snapshotEvents().filter(e => e.type === 'turn/start').at(-1)?.seq ?? -1
   const usersOf = (exec: ToolRunContextLike) => exec.agent!.session.snapshotEvents().filter(e => e.type === 'user/message' && (e.data as unknown as { source?: { kind?: string } }).source?.kind === 'user').length
   const prune = () => { for (const [key, item] of pending) if (item.expires < Date.now()) pending.delete(key) }
@@ -81,39 +83,57 @@ export function noteConfirmationTools(ctx: RuntimeContextLike, register = (tool:
       const id = (raw as { confirmationId?: unknown })?.confirmationId
       if (!plan || plan.id !== id) throw new Error('待确认操作已失效，请重新提出方案；尚未修改笔记')
       if (turnOf(exec) <= plan.turn) throw new Error('请先回复修改摘要，等待用户下一轮确认；尚未修改笔记')
-      if (usersOf(exec) !== plan.users + 1) {
-        pending.delete(agent.session.id)
-        throw new Error('确认期间已有其他对话，旧方案已取消，请重新提出方案')
-      }
       const text = currentDirectUserText(agent).trim().replace(/[。！!，,\s]+$/u, '')
-      if (!isNoteConfirmation(text)) {
-        pending.delete(agent.session.id)
-        throw new Error('用户未确认或改变了要求，原方案已取消；请按新要求重新提出方案')
+      if (/^(?:取消|不改了|不要|别改了|先别改|cancel)$/iu.test(text)) { pending.delete(agent.session.id); throw new Error('用户取消了原方案；未修改笔记') }
+      const directReply = usersOf(exec) === plan.users + 1
+      const decision = directReply && isNoteConfirmation(text) ? 'confirm' : await resolveNoteConsent(ctx, exec, {
+        mode: 'confirm', tool: plan.tool.name, reason: plan.reason, ...(plan.preview ? {preview:plan.preview.text} : {}), proposedAfter: plan.userSeq,
+      })
+      if (decision !== 'confirm') {
+        if (decision === 'reject' || decision === 'revise' || /^(?:取消|不要|别改了|先别改|cancel)$/iu.test(text)) {
+          pending.delete(agent.session.id)
+          throw new Error('用户取消或改变了要求，原方案已取消；请按新要求重新提出方案')
+        }
+        throw new Error('尚未得到对原方案的明确确认；提案仍保留，可先解释修改细节，再请用户确认')
       }
       if (plan.previewReadUntil < (plan.preview?.text ?? plan.reason).length) {
         // Agreement obtained before the remaining changes were disclosed is
         // not permission to reveal them and write in that same turn.
-        plan.turn = turnOf(exec); plan.users = usersOf(exec)
+        plan.turn = turnOf(exec); plan.users = usersOf(exec); plan.userSeq = agent.session.snapshotEvents().filter(e=>e.type==='user/message'&&(e.data as {source?:{kind?:string}}).source?.kind==='user').at(-1)?.seq ?? -1
         throw new Error(`变更预览尚未读取完整；请 knowledge_note_preview confirmationId=${plan.id} offset=${plan.previewReadUntil}，补全展示后等待用户下一轮确认，尚未保存`)
       }
       pending.delete(agent.session.id)
       const confirmedExec = { ...exec }
-      approved.set(confirmedExec, { reason: plan.reason, preview: plan.preview?.text })
+      approved.set(confirmedExec, { reason: plan.reason, preview: plan.preview?.text, userSeq: agent.session.snapshotEvents().filter(e=>e.type==='user/message'&&(e.data as {source?:{kind?:string}}).source?.kind==='user').at(-1)?.seq ?? -1 })
       try { return await plan.tool.execute(plan.args, confirmedExec) }
       finally { approved.delete(confirmedExec) }
     },
   })
-  return tool => ({ ...tool, description: tool.description + ' Confirmation is conversational, NOT a popup. Collect ALL edits requested for this note into ONE proposal, not one proposal per paragraph/chapter. The first call returns pending_confirmation without writing. Read all preview pages, show affected sections and concrete before/after changes (clearly label any abbreviated excerpts), then ask for ONE confirmation and end the turn. Never just say "please confirm". After next-turn agreement call knowledge_note_confirm with confirmationId, not this tool again.', async execute(raw, exec) {
+  return tool => ({ ...tool, description: tool.description + ' Confirmation is conversational, NOT a popup. Collect ALL edits requested for this note into ONE proposal, not one proposal per paragraph/chapter. Unless the user explicitly delegated this exact non-delete change, the first call returns pending_confirmation without writing. Read all preview pages, show affected sections and concrete before/after changes (clearly label any abbreviated excerpts), then ask for ONE confirmation and end the turn. Never just say "please confirm". Explicit user delegation to directly modify the current task target can authorize this exact non-delete change without another round; ordinary edits and permanent deletion still require preview/confirmation. Discussion does not cancel a proposal; changed instructions do. After later-turn agreement call knowledge_note_confirm with confirmationId, not this tool again.', async execute(raw, exec) {
     const args = structuredClone(raw)
+    const inputSeq = () => exec.agent?.session.snapshotEvents().filter(e=>e.type==='user/message'&&(e.data as {source?:{kind?:string}}).source?.kind==='user').at(-1)?.seq
+    const capturedInput = inputSeq()
+    const assertInput = () => { if(inputSeq()!==capturedInput) throw new Error('用户输入已变化；未修改笔记，请按最新要求处理') }
     try { return await tool.execute(args, exec) }
     catch (error) {
       if (!(error instanceof Proposal) || !exec.agent) throw error
+      assertInput()
+      if (tool.name !== 'knowledge_note_delete') {
+        const decision = await resolveNoteConsent(ctx, exec, {mode:'direct', tool:tool.name, reason:error.message, ...(error.preview ? {preview:error.preview.text} : {})})
+        assertInput()
+        if (decision === 'direct') {
+          const authorizedExec = {...exec}
+          approved.set(authorizedExec, {reason:error.message, preview:error.preview?.text, userSeq: exec.agent.session.snapshotEvents().filter(e=>e.type==='user/message'&&(e.data as {source?:{kind?:string}}).source?.kind==='user').at(-1)?.seq ?? -1})
+          try { const result = await tool.execute(args, authorizedExec); pending.delete(exec.agent.session.id); return result }
+          finally { approved.delete(authorizedExec) }
+        }
+      }
       prune()
       if (pending.size >= 100 && !pending.has(exec.agent.session.id)) throw new Error('待确认操作过多，请稍后重试')
       const id = randomUUID()
       const fullPreview = error.preview?.text ?? error.message
       const preview = fullPreview.slice(0, PREVIEW_PAGE_CHARS)
-      pending.set(exec.agent.session.id, { id, turn: turnOf(exec), users: usersOf(exec), expires: Date.now() + 15 * 60_000, tool, args, reason: error.message, preview: error.preview, previewReadUntil: preview.length })
+      pending.set(exec.agent.session.id, { id, turn: turnOf(exec), users: usersOf(exec), userSeq: exec.agent.session.snapshotEvents().filter(e=>e.type==='user/message'&&(e.data as {source?:{kind?:string}}).source?.kind==='user').at(-1)?.seq ?? -1, expires: Date.now() + 15 * 60_000, tool, args, reason: error.message, preview: error.preview, previewReadUntil: preview.length })
       return JSON.stringify({ status: 'pending_confirmation', modified: false, confirmationId: id, summary: error.message,
         changeCount: error.preview?.changeCount ?? 1, locations: error.preview?.locations ?? [], preview,
         previewOffset: 0, previewTotalChars: fullPreview.length, nextPreviewOffset: preview.length < fullPreview.length ? preview.length : null,

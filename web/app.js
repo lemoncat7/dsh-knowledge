@@ -1530,7 +1530,7 @@ function renderKnowledgeBases() {
       type: 'button', role: 'tab', class: 'tab', 'aria-selected': String(state.knowledgeBaseView === id),
       onClick: () => { state.knowledgeBaseView = id; renderShell() },
       }, element('span', {}, label), element('span', { class: 'tab-count' }, count)))),
-      actionButton('本机回写模型', () => openGlobalWritebackModelEditor(), 'ghost small'),
+      actionButton('本机回写设置', () => openGlobalWritebackModelEditor(), 'ghost small'),
     ),
     element('p', {}, state.service.writebackProvider && state.service.writebackModel
       ? `仅当前客户端使用 ${state.service.writebackProvider} / ${state.service.writebackModel} 回写。`
@@ -1655,18 +1655,22 @@ async function openGlobalWritebackModelEditor() {
   await loadModelCatalog()
   const custom = element('input', { type: 'checkbox', checked: Boolean(state.service.writebackProvider && state.service.writebackModel) })
   const route = modelRouteFields(state.service.writebackProvider || '', state.service.writebackModel || '')
+  const every = element('input', {class:'input', type:'number', min:1, max:20, step:1, required:true, value:state.service.extractionEveryTurns ?? 1})
+  const idle = element('input', {class:'input', type:'number', min:30, max:3600, step:1, required:true, value:state.service.extractionIdleSeconds ?? 180})
   const form = element('form', { class: 'form-grid' },
     element('label', { class: 'check-option span-2' }, custom, element('span', {}, element('strong', {}, '当前客户端使用专用模型'), element('small', {}, '关闭后，跟随当前客户端每轮会话实际使用的模型。'))),
     route.provider.wrapper, route.model.wrapper,
+    element('label', {class:'field'}, element('span', {}, '每几轮合并提取'), every, element('small', {}, '1 为每轮；最多 20 轮。仅累计同一会话的新内容，手动写笔记不受影响。')),
+    element('label', {class:'field'}, element('span', {}, '空闲多久后提取（秒）'), idle, element('small', {}, '不足轮数时，空闲到此时间也会回写。会话下方可立即回写。')),
   )
   const sync = () => { route.provider.input.disabled = route.model.input.disabled = !custom.checked; route.provider.input.required = route.model.input.required = custom.checked }
   custom.addEventListener('change', sync); sync()
-  openSheet({ title: '本机回写模型', description: '此设置只保存在当前 DSH 客户端，不会写入中央知识库或影响其他设备。', body: form, primaryLabel: '保存', onPrimary: async () => {
+  openSheet({ title: '本机回写设置', description: '此设置只保存在当前 DSH 客户端，不会写入中央知识库或影响其他设备。', body: form, primaryLabel: '保存', onPrimary: async () => {
     if (!form.reportValidity()) return false
-    state.service = await api('service', { method: 'PUT', body: custom.checked
+    state.service = await api('service', { method: 'PUT', body: { ...(custom.checked
       ? { writebackProvider: route.provider.input.value, writebackModel: route.model.input.value }
-      : { writebackProvider: null, writebackModel: null } })
-    showToast('当前客户端的回写模型已更新。'); renderShell(); return true
+      : { writebackProvider: null, writebackModel: null }), extractionEveryTurns:Number(every.value), extractionIdleSeconds:Number(idle.value) } })
+    showToast('当前客户端的回写设置已更新。'); renderShell(); return true
   } })
 }
 

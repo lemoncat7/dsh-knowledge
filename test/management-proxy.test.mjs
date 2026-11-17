@@ -96,3 +96,14 @@ test('remote management proxy keeps credentials server-side and exposes a synthe
   assert.equal(await proxiedContent.text(), 'proxied note file')
   assert.doesNotMatch(JSON.stringify(service), new RegExp(token))
 })
+
+test('remote frequency settings stay local, validate bounds and preserve the selected model',async t=>{
+ let handler,state={writebackProvider:'p',writebackModel:'m'}
+ registerRemoteManagementProxy({webServer:{register(r){handler=r.handler;return ()=>{}}},get(){}},'/knowledge-local/v1',()=>({backend:'remote',remoteUrl:'http://127.0.0.1:1',remoteToken:'not-used',remoteTimeoutMs:100}),{current:()=>state,async update(patch){state={...state,...patch};return state}})
+ const server=createServer((req,res)=>void handler(req,res));await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>new Promise(r=>server.close(r)))
+ const url=`http://127.0.0.1:${server.address().port}/knowledge-local/v1/service`,headers={'x-dsh-knowledge-client':'management-web','content-type':'application/json'}
+ const send=body=>fetch(url,{method:'PUT',headers,body:JSON.stringify(body)})
+ const response=await send({extractionEveryTurns:5,extractionIdleSeconds:90});assert.equal(response.status,200);const data=await response.json();assert.equal(data.extractionEveryTurns,5);assert.equal(data.writebackModel,'m')
+ assert.equal((await send({extractionEveryTurns:0})).status,400);assert.equal(state.extractionEveryTurns,5)
+ assert.equal((await (await fetch(url,{headers})).json()).extractionIdleSeconds,90)
+})

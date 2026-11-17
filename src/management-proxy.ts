@@ -1,3 +1,4 @@
+import { normalizeWritebackFrequency } from './service-settings.js'
 import {handleNoteWorkspace,type NoteWorkspace} from './notes/workspace-http.js'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { KnowledgeConnectionSettings } from './connection.js'
@@ -12,8 +13,8 @@ export function registerRemoteManagementProxy(
   prefix: string,
   current: () => KnowledgeConnectionSettings,
   localService: {
-    current(): { writebackProvider?: string; writebackModel?: string }
-    update(patch: { writebackProvider?: string | null; writebackModel?: string | null }): Promise<{ writebackProvider?: string; writebackModel?: string }>
+    current(): { writebackProvider?: string; writebackModel?: string; extractionEveryTurns?:number; extractionIdleSeconds?:number }
+    update(patch: { writebackProvider?: string | null; writebackModel?: string | null; extractionEveryTurns?:number; extractionIdleSeconds?:number }): Promise<{ writebackProvider?: string; writebackModel?: string; extractionEveryTurns?:number; extractionIdleSeconds?:number }>
   },
   workspace?:()=>NoteWorkspace,
 ): () => void {
@@ -32,8 +33,8 @@ async function dispatch(
   prefix: string,
   settings: KnowledgeConnectionSettings,
   localService: {
-    current(): { writebackProvider?: string; writebackModel?: string }
-    update(patch: { writebackProvider?: string | null; writebackModel?: string | null }): Promise<{ writebackProvider?: string; writebackModel?: string }>
+    current(): { writebackProvider?: string; writebackModel?: string; extractionEveryTurns?:number; extractionIdleSeconds?:number }
+    update(patch: { writebackProvider?: string | null; writebackModel?: string | null; extractionEveryTurns?:number; extractionIdleSeconds?:number }): Promise<{ writebackProvider?: string; writebackModel?: string; extractionEveryTurns?:number; extractionIdleSeconds?:number }>
   },
   req: IncomingMessage,
   res: ServerResponse,
@@ -56,6 +57,7 @@ async function dispatch(
       publicApiEnabled: true,
       publicApiPrefix: settings.remoteUrl,
       remote: true,
+      ...normalizeWritebackFrequency(local as Record<string,unknown>),
       ...local.writebackProvider && local.writebackModel
         ? { writebackProvider: local.writebackProvider, writebackModel: local.writebackModel }
         : {},
@@ -71,11 +73,13 @@ async function dispatch(
     const updated = await localService.update({
       ...writebackProvider === undefined ? {} : { writebackProvider },
       ...writebackModel === undefined ? {} : { writebackModel },
+        ...normalizeWritebackFrequency(body),
     })
     return sendJson(res, 200, {
       publicApiEnabled: true,
       publicApiPrefix: settings.remoteUrl,
       remote: true,
+      ...normalizeWritebackFrequency(updated as Record<string,unknown>),
       ...updated.writebackProvider && updated.writebackModel
         ? { writebackProvider: updated.writebackProvider, writebackModel: updated.writebackModel }
         : {},

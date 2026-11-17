@@ -34,7 +34,7 @@ export class WritebackStatusClient {
   }
 
   retry(): void {
-    if (this.disposed || this.retrying || !this.value?.retryable) return
+    if (this.disposed || this.retrying || (!this.value?.retryable && !this.value?.buffered)) return
     this.retrying = true
     this.request?.abort()
     this.change(this.value, true)

@@ -145,7 +145,7 @@ function KnowledgeWritebackStatus({
   return <div ref={container} className="dsh-knowledge-writeback-notice" data-status={state.status}>
     <div className="dsh-knowledge-writeback-summary" role="status" aria-atomic="true">
       <span>知识库回写</span><strong>@lemoncat7/dsh-knowledge</strong><span title={state.error}>{summary}</span>
-      {state.status === 'failed' && state.retryable && <button type="button" disabled={retrying} onClick={() => { void retry() }}>{retrying ? '重试中…' : '重试'}</button>}
+      {(state.buffered || state.status === 'failed' && state.retryable) && <button type="button" disabled={retrying} onClick={() => { void retry() }}>{retrying ? '处理中…' : state.buffered ? '立即回写' : '重试'}</button>}
       {state.status !== 'completed' && <button type="button" onClick={() => workspace.openDocument({ view: 'writeback', sessionId })}>管理回写</button>}
     </div>
     {destinations.length > 0 && <ul className="dsh-knowledge-writeback-destinations" aria-label="回写目标">

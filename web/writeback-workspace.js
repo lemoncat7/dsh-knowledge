@@ -58,7 +58,7 @@ export function createWritebackWorkspace({ element, actionButton, openConfirm, s
     if (busy || disposed) return
     busy = true
     request?.abort()
-    message.textContent = action === 'cancel' ? '正在请求取消…' : '正在提交重试…'
+    message.textContent = action === 'cancel' ? '正在请求取消…' : action === 'flush' ? '正在提交回写…' : '正在提交重试…'
     try {
       const result = await fetchJson(new URLSearchParams({ action, sourceKey: job.sourceKey }), 'POST')
       message.textContent = result.summary
@@ -68,15 +68,16 @@ export function createWritebackWorkspace({ element, actionButton, openConfirm, s
   }
   function renderJob(job) {
     const actions = element('div', { class: 'writeback-toolbar' })
+    if (job.buffered) actions.append(actionButton('立即回写', () => operate(job, 'flush'), 'small'))
     if (job.status === 'failed') actions.append(actionButton('重试', () => operate(job, 'retry'), 'small'))
-    if (['queued', 'running', 'failed'].includes(job.status)) actions.append(actionButton(job.cancelRequested ? '取消中…' : '取消回写', () => openConfirm({ title: '取消这条回写？', message: '取消后不再重试，并允许后续轮次继续。已经写入的内容不会撤销。', confirmLabel: '取消回写', danger: true, onConfirm: () => operate(job, 'cancel') }), 'ghost small', { disabled: job.cancelRequested }))
+    if (['queued', 'running', 'failed'].includes(job.status)) actions.append(actionButton(job.cancelRequested ? '取消中…' : '取消回写', () => openConfirm({ title: '取消这条回写？', message: '合并后的回写会取消整批；未合并时只取消当前轮。已经写入的内容不会撤销。', confirmLabel: '取消回写', danger: true, onConfirm: () => operate(job, 'cancel') }), 'ghost small', { disabled: job.cancelRequested }))
     return element('article', { class: 'writeback-job', 'data-job-key': job.sourceKey },
       element('div', { class: 'writeback-toolbar' }, element('strong', {}, labels[job.status] || job.status), element('span', {}, `已尝试 ${job.attempts} 次`), actions),
       element('div', { class: 'writeback-job-key', title: job.sourceKey }, job.sourceKey),
       job.createdAt ? element('p', {}, '创建于 ', element('time', { datetime: new Date(job.createdAt).toISOString() }, new Date(job.createdAt).toLocaleString())) : element('p', {}, '历史任务 · 创建时间未记录'),
       element('p', {}, job.summary),
       job.blockedBy ? element('p', {}, `阻塞任务：${job.blockedBy}`) : null,
-      job.nextAttemptAt ? element('p', {}, `下次自动重试：${new Date(job.nextAttemptAt).toLocaleString()}`) : null,
+      job.nextAttemptAt ? element('p', {}, `${job.buffered ? '空闲后提取' : '下次自动重试'}：${new Date(job.nextAttemptAt).toLocaleString()}`) : null,
       job.error ? element('details', {}, element('summary', {}, '失败原因'), element('pre', {}, job.error)) : null,
       ...(job.destinations || []).map(destination => element('p', {}, `${destination.knowledgeBaseName} / ${destination.documentTitle || destination.documentId || ''}`)))
   }
