@@ -2,7 +2,8 @@ import {moveVaultEntry, type VaultMove} from './vault-move.js'
 import {installVaultFile} from './vault-file.js'
 import { constants, watch, type FSWatcher } from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import { snapshotVault, vaultIdentity, type VaultEntry } from './vault-snapshot.js'
+import { readVaultBytes, snapshotVault, vaultIdentity, type VaultEntry } from './vault-snapshot.js'
+import { vaultVolumeUUID } from './vault-volume.js'
 import { mergeVaultText } from './vault-merge.js'
 import { mkdir, lstat, open, readdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, relative, resolve, sep, extname, basename } from 'node:path'
@@ -44,6 +45,9 @@ export class NoteVault {
   private rescan = false
   private token: string | undefined
   private rootIdentity: string | undefined
+  private markerIdentity: string | undefined
+  private volumeUUID: string | undefined
+  private checkedVolume: { identity: string; uuid: string | undefined; retryAt: number } | undefined
   private watcher: FSWatcher | undefined
   private debounce: ReturnType<typeof setTimeout> | undefined
   private blockedDirectories: string[] = []
@@ -108,7 +112,7 @@ export class NoteVault {
   }
   private async persist() {
     await mkdir(dirname(this.manifestPath), { recursive: true, mode: 0o700 })
-    await atomicWriteFile(this.manifestPath, JSON.stringify({ format: 2, token: this.token, rootIdentity: this.rootIdentity, trashFolder: this.trashFolder, events: this.events, mappings: this.mappings }), { mode: 0o600 })
+    await atomicWriteFile(this.manifestPath, JSON.stringify({ format: 2, token: this.token, rootIdentity: this.rootIdentity, markerIdentity: this.markerIdentity, volumeUUID: this.volumeUUID, trashFolder: this.trashFolder, events: this.events, mappings: this.mappings }), { mode: 0o600 })
   }
   scan(): Promise<void> {
     if (this.stopped) return Promise.resolve()
@@ -139,6 +143,8 @@ export class NoteVault {
         this.mappings = saved.mappings
         this.token = saved.token
         this.rootIdentity = saved.rootIdentity
+        this.markerIdentity = saved.markerIdentity
+        this.volumeUUID = saved.volumeUUID
         this.trashFolder = saved.trashFolder
         this.events = saved.events ?? []
         for (const m of this.mappings) {
@@ -152,7 +158,7 @@ export class NoteVault {
       this.loaded = true
     }
     this.warning = ''
-    await this.verifyRoot()
+    await this.verifyRoot(true)
     let snapshot = await snapshotVault(this.path, this.previousSnapshot)
     await this.verifyRoot()
     this.previousSnapshot = snapshot
@@ -484,7 +490,24 @@ export class NoteVault {
     }
     return false
   }
-  private async verifyRoot() {
+  private rebindDevice(oldDevice: string, newDevice: string) {
+    const rebind = (identity: string) => identity.startsWith(oldDevice + ':')
+      ? newDevice + identity.slice(oldDevice.length) : identity
+    for (const mapping of this.mappings) {
+      if (mapping.identity) mapping.identity = rebind(mapping.identity)
+      if (mapping.pendingMove) {
+        mapping.pendingMove.identity = rebind(mapping.pendingMove.identity)
+        if (mapping.pendingMove.reservation) mapping.pendingMove.reservation = rebind(mapping.pendingMove.reservation)
+      }
+      delete mapping.missingSince
+      delete mapping.missingScans
+    }
+    this.previousSnapshot.clear()
+    this.observations.clear()
+    this.watcher?.close()
+    this.watcher = undefined
+  }
+  private async verifyRoot(allowRebind = false) {
     const sentinel = join(this.path, '.dsh-vault-id')
     if (!this.token) {
       // An established vault may be a missing mount. Never recreate it silently.
@@ -498,16 +521,54 @@ export class NoteVault {
       catch (e) {
         if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
         await this.safe(sentinel)
-        const existing = await readFile(sentinel, 'utf8')
+        const existing = (await readVaultBytes(sentinel)).toString('utf8')
         if (!/^[a-f0-9-]{36}$/.test(existing)) throw Error('工作区标识无效')
         this.token = existing
       }
       this.rootIdentity = identity.identity
       await this.persist()
     }
-    await this.safe(sentinel)
-    const root = await vaultIdentity(this.path)
-    if (root.identity !== this.rootIdentity || await readFile(sentinel, 'utf8') !== this.token) throw Error('工作区挂载或标识发生变化，已暂停同步；请恢复原挂载')
+    const suspended = '笔记工作区挂载已变化，已暂停同步。请将原卷挂回此路径并保留 .dsh-vault-id，插件会自动重试。'
+    const { root, marker } = await (async () => {
+      try {
+        await this.safe(sentinel)
+        const root = await vaultIdentity(this.path)
+        const marker = await vaultIdentity(sentinel)
+        if (!root.stat.isDirectory() || !marker.stat.isFile() || marker.stat.dev !== root.stat.dev ||
+            marker.stat.size !== 36n || (await readVaultBytes(sentinel)).toString('utf8') !== this.token) throw Error(suspended)
+        return { root, marker }
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT') throw Error(suspended)
+        throw e
+      }
+    })()
+    const changed = root.identity !== this.rootIdentity
+    const oldDevice = this.rootIdentity?.split(':')[0]
+    const newDevice = String(root.stat.dev)
+    const markerMatches = this.markerIdentity === undefined || this.markerIdentity === marker.identity
+    if (changed) {
+      if (!allowRebind || !oldDevice || oldDevice === newDevice || root.stat.birthtimeNs <= 0n ||
+          this.rootIdentity !== `${oldDevice}:${root.stat.ino}:${root.stat.birthtimeNs}` ||
+          (this.markerIdentity !== undefined &&
+            (marker.stat.birthtimeNs <= 0n || this.markerIdentity !== `${oldDevice}:${marker.stat.ino}:${marker.stat.birthtimeNs}`))) throw Error(suspended)
+    } else if (!markerMatches) throw Error(suspended)
+    const cached = this.checkedVolume
+    const uuid = allowRebind
+      ? (cached?.identity === root.identity && cached.retryAt > Date.now() ? cached.uuid : await vaultVolumeUUID(this.path))
+      : undefined
+    if (this.volumeUUID && (uuid ? uuid !== this.volumeUUID : changed)) throw Error(suspended)
+    if ((await vaultIdentity(this.path)).identity !== root.identity ||
+        (await vaultIdentity(sentinel)).identity !== marker.identity) throw Error(suspended)
+    if (changed || !this.markerIdentity || (uuid && !this.volumeUUID)) {
+      if (changed) this.rebindDevice(oldDevice!, newDevice)
+      this.rootIdentity = root.identity
+      this.markerIdentity = marker.identity
+      this.volumeUUID ??= uuid
+      await this.persist()
+    }
+    if (allowRebind && (!cached || cached.identity !== root.identity || cached.retryAt <= Date.now())) {
+      this.checkedVolume = { identity: root.identity, uuid, retryAt: uuid ? Infinity : Date.now() + 60_000 }
+    }
     if (this.autoStart && !this.watcher) {
       try {
         this.watcher = watch(this.path, {recursive: true}, (_event, name) => {

@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Scheduler } from '../worklog/scheduler.js'
+import { applyGoalOrder, moveGoal } from '../worklog/calendar/goal-order.js'
 import { Store } from '../worklog/store.js'
 import { JournalService } from '../worklog/service.js'
 import { calendarIcs } from '../worklog/calendar/ical.js'
@@ -133,4 +135,70 @@ test('remote calendar never falls back to local; unknown write outcomes and conn
   service.request = async () => { current.remoteUrl = 'https://another.example'; return { ok: true } }
   await assert.rejects(service.calendar('POST', '/calendar-create', {}, q(), signal()), /连接已变化/)
   current.paused = true; await assert.rejects(service.calendar('GET', '/calendar-info', {}, q(), signal()), /切换/)
+})
+
+test('the local-calendar scheduler copies unfinished goals at civil midnight and retains the original', t => {
+  const store = new Store(':memory:')
+  t.after(() => store.close())
+  store.configure({ ...store.config(), timezone: 'Asia/Shanghai' })
+  const c = store.calendar
+  const first = create(c, { title: 'carry', status: 'in_progress', tags: ['写作'], description: 'notes' }).event
+  const timed = create(c, { title: 'timed', allDay: false, startAt: '2026-11-17T23:00+08:00', endAt: '2026-11-18T00:00+08:00' }).event
+  create(c, { status: 'done' })
+  create(c, { status: 'cancelled' })
+  create(c, { kind: 'work' })
+  create(c, { title: 'still active', endDay: '2026-11-19' })
+  const deleted = create(c, { title: 'deleted' }).event
+  c.mutate('delete', { requestId: randomUUID(), id: deleted.id, revision: deleted.revision })
+  const { cursor } = c.info()
+  const midnight = Date.parse('2026-11-18T00:00:00+08:00')
+  const scheduler = new Scheduler(store)
+  scheduler.tick(midnight - 30000)
+  assert.equal(c.info().cursor, cursor)
+  scheduler.tick(midnight)
+  const carried = range(c, { from: '2026-11-18', to: '2026-11-19' }).items.filter(e => e.carriedFrom)
+  assert.deepEqual(carried.map(e => e.carriedFrom.id), [first.id, timed.id])
+  assert.deepEqual(c.get(first.id), first)
+  assert.equal(carried[0].status, 'in_progress')
+  assert.equal(carried[0].description, 'notes')
+  assert.equal(carried[1].allDay, true)
+  assert.equal(c.changes(q({ after: cursor, calendarId: c.calendarId })).changes.length, 2)
+
+  const copy = carried[0]
+  c.mutate('delete', { requestId: randomUUID(), id: copy.id, revision: copy.revision })
+  scheduler.tick(midnight + 30000)
+  assert.equal(range(c, { from: '2026-11-18', to: '2026-11-19' }).items.filter(e => e.carriedFrom).length, 1)
+})
+
+test('order is day-specific, survives reopening, and rejects stale day membership and order', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'calendar-sort-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const path = join(root, 'journal.sqlite'), store = new Store(path)
+  t.after(() => store.close())
+  const c = store.calendar, day = '2026-11-17', next = '2026-11-18'
+  const a = create(c, { title: 'A', endDay: '2026-11-19' }).event
+  const b = create(c, { title: 'B' }).event
+  const d = create(c, { title: 'D', day: next }).event
+  const work = create(c, { title: 'Work', kind: 'work' }).event
+  const service = new JournalService(store, {}, async () => [])
+  const payload = { day, revision: 0, ids: [b.id, a.id], requestId: randomUUID(), calendarId: c.calendarId }
+  const result = await service.browser('POST', '/calendar-reorder', payload)
+  assert.equal(result.orderCursor, 1)
+  assert.equal((await service.browser('POST', '/calendar-reorder', payload)).replayed, true)
+  assert.throws(() => c.mutate('reorder', { ...payload, requestId: randomUUID() }), e => e.status === 409)
+  assert.throws(() => c.mutate('reorder', { ...payload, requestId: randomUUID(), revision: 1, ids: [b.id, work.id] }), e => e.status === 409)
+  c.mutate('reorder', { ...payload, day: next, requestId: randomUUID(), ids: [d.id, a.id] })
+  assert.equal(c.get(a.id).revision, a.revision)
+  const reopened = new Store(path)
+  t.after(() => reopened.close())
+  const page = range(reopened.calendar, { to: '2026-11-19' })
+  assert.deepEqual(page.goalOrders[day].ids, [b.id, a.id])
+  assert.deepEqual(page.goalOrders[next].ids, [d.id, a.id])
+  assert.equal(page.orderCursor, 2)
+})
+
+test('drag and keyboard reorder move one goal and keep work records in their slots', () => {
+  const events = [{ id: 'a', kind: 'goal' }, { id: 'work', kind: 'work' }, { id: 'b', kind: 'goal' }, { id: 'c', kind: 'goal' }]
+  assert.deepEqual(applyGoalOrder(events, moveGoal(['a', 'b', 'c'], 'c', 'a')).map(e => e.id), ['c', 'work', 'a', 'b'])
+  assert.deepEqual(applyGoalOrder(events, moveGoal(['a', 'b', 'c'], 'a', 'c')).map(e => e.id), ['b', 'work', 'c', 'a'])
 })

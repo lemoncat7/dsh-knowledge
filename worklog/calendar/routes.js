@@ -1,6 +1,6 @@
 import { fail } from '../domain.js'
 import { calendarIcs } from './ical.js'
-export const calendarPaths = new Set(['/calendar-info', '/calendar', '/calendar-event', '/calendar-changes', '/calendar-export', '/calendar-create', '/calendar-update', '/calendar-delete', '/calendar-restore'])
+export const calendarPaths = new Set(['/calendar-info', '/calendar', '/calendar-event', '/calendar-changes', '/calendar-export', '/calendar-create', '/calendar-update', '/calendar-delete', '/calendar-restore', '/calendar-reorder'])
 export function calendarRoutes(store, method, path, data, query) {
   if (!calendarPaths.has(path)) return undefined
   const calendar = store.calendar
@@ -18,6 +18,6 @@ export function calendarRoutes(store, method, path, data, query) {
       return { filename: `工作日历-${first.from}-${first.to}.ics`, contentType: 'text/calendar;charset=utf-8', content: calendarIcs(events), count: events.length }
     }
   }
-  if (method === 'POST' && ['/calendar-create', '/calendar-update', '/calendar-delete', '/calendar-restore'].includes(path)) return calendar.mutate(path.slice('/calendar-'.length), data)
+  if (method === 'POST' && ['/calendar-create', '/calendar-update', '/calendar-delete', '/calendar-restore', '/calendar-reorder'].includes(path)) return calendar.mutate(path.slice('/calendar-'.length), data)
   throw fail('日历操作不支持此请求方法', 405)
 }

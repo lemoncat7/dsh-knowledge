@@ -20,6 +20,7 @@ export class Scheduler {
   constructor(store) { this.store = store; this.lastCheck = null }
   tick(now = Date.now()) {
     if (this.lastCheck !== null && now >= this.lastCheck && now - this.lastCheck < 30000) return
+    this.store.calendar?.carryGoals(now)
     this.lastCheck = now
     this.store.schedule(now)
   }

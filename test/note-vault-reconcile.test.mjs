@@ -186,3 +186,97 @@ test('native deletion of a directory archives nested notes and never recreates t
  const entries=(await readdir(f.file('.dsh-deleted'))).filter(n=>!n.endsWith('.json'))
  assert.equal(entries.length,1);assert.equal(await readFile(f.file('.dsh-deleted/'+entries[0]+'/a.md'),'utf8'),'body')
 })
+
+function changeManifestDevice(index, legacy = false) {
+ const original = index.rootIdentity.split(':')[0]
+ const replacement = String(BigInt(original) + 1n)
+ const change = id => id?.startsWith(original + ':') ? replacement + id.slice(original.length) : id
+ index.rootIdentity = change(index.rootIdentity)
+ if (legacy) delete index.markerIdentity
+ else index.markerIdentity = change(index.markerIdentity)
+ for (const m of index.mappings) {
+  m.identity = change(m.identity)
+  if (m.pendingMove) {
+   m.pendingMove.identity = change(m.pendingMove.identity)
+   m.pendingMove.reservation = change(m.pendingMove.reservation)
+  }
+ }
+}
+
+test('legacy workspace resumes after its mount device number changes, keeping nested note IDs', async t => {
+ const f = await fixture(t), folder = await f.store.createFolder('notes')
+ const note = await f.store.createDocument('a', folder.id, 'base')
+ await f.scan()
+ const path = join(f.root, 'index.json'), original = JSON.parse(await readFile(path, 'utf8'))
+ const previousMount = structuredClone(original)
+ changeManifestDevice(previousMount, true)
+ await writeFile(path, JSON.stringify(previousMount))
+ await rename(f.file('notes'), f.file('renamed'))
+ await writeFile(f.file('renamed/a.md'), 'edited while unmounted')
+ await f.restart()
+ await f.settle(); await f.settle()
+ assert.equal(f.store.get(folder.id).name, 'renamed')
+ assert.equal(f.store.get(note.id).parentId, folder.id)
+ assert.equal((await f.store.read(note.id)).content.toString(), 'edited while unmounted')
+ assert.equal(f.store.syncManifest().nodes.length, 2)
+ assert.equal(f.vault.status().warning, '')
+ const recovered = JSON.parse(await readFile(path, 'utf8'))
+ assert.equal(recovered.rootIdentity, original.rootIdentity)
+ assert.equal(recovered.markerIdentity, original.markerIdentity)
+ assert.equal(recovered.mappings.find(m => m.id === folder.id).identity, original.mappings.find(m => m.id === folder.id).identity)
+})
+
+test('rebind updates staged move and destination reservation after a device change', async t => {
+ const {vaultIdentity} = await import('../lib/notes/vault-snapshot.js')
+ const f = await fixture(t), folder = await f.store.createFolder('from')
+ const note = await f.store.createDocument('a', folder.id, 'body')
+ await f.scan()
+ const path = join(f.root, 'index.json'), index = JSON.parse(await readFile(path, 'utf8'))
+ const from = f.file('from'), to = f.file('to'), stage = f.file('.dsh-moves/op')
+ f.store.rename(folder.id, 'to')
+ await mkdir(f.file('.dsh-moves'))
+ await rename(from, stage)
+ await mkdir(to)
+ index.mappings.find(m => m.id === folder.id).pendingMove = {
+  from, to, stage, identity: (await vaultIdentity(stage)).identity, directory: true,
+  name: 'to', parentId: null, reservation: (await vaultIdentity(to)).identity,
+ }
+ changeManifestDevice(index)
+ await writeFile(path, JSON.stringify(index))
+ await f.restart(); await f.settle()
+ assert.equal(await readFile(f.file('to/a.md'), 'utf8'), 'body')
+ assert.equal(f.store.get(note.id).parentId, folder.id)
+ assert.equal(f.vault.status().warning, '')
+})
+
+test('a copied workspace marker does not authorize a replacement root', async t => {
+ const f = await fixture(t), n = await f.store.createDocument('a', null, 'base')
+ await f.scan()
+ const path = join(f.root, 'index.json'), index = JSON.parse(await readFile(path, 'utf8'))
+ changeManifestDevice(index, true)
+ await writeFile(path, JSON.stringify(index))
+ const original = join(f.root, 'original'), token = await readFile(f.file('.dsh-vault-id'))
+ await rename(f.path, original)
+ await mkdir(f.path)
+ await writeFile(f.file('.dsh-vault-id'), token)
+ await f.restart(); await f.scan(); await f.scan(40000)
+ assert.match(f.vault.status().warning, /原卷挂回/)
+ assert.equal(f.vault.status().recycle.length, 0)
+ assert.ok(f.store.get(n.id))
+ assert.deepEqual(await readdir(f.path), ['.dsh-vault-id'])
+ assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), index)
+})
+
+test('an upgraded manifest does not rebind a copied marker on the same root', async t => {
+ const f = await fixture(t)
+ await f.scan()
+ const path = join(f.root, 'index.json'), index = JSON.parse(await readFile(path, 'utf8'))
+ changeManifestDevice(index)
+ await writeFile(path, JSON.stringify(index))
+ const token = await readFile(f.file('.dsh-vault-id'))
+ await rename(f.file('.dsh-vault-id'), f.file('.old-marker'))
+ await writeFile(f.file('.dsh-vault-id'), token)
+ await f.restart(); await f.scan()
+ assert.match(f.vault.status().warning, /原卷挂回/)
+ assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), index)
+})
