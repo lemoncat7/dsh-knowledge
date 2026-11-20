@@ -16,11 +16,14 @@ export class CalendarStore {
       CREATE TABLE IF NOT EXISTS calendar_changes (seq INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT NOT NULL,revision INTEGER NOT NULL,body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS calendar_requests (id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,result TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS calendar_goal_orders (day TEXT PRIMARY KEY, revision INTEGER NOT NULL, ids TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS calendar_goal_carry (day TEXT NOT NULL, source_id TEXT NOT NULL, PRIMARY KEY(day,source_id));`)
+      CREATE TABLE IF NOT EXISTS calendar_goal_carry (day TEXT NOT NULL, source_id TEXT NOT NULL, PRIMARY KEY(day,source_id));
+      CREATE TABLE IF NOT EXISTS calendar_goal_progress (
+        goal_id TEXT NOT NULL, day TEXT NOT NULL, text TEXT NOT NULL, revision INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+        PRIMARY KEY(goal_id,day));`)
     this.calendarId = db.prepare('SELECT id FROM calendar_identity LIMIT 1').get()?.id
     if (!this.calendarId) { this.calendarId = randomUUID(); db.prepare('INSERT OR IGNORE INTO calendar_identity VALUES (1,?)').run(this.calendarId); this.calendarId = db.prepare('SELECT id FROM calendar_identity WHERE singleton=1').get().id }
   }
-  info() { return { calendarId: this.calendarId, protocol: 1, timeZone: this.timezone(), today: localParts(Date.now(), this.timezone()).day, orderCursor: this.orderCursor(), cursor: this.db.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM calendar_changes').get().n, externalSync: { connected: false, export: 'icalendar', adapters: ['google-calendar', 'caldav'], note: '本版提供日历文件导出与增量接口，尚未连接外部账号' } } }
+  info() { return { calendarId: this.calendarId, protocol: 1, dailyProgress: true, progressHistory: true, timeZone: this.timezone(), today: localParts(Date.now(), this.timezone()).day, orderCursor: this.orderCursor(), cursor: this.db.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM calendar_changes').get().n, externalSync: { connected: false, export: 'icalendar', adapters: ['google-calendar', 'caldav'], note: '本版提供日历文件导出与增量接口，尚未连接外部账号' } } }
   orderCursor() {
     return this.db.prepare('SELECT COALESCE(MAX(revision),0) AS n FROM calendar_goal_orders').get().n
   }
@@ -120,8 +123,49 @@ export class CalendarStore {
       .run(day, orderRevision, JSON.stringify(ids))
     return { order: { day, revision: orderRevision, ids }, calendarId: this.calendarId, orderCursor: orderRevision, replayed: false }
   }
+  progressGoal(id) {
+    const event = this.get(id)
+    if (event.kind !== 'goal') throw fail('每日进度仅适用于目标', 400)
+    const root = event.carriedFrom
+      ? this.db.prepare(`WITH RECURSIVE lineage(id, parent, created_at) AS (
+          SELECT id, json_extract(body,'$.carriedFrom.id'), json_extract(body,'$.createdAt') FROM calendar_events WHERE id=?
+          UNION
+          SELECT e.id, json_extract(e.body,'$.carriedFrom.id'), json_extract(e.body,'$.createdAt')
+          FROM lineage l JOIN calendar_events e ON e.id=l.parent
+        ) SELECT id, created_at AS createdAt FROM lineage WHERE parent IS NULL`).get(event.id)
+      : event
+    if (!root) throw fail('无法确认结转目标的原始记录', 409)
+    return { event, root }
+  }
+  progressHistory(id, beforeValue, limitValue) {
+    const { root } = this.progressGoal(id)
+    const before = beforeValue ? validDate(beforeValue) : '9999-12-31'
+    const limit = integer(limitValue, 1, 100, 50)
+    const rows = this.db.prepare(`SELECT goal_id AS goalId, day, text, revision, updated_at AS updatedAt
+      FROM calendar_goal_progress WHERE goal_id=? AND day<? AND text<>'' ORDER BY day DESC LIMIT ?`)
+      .all(root.id, before, limit + 1)
+    const items = rows.slice(0, limit)
+    return { items, before: rows.length > limit ? items.at(-1).day : null, calendarId: this.calendarId }
+  }
+  goalProgress(id, date) {
+    const day = validDate(date), { event, root } = this.progressGoal(id)
+    const row = this.db.prepare('SELECT text, revision, updated_at AS updatedAt FROM calendar_goal_progress WHERE goal_id=? AND day=?').get(root.id, day)
+    return { event, progress: { goalId: root.id, day, text: '', revision: 0, updatedAt: null, ...row }, createdAt: root.createdAt }
+  }
+  writeProgress(data, now) {
+    const { event, progress, createdAt } = this.goalProgress(data.id, data.day)
+    if (event.deletedAt !== null) throw fail('目标已删除，请先恢复', 409)
+    if (progress.revision !== integer(data.revision, 0, Number.MAX_SAFE_INTEGER)) throw fail('该日期进度已更新，请重新读取后再保存', 409)
+    const text = string(data.text, 4000)
+    if (text === progress.text) return { progress, createdAt }
+    const revision = progress.revision + 1, updatedAt = Math.max(now, (progress.updatedAt ?? 0) + 1)
+    this.db.prepare(`INSERT INTO calendar_goal_progress VALUES (?,?,?,?,?)
+      ON CONFLICT(goal_id,day) DO UPDATE SET text=excluded.text,revision=excluded.revision,updated_at=excluded.updated_at`)
+      .run(progress.goalId, progress.day, text, revision, updatedAt)
+    return { progress: { ...progress, text, revision, updatedAt }, createdAt }
+  }
   mutate(action, data, now = Date.now()) {
-    object(data, action === 'reorder' ? ['requestId', 'calendarId', 'day', 'revision', 'ids'] : action === 'create' ? ['requestId', 'calendarId', 'event'] : action === 'update' ? ['requestId', 'calendarId', 'id', 'revision', 'patch'] : ['requestId', 'calendarId', 'id', 'revision'])
+    object(data, action === 'progress-write' ? ['requestId', 'calendarId', 'id', 'day', 'revision', 'text'] : action === 'reorder' ? ['requestId', 'calendarId', 'day', 'revision', 'ids'] : action === 'create' ? ['requestId', 'calendarId', 'event'] : action === 'update' ? ['requestId', 'calendarId', 'id', 'revision', 'patch'] : ['requestId', 'calendarId', 'id', 'revision'])
     if (data.calendarId !== undefined && data.calendarId !== this.calendarId) throw fail('日历连接已改变，请重新加载后操作', 409)
     const requestId = string(data.requestId, 128, true), fingerprint = createHash('sha256').update(canonical({ action, data })).digest('hex')
     this.db.exec('BEGIN IMMEDIATE')
@@ -131,8 +175,10 @@ export class CalendarStore {
         if (prior.fingerprint !== fingerprint) throw fail('同一 requestId 不能用于不同操作；原操作未被覆盖', 409)
         this.db.exec('COMMIT'); return { ...JSON.parse(prior.result), replayed: true }
       }
-      if (action === 'reorder') {
-        const result = this.reorder(data)
+      if (action === 'reorder' || action === 'progress-write') {
+        const result = action === 'reorder' ? this.reorder(data) : {
+          ...this.writeProgress(data, now), calendarId: this.calendarId, replayed: false,
+        }
         this.db.prepare('INSERT INTO calendar_requests VALUES (?,?,?)').run(requestId, fingerprint, JSON.stringify(result))
         this.db.exec('COMMIT'); return result
       }

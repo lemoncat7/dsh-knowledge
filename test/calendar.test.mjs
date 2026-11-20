@@ -202,3 +202,75 @@ test('drag and keyboard reorder move one goal and keep work records in their slo
   assert.deepEqual(applyGoalOrder(events, moveGoal(['a', 'b', 'c'], 'c', 'a')).map(e => e.id), ['c', 'work', 'a', 'b'])
   assert.deepEqual(applyGoalOrder(events, moveGoal(['a', 'b', 'c'], 'a', 'c')).map(e => e.id), ['b', 'work', 'c', 'a'])
 })
+
+test('a carried goal shares daily progress and creation date across multiple generations', async t => {
+  const c = fixture(t)
+  const event = create(c, { title: '持续目标' }).event
+  const today = '2026-11-18', day = '2026-11-17'
+  assert.equal(c.carryGoals(Date.parse(today + 'T12:00:00+08:00')), 1)
+  const copy = range(c, { from: today, to: '2026-11-19' }).items[0]
+  const first = c.goalProgress(copy.id, day)
+  assert.equal(first.createdAt, event.createdAt)
+  assert.equal(first.progress.goalId, event.id)
+  assert.equal(first.progress.revision, 0)
+  const payload = { id: copy.id, day, revision: first.progress.revision, text: '完成初稿，剩校对', requestId: randomUUID() }
+  const written = c.mutate('progress-write', payload)
+  assert.equal(written.progress.revision, 1)
+  assert.equal(c.mutate('progress-write', payload).replayed, true)
+  assert.equal(c.goalProgress(event.id, day).progress.text, payload.text)
+  assert.equal(c.goalProgress(event.id, today).progress.text, '')
+  assert.throws(() => c.mutate('progress-write', { ...payload, id: event.id, requestId: randomUUID() }), e => e.status === 409)
+  assert.equal(c.get(copy.id).revision, copy.revision)
+  assert.equal(c.carryGoals(Date.parse('2026-11-19T12:00:00+08:00')), 1)
+  const newest = range(c, { from: '2026-11-19', to: '2026-11-20' }).items[0]
+  assert.equal(c.goalProgress(newest.id, day).progress.text, payload.text)
+  c.mutate('delete', { requestId: randomUUID(), id: event.id, revision: event.revision })
+  assert.equal(c.goalProgress(newest.id, day).progress.text, payload.text)
+  assert.throws(() => c.mutate('progress-write', { ...payload, id: event.id, revision: 1, requestId: randomUUID() }), /已删除/)
+  const settled = c.mutate('progress-write', { ...payload, id: newest.id, revision: 1, text: '', requestId: randomUUID() })
+  assert.equal(settled.progress.revision, 2)
+  assert.equal(c.goalProgress(copy.id, day).progress.text, '')
+})
+
+test('the calendar AI tool reads and writes dated progress through the existing service', async t => {
+  const store = new Store(':memory:'); t.after(() => store.close())
+  const service = new JournalService(store, {}, async () => [])
+  const tool = calendarTools((...args) => service.calendar(...args))[0]
+  const exec = { agent: { session: { id: 'test' } }, signal: signal() }
+  const day = '2026-11-17', id = create(store.calendar).event.id
+  const read = JSON.parse(await tool.execute({ action: 'progress-read', id, day }, exec))
+  assert.equal(read.progress.revision, 0)
+  const write = JSON.parse(await tool.execute({ action: 'progress-write', id, day, text: '完成校对', revision: 0, requestId: randomUUID() }, exec))
+  assert.equal(write.progress.text, '完成校对')
+  assert.equal(write.progress.goalId, id)
+  await assert.rejects(() => tool.execute({ action: 'progress-write', id, day, text: '覆盖', revision: 0, requestId: randomUUID() }, exec), /进度已更新/)
+})
+
+test('daily progress history is paginated by the original recorded day and excludes deleted records', async t => {
+  const store = new Store(':memory:'); t.after(() => store.close())
+  const service = new JournalService(store, {}, async () => [])
+  const c = store.calendar, event = create(c).event
+  assert.equal(c.carryGoals(Date.parse('2026-11-18T12:00:00+08:00')), 1)
+  const copy = range(c, { from: '2026-11-18', to: '2026-11-19' }).items[0]
+  const write = (id, day, revision, text) => service.browser('POST', '/calendar-progress-write', {
+    id, day, revision, text, requestId: randomUUID(), calendarId: c.calendarId,
+  })
+  const list = (more = {}) => service.browser('GET', '/calendar-progress-history', {}, q({ id: copy.id, limit: '1', ...more }))
+  await write(event.id, '2026-11-17', 0, '初稿')
+  await write(copy.id, '2026-11-18', 0, '校对')
+  const first = await list()
+  assert.deepEqual(first.items.map(item => item.day), ['2026-11-18'])
+  assert.equal(first.before, '2026-11-18')
+  const second = await list({ before: first.before })
+  assert.deepEqual(second.items.map(item => item.day), ['2026-11-17'])
+  assert.equal(second.before, null)
+  await write(copy.id, '2026-11-17', 1, '补充：完成初稿')
+  const edited = await list({ before: first.before })
+  assert.equal(edited.items[0].day, '2026-11-17')
+  assert.equal(edited.items[0].text, '补充：完成初稿')
+  await write(copy.id, '2026-11-18', 1, '')
+  const after = await list()
+  assert.equal(after.before, null)
+  assert.deepEqual(after.items.map(item => item.day), ['2026-11-17'])
+  assert.equal(c.goalProgress(event.id, '2026-11-18').progress.revision, 2)
+})

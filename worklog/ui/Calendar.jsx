@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { api } from './api.js'
 import { Dialog, DialogActions } from './Dialog.jsx'
 import { ActionMenu } from './ActionMenu.jsx'
+import { ProgressHistory } from './ProgressHistory.jsx'
 import { applyGoalOrder, moveGoal } from '../calendar/goal-order.js'
 import { addDays, eventOnDay, localParts, monthDays, weekDays, wallTime } from '../calendar/time.js'
 
@@ -90,14 +91,15 @@ export function Calendar() {
       requests.current.delete(signature)
       if (result.order) {
         setGoalOrders(previous => ({ ...previous, [result.order.day]: result.order }))
-      } else {
+      } else if (result.event) {
         setEvents(previous => {
           const index = previous.findIndex(e => e.id === result.event.id)
           if ((result.event.deletedAt !== null) !== trash) return previous.filter(e => e.id !== result.event.id)
           return index < 0 ? [...previous, result.event] : previous.map((e, i) => i === index ? result.event : e)
         })
       }
-      setVersion(v => v + 1); setMessage(action === 'delete' ? '已移入回收站' : action === 'restore' ? '已恢复' : action === 'reorder' ? '顺序已保存' : '已保存')
+      if (!result.progress) setVersion(v => v + 1)
+      setMessage(action === 'delete' ? '已移入回收站' : action === 'restore' ? '已恢复' : action === 'reorder' ? '顺序已保存' : '已保存')
       if (action === 'delete') setUndo(result.event)
       return result
     } catch (e) { setError(e.message); throw e }
@@ -221,10 +223,6 @@ export function Calendar() {
     }
   }, [canSort, selected])
   const liftedEvent = lifted && selectedItems.find(event => event.id === lifted.id)
-  const editorIndex = hasSort ? sortableIds.indexOf(editor?.id) : -1
-  const editorSort = editorIndex < 0 ? null : {
-    up: sortableIds[editorIndex - 1], down: sortableIds[editorIndex + 1],
-  }
   function sortByKey(e, id) {
     if (!canSort) return
     if (e.key === 'Escape' && gesture.current) { finishDrag(gesture.current, null); return }
@@ -294,7 +292,7 @@ export function Calendar() {
         <div className="wc-entry-main"><GoalSummary event={liftedEvent} zone={zone} /></div>
       </div>, document.body,
     )}
-    {editor && <EventEditor key={editor.id || editor.day} event={editor} zone={zone} busy={busy} close={() => setEditor(null)} save={mutate} sort={editorSort} move={target => reorder(editor.id, target)} />}
+    {editor && <EventEditor key={editor.id || editor.day} event={editor} zone={zone} today={today} calendarId={info?.calendarId} progressEnabled={info?.dailyProgress === true} progressHistory={info?.progressHistory === true} busy={busy} close={() => setEditor(null)} save={mutate} />}
   </section>
 }
 
@@ -317,7 +315,7 @@ function Week({ days, byDay, selected, today, zone, select, open }) {
   </div>
 }
 
-function EventEditor({ event, zone, busy, close, save, sort, move }) {
+function EventEditor({ event, zone, today, calendarId, progressEnabled, progressHistory, busy, close, save }) {
   const formId = useId(), existing = !!event.id, eventZone = event.timeZone || zone
   const initial = useMemo(() => {
     const start = existing && !event.allDay ? localParts(event.startAt, eventZone) : { day: event.day, time: '09:00' }
@@ -325,39 +323,66 @@ function EventEditor({ event, zone, busy, close, save, sort, move }) {
     return { title: event.title || '', description: event.description || '', kind: event.kind || 'goal', status: event.status || 'planned', priority: event.priority || 'normal', allDay: event.allDay ?? true, day: start.day, endDay: end.day, startTime: start.time, endTime: end.time, tags: (event.tags || []).join('，'), project: event.project || '' }
   }, [event])
   const [draft, setDraft] = useState(initial), [error, setError] = useState('')
-  const change = (key, value) => setDraft(d => ({ ...d, [key]: value, ...(key === 'day' && d.endDay < value ? { endDay: value } : {}) }))
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [originalCreatedAt, setOriginalCreatedAt] = useState(null)
+  const showProgress = progressEnabled && existing && event.kind === 'goal'
+  const id = event.id, progressDay = event.carriedFrom?.day ?? event.day
+  useEffect(() => {
+    if (!showProgress || !event.carriedFrom) return
+    const controller = new AbortController()
+    const query = new URLSearchParams({ id, day: progressDay })
+    api('/calendar-progress?' + query, undefined, controller.signal).then(result => {
+      if (!controller.signal.aborted && result.calendarId === calendarId) setOriginalCreatedAt(result.createdAt)
+    }).catch(() => {})
+    return () => controller.abort()
+  }, [showProgress, id, event.carriedFrom, progressDay, calendarId])
+  const change = (key, value) => setDraft(d => ({ ...d, [key]: value }))
+  function changeTime(which, value) {
+    const [day = '', time = ''] = value.split('T')
+    if (which === 'start') setDraft(d => ({ ...d, day, startTime: time, endDay: d.endDay < day ? day : d.endDay }))
+    else setDraft(d => ({ ...d, endDay: day, endTime: time }))
+  }
   const dirty = JSON.stringify(draft) !== JSON.stringify(initial)
+  const creationDay = existing ? localParts(originalCreatedAt ?? event.createdAt, zone).day : today
   async function submit(e) {
     e.preventDefault(); setError('')
     try {
       const value = { title: draft.title, description: draft.description, kind: draft.kind, status: draft.status, priority: draft.priority, allDay: draft.allDay, timeZone: eventZone, tags: draft.tags.split(/[,，]/).map(t => t.trim()).filter(Boolean), project: draft.project }
-      if (draft.allDay) { value.day = draft.day; value.endDay = addDays(draft.endDay, 1) }
+      if (draft.allDay) {
+        value.day = initial.day
+        value.endDay = existing ? event.endDay : addDays(initial.day, 1)
+      }
       else {
         // Keep the original absolute instant when editing text during a repeated DST hour.
         const at = (date, time, original, initialDay, initialTime) => original != null && date === initialDay && time === initialTime ? original : wallTime(date, time, eventZone)
         value.startAt = new Date(at(draft.day, draft.startTime, event.startAt, initial.day, initial.startTime)).toISOString()
         value.endAt = new Date(at(draft.endDay, draft.endTime, event.endAt, initial.endDay, initial.endTime)).toISOString()
       }
-      await save(existing ? 'update' : 'create', existing ? { id: event.id, revision: event.revision, patch: value } : { event: value }); close()
+      if (!existing || dirty) await save(existing ? 'update' : 'create', existing ? { id, revision: event.revision, patch: value } : { event: value })
+      close()
     } catch (e) { setError(e.message) }
   }
   async function remove() { setError(''); try { await save('delete', { id: event.id, revision: event.revision }); close() } catch (e) { setError(e.message) } }
-  return <Dialog title={event.deletedAt ? '已删除的目标' : existing ? '编辑目标' : '记下一个目标'} close={close} busy={busy} protectChanges dirty={dirty}>
+  return <><Dialog title={event.deletedAt ? '已删除的目标' : existing ? '编辑目标' : '记下一个目标'} close={close} busy={busy} protectChanges dirty={dirty}>
     {error && <p className="wl-error" role="alert">{error}</p>}
     <form id={formId} className="wc-editor" onSubmit={submit}><fieldset disabled={busy || !!event.deletedAt}>
       <label>目标<input autoFocus required maxLength={160} placeholder="例如：完成文章初稿" value={draft.title} onChange={e => change('title', e.target.value)} /></label>
       <label className="wl-check"><input type="checkbox" checked={!draft.allDay} onChange={e => change('allDay', !e.target.checked)} />安排具体时段</label>
-      <div className="wc-form-row"><label>开始日期<input type="date" required min="1900-01-01" max="2200-12-30" value={draft.day} onChange={e => change('day', e.target.value)} /></label><label>{draft.allDay ? '结束日期（含当天）' : '结束日期'}<input type="date" required min={draft.day} max="2200-12-30" value={draft.endDay} onChange={e => change('endDay', e.target.value)} /></label></div>
-      {!draft.allDay && <div className="wc-form-row"><label>开始时间<input type="time" required value={draft.startTime} onChange={e => change('startTime', e.target.value)} /></label><label>结束时间<input type="time" required value={draft.endTime} onChange={e => change('endTime', e.target.value)} /></label></div>}
-      <p className="wl-muted wc-small">{draft.allDay ? '没有具体时间也没关系，先记录想做的事。' : `按 ${eventZone} 安排，允许跨天。`}</p>
-      <div className="wc-form-row"><label>进度<select value={draft.status} onChange={e => change('status', e.target.value)}>{Object.entries(labels).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label><label>优先级<select value={draft.priority} onChange={e => change('priority', e.target.value)}><option value="low">不急</option><option value="normal">普通</option><option value="high">优先</option></select></label></div>
+      <div className="wc-created-date"><span>创建日期</span><time dateTime={creationDay}>{creationDay}</time></div>
+      {!draft.allDay && <>
+        <div className="wc-form-row wc-timed-fields">
+          <label>开始<input type="datetime-local" required min="1900-01-01T00:00" max="2200-12-30T23:59" value={draft.day && draft.startTime ? draft.day + 'T' + draft.startTime : ''} onChange={e => changeTime('start', e.target.value)} /></label>
+          <label>结束<input type="datetime-local" required min={draft.day ? draft.day + 'T00:00' : '1900-01-01T00:00'} max="2200-12-30T23:59" value={draft.endDay && draft.endTime ? draft.endDay + 'T' + draft.endTime : ''} onChange={e => changeTime('end', e.target.value)} /></label>
+        </div>
+        <p className="wl-muted wc-small">按 {eventZone} 安排，允许跨天。</p>
+      </>}
+      <div className="wc-form-row"><label>状态<select value={draft.status} onChange={e => change('status', e.target.value)}>{Object.entries(labels).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label><label>优先级<select value={draft.priority} onChange={e => change('priority', e.target.value)}><option value="low">不急</option><option value="normal">普通</option><option value="high">优先</option></select></label></div>
       <label>备注<textarea rows={3} maxLength={8000} placeholder="需要记住的细节（选填）" value={draft.description} onChange={e => change('description', e.target.value)} /></label>
       <details open={!!draft.tags || !!draft.project || draft.kind === 'work'}><summary>标签与关联</summary><label>标签（用逗号分隔）<input maxLength={395} value={draft.tags} onChange={e => change('tags', e.target.value)} /></label><label>关联项目<input maxLength={500} value={draft.project} onChange={e => change('project', e.target.value)} /></label><label>记录类型<select value={draft.kind} onChange={e => change('kind', e.target.value)}><option value="goal">计划目标</option><option value="work">实际工作</option></select></label></details>
     </fieldset>
-    {sort && <div className="wc-editor-order" role="group" aria-label="目标排序">
-      <button type="button" disabled={busy || !sort.up} onClick={() => move(sort.up)}>上移</button>
-      <button type="button" disabled={busy || !sort.down} onClick={() => move(sort.down)}>下移</button>
-    </div>}
+    {showProgress && <button className="wc-progress-open" type="button" disabled={busy} onClick={() => setHistoryOpen(true)}>每日进度</button>}
     <DialogActions>{existing && !event.deletedAt && <button type="button" className="wc-delete" disabled={busy} onClick={remove}>移入回收站</button>}<button type="button" disabled={busy} onClick={close}>{event.deletedAt ? '关闭' : '取消'}</button>{!event.deletedAt && <button type="submit" form={formId} className="wl-primary" disabled={busy || !draft.title.trim()}>{busy ? '保存中…' : '保存目标'}</button>}</DialogActions></form>
   </Dialog>
+    {historyOpen && <ProgressHistory event={event} calendarId={calendarId} historyAvailable={progressHistory} busy={busy} save={save} close={() => setHistoryOpen(false)} />}
+  </>
 }

@@ -7,6 +7,9 @@ export interface WorkCalendarEvent {
   carriedFrom?: { id:string; day:string }
   tags:string[]; project:string; createdAt:number; updatedAt:number; completedAt:number|null; deletedAt:number|null
 }
+export interface CalendarGoalProgress {
+  goalId:string; day:string; text:string; revision:number; updatedAt:number|null
+}
 export interface CalendarChange {cursor:number; event:WorkCalendarEvent}
 export interface CalendarChangePage {protocol:1;calendarId:string;changes:CalendarChange[];nextCursor:number;hasMore:boolean}
 export interface CalendarBinding {providerId:string;accountRef:string;calendarId:string;eventId:string;localId:string;uid:string;etag:string;lastLocalRevision:number}
