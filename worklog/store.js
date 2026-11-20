@@ -1,3 +1,5 @@
+import { ICloudSync } from './calendar/icloud-sync.js'
+import { ReportProgress } from './calendar/report-progress.js'
 import { CalendarStore } from './calendar/store.js'
 import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
@@ -30,6 +32,8 @@ export class Store {
     this.db.exec('CREATE TABLE IF NOT EXISTS local_projects (id TEXT PRIMARY KEY)')
     this.db.exec('CREATE INDEX IF NOT EXISTS jobs_day ON jobs(day); CREATE INDEX IF NOT EXISTS records_day_excluded ON records(day,excluded)')
     this.calendar = new CalendarStore(this.db, () => this.config().timezone)
+    this.reportProgress = new ReportProgress(this)
+    this.icloud = new ICloudSync(this, path === ':memory:' ? undefined : path + '.icloud-key')
     this.migrateLocalProjects()
     // Existing installations opt into the new fallback once, without replaying
     // earlier days or changing an explicitly saved off switch.
@@ -153,7 +157,7 @@ export class Store {
       job: job ? { ...job, body: JSON.stringify({ error: JSON.parse(job.body).error, progress: this.progress(job) }) } : null,
       history: this.db.prepare('SELECT id,body FROM history WHERE day=? ORDER BY id DESC LIMIT 30').all(day).map(r => ({ id: r.id, ...JSON.parse(r.body) })) }
   }
-  save(day, markdown, expected, covered, edited = true) {
+  save(day, markdown, expected, covered, edited = true, route) {
     validDay(day); text(markdown)
     const old = this.report(day)
     if (old.revision !== expected) throw fail('日报已被修改，请重新打开后再保存；你的草稿仍保留。', 409)
@@ -162,6 +166,7 @@ export class Store {
     try {
       if (old.revision) this.db.prepare('INSERT INTO history(day,body) VALUES (?,?)').run(day, JSON.stringify(old))
       this.db.prepare('INSERT INTO reports VALUES (?,?,?) ON CONFLICT(day) DO UPDATE SET revision=excluded.revision, body=excluded.body').run(day, expected + 1, JSON.stringify(next))
+      if (!edited) this.reportProgress.enqueue(day, expected + 1, route)
       this.db.exec('COMMIT')
     } catch (e) { this.db.exec('ROLLBACK'); throw e }
   }

@@ -11,7 +11,7 @@ export function DialogActions({ children }) {
   return target ? createPortal(children, target) : null
 }
 
-export function Dialog({ title, close, children, busy = false, protectChanges = false, dirty }) {
+export function Dialog({ title, close, children, busy = false, protectChanges = false, dirty, className = '' }) {
   const ref = useRef(null)
   const pointer = useRef(null), changed = useRef(false)
   const confirmation = useRef(null)
@@ -36,7 +36,7 @@ export function Dialog({ title, close, children, busy = false, protectChanges = 
     confirmation.current = createDiscardConfirmation({ owner: dialog, canDiscard: () => !latest.current.busy, onDiscard: () => latest.current.close() })
     return () => { confirmation.current?.dispose(); dialog.close(); if (previous?.isConnected) previous.focus?.({ preventScroll: true }) }
   }, [])
-  return <dialog className="dsh-worklog wl-dialog" ref={ref} aria-labelledby={titleId}
+  return <dialog className={`dsh-worklog wl-dialog ${className}`} ref={ref} aria-labelledby={titleId}
     onCancel={e => { e.preventDefault(); requestClose() }}
     onPointerDown={e => { pointer.current = e.button === 0 && outside(e) ? e.pointerId : null }}
     onPointerUp={e => { const dismiss = pointer.current === e.pointerId && outside(e); pointer.current = null; if (dismiss) requestClose() }}

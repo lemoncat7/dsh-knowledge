@@ -5,7 +5,7 @@ import { build } from 'esbuild'
 const pluginId = '@lemoncat7/dsh-knowledge'
 
 await build({ entryPoints: ['worklog/index.js'], outfile: 'lib/worklog-runtime.js', bundle: true,
-  platform: 'node', format: 'esm', target: 'node22', packages: 'external' })
+  platform: 'node', format: 'esm', target: 'node22', external: ['@deepseek-ai/schemastery'] })
 await mkdir('lib/worklog', { recursive: true })
 await build({ entryPoints: ['worklog/web-entry.jsx'], outfile: 'lib/worklog/workspace.js', bundle: true,
   platform: 'browser', format: 'esm', target: 'es2022', jsx: 'automatic', minify: true,

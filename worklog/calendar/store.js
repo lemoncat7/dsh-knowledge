@@ -17,13 +17,15 @@ export class CalendarStore {
       CREATE TABLE IF NOT EXISTS calendar_requests (id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,result TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS calendar_goal_orders (day TEXT PRIMARY KEY, revision INTEGER NOT NULL, ids TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS calendar_goal_carry (day TEXT NOT NULL, source_id TEXT NOT NULL, PRIMARY KEY(day,source_id));
+      CREATE TABLE IF NOT EXISTS calendar_report_notes (
+        goal_id TEXT NOT NULL, day TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(goal_id,day));
       CREATE TABLE IF NOT EXISTS calendar_goal_progress (
         goal_id TEXT NOT NULL, day TEXT NOT NULL, text TEXT NOT NULL, revision INTEGER NOT NULL, updated_at INTEGER NOT NULL,
         PRIMARY KEY(goal_id,day));`)
     this.calendarId = db.prepare('SELECT id FROM calendar_identity LIMIT 1').get()?.id
     if (!this.calendarId) { this.calendarId = randomUUID(); db.prepare('INSERT OR IGNORE INTO calendar_identity VALUES (1,?)').run(this.calendarId); this.calendarId = db.prepare('SELECT id FROM calendar_identity WHERE singleton=1').get().id }
   }
-  info() { return { calendarId: this.calendarId, protocol: 1, dailyProgress: true, progressHistory: true, timeZone: this.timezone(), today: localParts(Date.now(), this.timezone()).day, orderCursor: this.orderCursor(), cursor: this.db.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM calendar_changes').get().n, externalSync: { connected: false, export: 'icalendar', adapters: ['google-calendar', 'caldav'], note: '本版提供日历文件导出与增量接口，尚未连接外部账号' } } }
+  info() { return { calendarId: this.calendarId, protocol: 1, dailyProgress: true, progressHistory: true, calendarSettings: true, timeZone: this.timezone(), today: localParts(Date.now(), this.timezone()).day, orderCursor: this.orderCursor(), cursor: this.db.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM calendar_changes').get().n, externalSync: { connected: false, export: 'icalendar', adapters: ['google-calendar', 'caldav'], note: '本版提供日历文件导出与增量接口，尚未连接外部账号' } } }
   orderCursor() {
     return this.db.prepare('SELECT COALESCE(MAX(revision),0) AS n FROM calendar_goal_orders').get().n
   }
@@ -179,6 +181,7 @@ export class CalendarStore {
         const result = action === 'reorder' ? this.reorder(data) : {
           ...this.writeProgress(data, now), calendarId: this.calendarId, replayed: false,
         }
+        if (action === 'progress-write') this.db.prepare('DELETE FROM calendar_report_notes WHERE goal_id=? AND day=?').run(result.progress.goalId, result.progress.day)
         this.db.prepare('INSERT INTO calendar_requests VALUES (?,?,?)').run(requestId, fingerprint, JSON.stringify(result))
         this.db.exec('COMMIT'); return result
       }

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { api } from './api.js'
 import { Dialog, DialogActions } from './Dialog.jsx'
 import { ActionMenu } from './ActionMenu.jsx'
+import { CalendarAccounts, CalendarSettings } from './CalendarSettings.jsx'
 import { ProgressHistory } from './ProgressHistory.jsx'
 import { applyGoalOrder, moveGoal } from '../calendar/goal-order.js'
 import { addDays, eventOnDay, localParts, monthDays, weekDays, wallTime } from '../calendar/time.js'
@@ -31,6 +32,7 @@ export function weekLayout(events, day, zone) {
 }
 
 export function Calendar() {
+  const [settingsPanel, setSettingsPanel] = useState(null)
   const [info, setInfo] = useState(null), [day, setDay] = useState(''), [mode, setMode] = useState('month')
   const [goalOrders, setGoalOrders] = useState({})
   const [events, setEvents] = useState([]), [loading, setLoading] = useState(true), [version, setVersion] = useState(0)
@@ -52,7 +54,7 @@ export function Calendar() {
         if (document.hidden) return
         const next = await api('/calendar-info', undefined, controller.signal)
         if (controller.signal.aborted) return
-        const key = `${next.calendarId}:${next.cursor}:${next.orderCursor}:${next.timeZone}:${next.today}`
+        const key = `${next.calendarId}:${next.cursor}:${next.orderCursor}:${next.timeZone}:${next.today}:${next.externalSync?.connected}:${next.externalSync?.enabled}`
         if (key === lastKey) return
         const query = new URLSearchParams({ from, to, timeZone: next.timeZone, deleted: trash ? 'only' : 'exclude', limit: '500' })
         let all = [], page
@@ -248,11 +250,19 @@ export function Calendar() {
   }
   async function exportRange() { setError(''); try { download(await api('/calendar-export?' + new URLSearchParams({ from, to, timeZone: zone }))) } catch (e) { setError(e.message) } }
   return <section className="dsh-worklog wl-calendar" aria-label="工作日历">
-    <header className="wc-toolbar"><div className="wc-title"><h2>{selected.slice(0, 4)} 年 {Number(selected.slice(5, 7))} 月</h2><span className="wl-muted">{trash ? '回收站 · 当前日期范围' : '每天一点进展，让目标有处安放'}</span></div>
-      <div className="wc-navigation"><button aria-label="上一页日历" onClick={() => navigate(-1)}>‹</button><button onClick={() => selectDay(today)}>今天</button><button aria-label="下一页日历" onClick={() => navigate(1)}>›</button></div>
-      <div className="wc-switch" aria-label="日历视图"><button aria-pressed={mode === 'month'} onClick={() => setMode('month')}>月</button><button aria-pressed={mode === 'week'} onClick={() => setMode('week')}>周</button></div>
-      <button className="wl-primary" disabled={!info || loading || busy} onClick={() => trash ? leaveTrash() : setEditor({ day: selected })}>{trash ? '返回日历' : '＋ 新目标'}</button>
-      <ActionMenu label="日历更多操作"><button onClick={() => { setLoading(true); setTrash(!trash); setUndo(null) }}>{trash ? '返回日历' : '回收站'}</button><button disabled={!info} onClick={exportRange}>导出当前范围 .ics</button><button onClick={() => setVersion(v => v + 1)}>刷新日历</button></ActionMenu>
+    <header className="wc-toolbar">
+      <div className="wc-title"><h2>{selected.slice(0, 4)} 年 {Number(selected.slice(5, 7))} 月</h2>{trash && <span className="wl-muted">回收站</span>}</div>
+      <div className="wc-navigation" role="group" aria-label="日期导航">
+        <button type="button" className="wc-page-arrow wc-page-prev" aria-label="上一页日历" onClick={() => navigate(-1)} />
+        <button type="button" onClick={() => selectDay(today)}>今天</button>
+        <button type="button" className="wc-page-arrow wc-page-next" aria-label="下一页日历" onClick={() => navigate(1)} />
+      </div>
+      <div className="wc-switch" role="group" aria-label="日历视图"><button type="button" aria-pressed={mode === 'month'} onClick={() => setMode('month')}>月</button><button type="button" aria-pressed={mode === 'week'} onClick={() => setMode('week')}>周</button></div>
+      <button type="button" className="wl-primary wc-add-goal" disabled={!info || loading || busy} onClick={() => trash ? leaveTrash() : setEditor({ day: selected })}>{trash ? '返回日历' : '＋ 新目标'}</button>
+      <div className="wc-toolbar-end">
+        <button type="button" className="wc-account-trigger" aria-label="日历账号" disabled={!info} onClick={() => setSettingsPanel('account')}>{info?.externalSync?.connected ? '账号' : '登录'}</button>
+        <ActionMenu label="日历更多操作"><button type="button" disabled={!info} onClick={() => setSettingsPanel('report')}>日历设置</button><button type="button" onClick={() => { setLoading(true); setTrash(!trash); setUndo(null) }}>{trash ? '返回日历' : '回收站'}</button><button type="button" disabled={!info} onClick={exportRange}>导出当前范围 .ics</button><button type="button" onClick={() => setVersion(v => v + 1)}>刷新日历</button></ActionMenu>
+      </div>
     </header>
     {error && <div className="wl-error" role="alert">{error}<button onClick={() => setVersion(v => v + 1)}>刷新</button></div>}
     <div className="wc-layout" aria-busy={loading}>
@@ -260,7 +270,7 @@ export function Calendar() {
         {mode === 'month' ? <><div className="wc-weekdays">{weekdays.map(d => <span key={d}>周{d}</span>)}</div><div className="wc-month" role="group" aria-label="按方向键选择日期">{days.map(d => <button key={d} ref={el => el ? dayRefs.current.set(d, el) : dayRefs.current.delete(d)} tabIndex={d === selected ? 0 : -1} onKeyDown={e => keyboard(e, d)} className={`wc-day ${d.slice(0, 7) !== selected.slice(0, 7) ? 'wc-outside' : ''}`} aria-pressed={d === selected} aria-label={`${d}，${byDay.get(d)?.length || 0} 项`} onClick={() => selectDay(d)}>
           <span className={`wc-date ${d === today ? 'wc-today' : ''}`}>{Number(d.slice(8))}</span><span className="wc-cell-items">{byDay.get(d)?.slice(0, 3).map(e => <span className={`wc-chip wc-${e.status} wc-priority-${e.priority}`} key={e.id}>{!e.allDay && <small>{localParts(e.startAt, zone).day === d ? localParts(e.startAt, zone).time : '跨天'}</small>}{e.title}</span>)}</span>{byDay.get(d)?.length > 3 && <small className="wc-overflow">另 {byDay.get(d).length - 3} 项</small>}<span className="wc-mobile-count">{byDay.get(d)?.length || ''}</span>
         </button>)}</div></> : <Week key={from} days={days} byDay={byDay} selected={selected} today={today} zone={zone} select={selectDay} open={setEditor} />}
-        <footer className="wc-board-footer"><span>{loading ? '正在读取日历…' : `${visibleEvents.length} 项 · ${info?.source === 'remote' ? '远程日历' : '本地日历'}`} · {zone}</span><span>可导出至其他日历 · 暂未连接外部账号</span></footer>
+        <footer className="wc-board-footer"><span>{loading ? '正在读取日历…' : `${visibleEvents.length} 项 · ${info?.source === 'remote' ? '远程日历' : '本地日历'}`} · {zone}</span><span>{info?.externalSync?.connected ? info.externalSync.enabled ? 'iCloud 同步已启用' : 'iCloud 同步已关闭' : '可导出至其他日历'}</span></footer>
       </div>
       <aside className="wc-agenda" aria-label="当日目标"><div className="wc-agenda-heading"><span className="wl-eyebrow">{selected === today ? '今天' : '选中日期'}</span><h3>{dateLabel(selected)}</h3><input type="date" aria-label="跳转日期" min="1901-01-01" max="2199-12-31" value={selected} onChange={e => e.target.value && selectDay(e.target.value)} /></div>
         {!trash && <><div className="wc-progress-label"><span>完成进度</span><strong>{done} / {goals.length}</strong></div><progress aria-label="当日完成进度" max={goals.length || 1} value={done} /><form className="wc-quick" onSubmit={async e => { e.preventDefault(); if (!quick.trim()) return; try { await mutate('create', { event: { title: quick.trim(), day: selected, timeZone: zone } }); setQuick('') } catch {} }}><input aria-label="快速添加目标" placeholder="今天想完成什么？" value={quick} onChange={e => setQuick(e.target.value)} maxLength={160} disabled={busy || loading || !info} /><button aria-label="添加目标" disabled={busy || loading || !quick.trim()}>＋</button></form></>}
@@ -292,6 +302,8 @@ export function Calendar() {
         <div className="wc-entry-main"><GoalSummary event={liftedEvent} zone={zone} /></div>
       </div>, document.body,
     )}
+    {settingsPanel === 'report' && <CalendarSettings close={() => setSettingsPanel(null)} supported={info?.calendarSettings === true} />}
+    {settingsPanel === 'account' && <CalendarAccounts close={() => { setSettingsPanel(null); setVersion(n => n + 1) }} onCalendarChanged={() => setVersion(n => n + 1)} zone={zone} supported={info?.calendarSettings === true} />}
     {editor && <EventEditor key={editor.id || editor.day} event={editor} zone={zone} today={today} calendarId={info?.calendarId} progressEnabled={info?.dailyProgress === true} progressHistory={info?.progressHistory === true} busy={busy} close={() => setEditor(null)} save={mutate} />}
   </section>
 }

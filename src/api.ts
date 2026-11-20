@@ -200,7 +200,9 @@ async function dispatch(
 
   if (segments[0] === 'worklog') {
     if (!['GET', 'POST'].includes(method) || segments.length !== 2) throw httpError(404, '日报接口不存在')
-    requirePermission(actor.permissions, method === 'GET' ? 'read' : segments[1] === 'settings' || segments[1] === 'archive' ? 'admin' : 'write')
+    const operation = segments[1]!
+    const calendarSettings = operation === 'calendar-settings' || operation === 'calendar-report-settings' || operation.startsWith('calendar-icloud-')
+    requirePermission(actor.permissions, calendarSettings ? 'admin' : method === 'GET' ? 'read' : operation === 'settings' || operation === 'archive' ? 'admin' : 'write')
     if (!options.worklog) throw httpError(503, '中央日报服务尚未就绪')
     const result = await options.worklog(method, `/${segments[1]}`, method === 'POST' ? await readObject(req) : {}, url.searchParams)
     return sendJson(res, 200, segments[1] === 'state' && method === 'GET' ? { ...(result as Record<string, unknown>), canManage: actor.permissions.includes('admin') } : result)

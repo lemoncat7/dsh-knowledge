@@ -12,14 +12,18 @@
 
 写操作均需唯一 `requestId`；网络结果不确定时必须在原连接以相同编号和相同参数重试。更新、删除和恢复需要当前 `revision`，冲突需重读。可传 `calendarId` 防止在切换后的连接上误写。`create` 传 `event`，`update` 传 `patch`。日期使用 YYYY-MM-DD；全天 `endDay` 为不含当天的结束日期，默认下一天；定时条目必须提供带 UTC 偏移的 `startAt/endAt`，使用 IANA `timeZone`。界面显示全天结束日期为包含当天。
 
-每日进度通过 `progress-read` 传 `id` 和 `day` 读取，通过 `progress-write` 传相同日期、读取到的 `revision`、`text` 和 `requestId` 保存。空白记录的修订号为 0。AI 可以在获得授权后引用日报中的已有进展补记，日历不会在后台自动读取日报填充。
+每日进度通过 `progress-read` 传 `id` 和 `day` 读取，通过 `progress-write` 传相同日期、读取到的 `revision`、`text` 和 `requestId` 保存。空白记录的修订号为 0。AI 可以在获得授权后引用日报中的已有进展补记。
 
 删除仅产生可恢复墓碑，无永久删除接口，不与笔记的覆盖/永久删除确认流程混用。目标完成状态以真实反馈为准，不从聊天中臆测完成。工具不会获得外部日历账号凭据。Bearer API 读取需要 read，写操作需要 write；界面沿用 DSH 认证与来源校验。
 
 HTTP 路径在知识库 API `/worklog/` 下：GET `calendar-info`、`calendar`、`calendar-event`、`calendar-changes`、`calendar-export`、`calendar-progress`、`calendar-progress-history`，POST `calendar-create`、`calendar-update`、`calendar-delete`、`calendar-restore`、`calendar-progress-write`。浏览器认证入口为 `/worklog-control/v1/` 下同名路径。
 
-## 外部日历预留
+## 日历设置
 
-`@lemoncat7/dsh-knowledge/calendar` 导出 `CalendarProviderAdapter` 等类型。条目有稳定 `uid`、递增 `revision` 和变更游标，删除也记录在增量里。`changes` 的非零 `after` 必须同时提交原 `calendarId`，不能跨连接复用游标。适配器约定支持远端 etag 冲突、持久同步游标与幂等操作编号。
+「更多 → 日历设置」里的「日报生成后自动更新当天目标」默认关闭。开启后，后续生成成功的日报会按其所属日期排队核对目标，并复用日报的模型设置进行一次补充核对。部分进展写入当日记录，有用户明确确认或手工补记证实完成时才勾选完成。手工进度优先，补跑不会产生重复记录。已结转到下一天的副本仅在尚未经手工编辑时才随原目标完结。
 
-本版没有 Google/iCloud OAuth、CalDAV 同步任务或双向同步。导出 `.ics` 可用于其他日历手工导入；不等于订阅或自动同步。后续接入需另行实现账号认证、远端映射、重试/冲突处理、游标过期恢复和循环事件策略。暂不支持循环规则、邀请、提醒或附件。
+从工具栏的「登录」或「账号」打开日历账号，左侧选择 iCloud 后可配置双向同步。同步默认关闭。先输入 Apple 账户邮箱和应用专用密码，验证后选定可写的专用日历，再单独开启同步。中央连接模式由中央实例执行同步，只有中央管理员能改设置。应用密码只用于 iCloud CalDAV 请求，使用本地密钥加密保存，设置和工具不会返回密码。
+
+开启后约每五分钟检查 iCloud，拉取的变更会自动显示在工作日历。也可点击「立即同步」提前检查。首次启用以当前日历日期为起点。同步目标标题、全天日期或开始与结束时刻，以及目标备注。每日进度、完成状态、标签和优先级保留在知识库。已有同步条目两边各有不同备注时，会按冲突处理。重复事件与邀请保留在 iCloud，对同一目标的双端改动可在「待处理」选择版本。删除只作用于发起删除的一端，另一端会保留并提示。断开连接会停止同步并移除已保存的凭据。
+
+`@lemoncat7/dsh-knowledge/calendar` 仍导出供其他服务使用的适配器类型和增量接口。iCalendar 文件也可继续手工导出。

@@ -312,3 +312,14 @@ test('calendar HTTP respects remote read/write permissions and selected central 
   await assert.rejects(requestCentral(read, 'POST', '/calendar-delete', { requestId: 'http-delete', id: first.event.id, revision: 1 }), e => e.status === 403)
   assert.equal((await requestCentral(read, 'GET', '/calendar-export', undefined, new URLSearchParams({ from: '2026-11-17', to: '2026-11-18' }))).count, 1)
 })
+
+test('calendar automation settings require central admin and never change the collector', async t => {
+  const c = await central(t), a = client(t, c.connection)
+  const writer = { ...c.connection, remoteToken: c.tokens.write }
+  await assert.rejects(requestCentral(writer, 'GET', '/calendar-settings'), e => e.status === 403)
+  await assert.rejects(requestCentral(writer, 'POST', '/calendar-report-settings', { enabled: true }), e => e.status === 403)
+  assert.equal((await a.service.browser('GET', '/calendar-settings')).report.enabled, false)
+  assert.equal((await a.service.browser('POST', '/calendar-report-settings', { enabled: true })).report.enabled, true)
+  assert.equal(c.store.reportProgress.enabled(), true)
+  assert.equal(a.store.reportProgress.enabled(), false)
+})

@@ -31,8 +31,8 @@ export function incomingRecord(value, sourceId, timezone) {
 
 /** Only called after Host or Knowledge bearer authorization. Never trusts client model routes. */
 export function createCentral(store, worker, models) {
-  return async (method, path, data = {}, query = new URLSearchParams()) => {
-    const calendarResult = calendarRoutes(store, method, path, data, query)
+  return async (method, path, data = {}, query = new URLSearchParams(), signal) => {
+    const calendarResult = calendarRoutes(store, method, path, data, query, signal)
     if (calendarResult !== undefined) return calendarResult
     const reportResult = reportReadRoutes(store, method, path, query)
     if (reportResult !== undefined) return reportResult

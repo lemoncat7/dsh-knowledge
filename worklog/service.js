@@ -11,6 +11,7 @@ export class JournalService {
     this.central = createCentral(store, worker, models)
     this.outbox = new Outbox(store, current, request)
     worker.isEnabled = () => this.current().backend === 'local' && !this.current().paused
+    store.icloud.active = () => !this.closed && this.current().backend === 'local' && !this.current().paused
     store.originId()
   }
   collect(session, turn) {
@@ -53,9 +54,9 @@ export class JournalService {
     if (connection.paused) throw fail('知识库连接正在切换，请稍后重试', 409)
     const target = destination(connection)
     let value
-    try { value = target ? await this.request(connection, method, path, method === 'POST' ? data : undefined, query, signal) : await this.central(method, path, data, query) }
+    try { value = target ? await this.request(connection, method, path, method === 'POST' ? data : undefined, query, signal) : await this.central(method, path, data, query, signal) }
     catch (e) {
-      if (method === 'POST') throw fail(`${e.message}。如果请求可能已发送，请在原连接用同一 requestId 和相同参数核对或重试，不要改用新编号。`, e.status || 502)
+      if (method === 'POST' && !/^\/calendar-(?:icloud-|report-settings)/.test(path)) throw fail(`${e.message}。如果请求可能已发送，请在原连接用同一 requestId 和相同参数核对或重试，不要改用新编号。`, e.status || 502)
       signal.throwIfAborted(); throw e
     }
     const current = this.current()
@@ -113,6 +114,11 @@ export class JournalService {
     if (path === '/state') return { ...value, remote: true, sourceId: this.store.originId(), config: { ...value.config, ...pick(this.store.config(), captureKeys) }, projects: this.store.overview().projects, defaultProject: this.defaultProject }
     return value
   }
-  start() { this.worker.start(); this.outbox.start() }
-  async close() { await this.outbox.close(); await this.worker.close() }
+  start() {
+    this.worker.start(); this.outbox.start()
+    this.icloudTimer = setInterval(() => { void this.store.icloud.begin() }, 15_000)
+    this.icloudTimer.unref?.()
+    void this.store.icloud.begin()
+  }
+  async close() { this.closed = true; clearInterval(this.icloudTimer); await this.store.icloud.close(); await this.outbox.close(); await this.worker.close() }
 }

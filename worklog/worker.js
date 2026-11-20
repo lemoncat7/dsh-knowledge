@@ -15,7 +15,15 @@ export class Worker {
     if (this.isEnabled && !this.isEnabled()) return
     this.scheduler.tick()
     const job = this.store.next()
-    if (!job) return
+    if (!job) {
+      if (!this.store.reportProgress?.enabled()) return
+      this.progressController = new AbortController()
+      try {
+        await this.store.reportProgress.tick(this.llm, AbortSignal.any([this.progressController.signal, AbortSignal.timeout(90_000)]),
+          () => !this.closed && (this.isEnabled?.() ?? true))
+      } finally { this.progressController = undefined }
+      return
+    }
     const payload = JSON.parse(job.body), attempts = job.attempts + 1, started = Date.now()
     this.active = job.id; this.controller = new AbortController()
     const timeout = setTimeout(() => this.controller?.abort(new Error('整理超时')), 180000)
@@ -38,7 +46,7 @@ export class Worker {
         this.store.status(job.id, 'queued', { ...payload, error: '' }, 0)
         return
       }
-      this.store.save(job.day, result, payload.revision, payload.records.map(r => r.id), false)
+      this.store.save(job.day, result, payload.revision, payload.records.map(r => r.id), false, payload.route)
       this.store.status(job.id, 'done', { ...payload, error: '' }, attempts)
     } catch (e) {
       if (this.closed) this.store.status(job.id, 'queued', payload, job.attempts)
@@ -60,5 +68,5 @@ export class Worker {
     this.store.status(id, 'cancelled', JSON.parse(job.body), job.attempts)
     if (this.active === id) this.controller.abort(new Error('已取消'))
   }
-  async close() { this.closed = true; clearInterval(this.timer); this.controller?.abort(new Error('服务停止')); await this.running }
+  async close() { this.closed = true; clearInterval(this.timer); this.controller?.abort(new Error('服务停止')); this.progressController?.abort(new Error('服务停止')); await this.running }
 }
