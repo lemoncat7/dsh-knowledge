@@ -1,3 +1,4 @@
+import { createWikiMentionSource } from './wiki/mention-source.js'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createConnectionClient, ConnectionRequestError, type KnowledgeConnectionView } from './connection-client.js'
 import { WritebackStatusClient } from './writeback/status-client.js'
@@ -81,6 +82,7 @@ export function apply(ctx: ClientContext): void {
     scoped.effect(() => scoped.inputTriggers.registerSource(createNoteMentionSource(
       noteId => workspace.openDocument({ view: 'notes', noteId }),
     )), 'dsh-knowledge: @ note documents')
+    scoped.effect(() => scoped.inputTriggers.registerSource(createWikiMentionSource()), 'dsh-knowledge: @ wiki pages')
   })
   activity = createKnowledgeActivityController(ctx, {
     beforeOpen: () => { workspace.close(); if (!docked) activatePluginWorkspace(PLUGIN_ID) },

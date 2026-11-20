@@ -2281,3 +2281,73 @@ html,
 .retrieval-index-error { margin: 0; color: var(--danger); font-size: 13px; }
 .retrieval-index-pager { justify-content: flex-end; font-size: 12px; color: var(--text-secondary); }
 @media (pointer: coarse) { .retrieval-index-trigger.button { min-height: 44px; } }
+
+/* Wiki 知识库：沿用既有面板、控件与排版令牌，不引入独立视觉语言。 */
+.wiki-workspace { display: grid; gap: 22px; min-width: 0; }
+.wiki-section { display: grid; gap: 10px; min-width: 0; }
+.wiki-section h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.wiki-section h3 { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--text-secondary); }
+.wiki-section-note { margin: 0; font-size: 12px; line-height: 1.6; color: var(--text-secondary); }
+.wiki-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wiki-toolbar .select, .wiki-toolbar .input { width: auto; min-width: 140px; max-width: 260px; }
+.wiki-grid { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.wiki-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.wiki-card { display: grid; gap: 6px; min-width: 0; padding: 12px 14px; border: 1px solid var(--panel-border); border-radius: var(--radius-panel); background: var(--material-panel); }
+.wiki-list { display: grid; gap: 6px; min-width: 0; }
+.wiki-row { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.wiki-row-detail { padding-left: 12px; font-size: 12px; color: var(--text-secondary); }
+.wiki-job-items { display: grid; gap: 4px; }
+.wiki-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
+.wiki-error { color: var(--danger); }
+.wiki-details summary { cursor: pointer; font-size: 13px; }
+.wiki-pre { margin: 0; padding: 10px 12px; max-height: 360px; overflow: auto; border: 1px solid var(--panel-border); border-radius: var(--radius-control); background: var(--surface-pane); font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+.wiki-columns { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); min-width: 0; }
+.wiki-column { display: grid; gap: 8px; min-width: 0; align-content: start; }
+.wiki-editor-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wiki-editor-title { flex: 1 1 200px; min-width: 0; font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wiki-editor { min-height: 320px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.65; }
+.wiki-status { margin: 0; min-height: 18px; font-size: 12px; color: var(--text-secondary); }
+.wiki-status:not(:empty) { color: var(--text); }
+@media (max-width: 1120px) { .wiki-columns, .wiki-grid { grid-template-columns: 1fr; } }
+.wiki-path-field { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.wiki-path-field .input { flex: 1 1 auto; min-width: 0; }
+
+/* Dedicated folder-picker shell, using the console's existing material tokens. */
+.dialog.wiki-browser-dialog { width: min(840px, calc(100vw - 40px)); max-width: 840px; }
+.wiki-browser-dialog .dialog-body { padding: 0; overflow: hidden; }
+.wiki-browser { display: grid; grid-template-columns: 160px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; height: min(520px, 62vh); min-height: 300px; color: var(--text); }
+.wiki-browser-sidebar { padding: 16px 10px; border-right: 1px solid var(--border); background: var(--surface-pane); overflow-y: auto; }
+.wiki-browser-sidebar > strong { display: block; margin: 0 8px 10px; color: var(--text-secondary); font-size: 12px; font-weight: 500; }
+.wiki-browser-places { display: grid; gap: 4px; }
+.wiki-browser-places .button { justify-content: flex-start; text-align: left; min-height: 34px; }
+.wiki-browser-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; padding: 16px; }
+.wiki-browser-location { display: flex; align-items: center; gap: 6px; }
+.wiki-browser-location .input { flex: 1; min-width: 0; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.wiki-browser-up svg { transform: rotate(-90deg); }
+.wiki-browser-filter { display: flex; gap: 8px; align-items: center; }
+.wiki-browser-filter .input { flex: 1; min-width: 0; }
+.wiki-browser-count { flex-shrink: 0; color: var(--text-tertiary); font-size: 12px; white-space: nowrap; }
+.wiki-browser-list { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--border); border-radius: var(--radius-control); padding: 4px; }
+.wiki-browser-list .wiki-browser-entry { width: 100%; flex-shrink: 0; justify-content: flex-start; text-align: left; gap: 10px; min-height: 38px; padding: 8px 10px; }
+.wiki-browser-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wiki-browser-entry > svg { width: 14px; height: 14px; color: var(--text-tertiary); }
+.wiki-folder-mark { position: relative; display: inline-block; width: 18px; height: 13px; flex-shrink: 0; border: 1.4px solid currentColor; border-radius: 2px; color: var(--text-secondary); }
+.wiki-folder-mark::before { content: ''; position: absolute; left: -1.4px; top: -5px; width: 8px; height: 4px; border: 1.4px solid currentColor; border-bottom: 0; border-radius: 2px 2px 0 0; background: var(--surface-pane); }
+.wiki-browser-message { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.wiki-browser-message:empty { display: none; }
+.wiki-browser-message.is-error { color: var(--danger); }
+.wiki-browser-empty { padding: 24px 12px; margin: 0; color: var(--text-secondary); font-size: 13px; text-align: center; }
+.wiki-browser-selected { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--border); background: var(--surface-pane); min-width: 0; }
+.wiki-browser-selected > span { flex-shrink: 0; color: var(--text-secondary); font-size: 12px; }
+.wiki-browser-selection { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.wiki-hint { margin: 0; font-size: 12px; line-height: 1.6; color: var(--text-secondary); }
+.wiki-hint:empty { display: none; }
+@media (max-width: 600px) {
+  .dialog.wiki-browser-dialog { width: calc(100vw - 24px); }
+  .wiki-browser { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr) auto; height: min(560px, 68vh); }
+  .wiki-browser-sidebar { border-right: 0; border-bottom: 1px solid var(--border); padding: 8px; max-height: 92px; }
+  .wiki-browser-sidebar > strong { display: none; }
+  .wiki-browser-places { display: flex; gap: 4px; flex-wrap: wrap; }
+  .wiki-browser-main { padding: 12px; }
+  .wiki-browser-count { display: none; }
+}

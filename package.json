@@ -67,7 +67,10 @@
     "docs/releases/2.21.2.md",
     "docs/releases/2.21.3.md",
     "docs/work-calendar.md",
-    "docs/releases/2.21.10.md"
+    "docs/releases/2.21.10.md",
+    "scripts/extract-one.py",
+    "scripts/wiki-build.mjs",
+    "scripts/wiki-export.mjs"
   ],
   "dsh": {
     "bundle": {
@@ -149,7 +152,8 @@
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "saxes": "6.0.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "@tiptap/pm": "3.32.0"
   },
   "publishConfig": {
     "access": "public"

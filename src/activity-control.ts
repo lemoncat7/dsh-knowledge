@@ -1,3 +1,4 @@
+import { entryMatchesMount, type KnowledgeHandleCodec } from './retrieval.js'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { assertKnowledgeBrowserRequest } from './api.js'
 import type { KnowledgeProvider } from './provider.js'
@@ -8,6 +9,7 @@ import { readCitation } from './citation-reader.js'
 
 export interface NoteMentionOptions {
   codec: KnowledgeNoteHandleCodec
+  wiki?: { codec: KnowledgeHandleCodec; projectFor(sessionId: string): Promise<string | undefined>; isWiki(baseId: string): boolean }
   sourceKey(): string
 }
 
@@ -44,6 +46,34 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, provider: Kno
   const sessionId = url.searchParams.get('sessionId')?.trim()
   if (!sessionId) throw httpError(400, 'sessionId is required')
   const projectId = url.searchParams.get('projectId')?.trim() || undefined
+
+  if (segments[0] === 'wiki-mentions' && mentions?.wiki) {
+    const project = await mentions.wiki.projectFor(sessionId)
+    const mounts = (await provider.resolveMounts(sessionId,project)).filter(m => m.enabled && m.recallEnabled && m.base.status === 'active' && mentions.wiki!.isWiki(m.knowledgeBaseId))
+    const sourceKey = mentions.sourceKey()
+    if (segments.length === 1) {
+      const query=url.searchParams.get('q')?.trim() ?? ''
+      if(query.length>255) throw httpError(400,'搜索词过长')
+      const items=[]
+      for(const mount of mounts){
+        let cursor: string | undefined
+        for(let page=0;page<100;page++){
+          const result=await provider.list({knowledgeBaseId:mount.knowledgeBaseId,limit:100,...(project ? {projectId:project} : {}),...(cursor ? {cursor} : {})})
+          for(const entry of result.items)if(entry.status==='active'&&entryMatchesMount(entry,mount,project)&&(!query||(entry.title+' '+entry.body).toLowerCase().includes(query.toLowerCase())))items.push({id:entry.id,title:entry.title,base:mount.base.name})
+          cursor=result.nextCursor
+          if(!cursor||items.length>=20)break
+        }
+      }
+      return sendJson(res,200,{sourceKey,items:items.slice(0,20)})
+    }
+    if(segments.length===2){
+      if(url.searchParams.get('sourceKey')!==sourceKey)throw httpError(409,'连接已变更')
+      const entry=await provider.get(segments[1]!)
+      if(!entry||!mounts.some(m=>entry.knowledgeBaseId===m.knowledgeBaseId&&entryMatchesMount(entry,m,project)))throw httpError(403,'知识页不在当前挂载权限内')
+      return sendJson(res,200,{text:entry.title+'\n（Wiki 知识页引用，请使用 knowledge_read 分页读取；handle: '+mentions.wiki.codec.encode(sessionId,entry)+'；此引用不授予修改权限。）'})
+    }
+    throw httpError(404,'Wiki 引用接口不存在')
+  }
 
   if (segments[0] === 'citation' && segments.length === 1 && mentions) {
     return sendJson(res, 200, await readCitation(provider, url.searchParams.get('citation') || '', sessionId, mentions.sourceKey))

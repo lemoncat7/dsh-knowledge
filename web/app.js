@@ -29,6 +29,7 @@ const { createDocumentSync } = syncModule
 const resources = lazyModule.createLazyResources({ moduleUrl, scriptUrl: name => `${WEB_PATH.replace(/\/$/, '')}/${name}.js${ASSET_VERSION ? `?v=${encodeURIComponent(ASSET_VERSION)}` : ''}` })
 const loadMarkdownPreview = () => resources.script('markdown-preview', 'DshKnowledgeMarkdown')
 const loadChangeReview = () => resources.script('change-review', 'DshKnowledgeReview')
+let createWikiWorkspace
 let readModelCatalog
 let createWritebackWorkspace
 let createWorklogWorkspace
@@ -368,6 +369,7 @@ async function navigate(view) {
   renderShell()
   if (view !== 'candidates') void refreshCandidateCount()
   try {
+    if (view === 'wiki') { ({ createWikiWorkspace } = await import(moduleUrl('wiki-workspace'))); await loadKnowledgeBasesPage(controller.signal) }
     if (view === 'writeback') ({ createWritebackWorkspace } = await resources.module('writeback-workspace'))
     if (view === 'worklog' || view === 'calendar') ({ createWorklogWorkspace } = await resources.module('worklog-workspace'))
     if (view === 'recall') ({ createRecallWorkspace } = await resources.module('recall-workspace'))
@@ -1183,6 +1185,7 @@ function renderShell() {
   releaseNoteEditors()
   captureScrollPosition()
   const titles = {
+    wiki: ['Wiki 知识库', '原地维护 Markdown 知识库与文档标准'],
     overview: ['概览', '知识库运行状态与最近活动'],
     bases: ['知识库与挂载', '管理知识目录，并限定项目与会话的召回和写入范围'],
     entries: ['知识文档', '在知识目录中阅读、整理和维护 Markdown 文档'],
@@ -1196,7 +1199,7 @@ function renderShell() {
     tokens: ['访问管理', '管理其他客户端连接中央知识库的权限'],
   }
   const [title, subtitle] = titles[state.view]
-  const viewIndexes = { overview: '00', notes: '01', shares: '02', entries: '03', recall: '04', candidates: '05', writeback: '06', bases: '07', calendar: '08', worklog: '09', tokens: '10' }
+  const viewIndexes = { wiki: '11', overview: '00', notes: '01', shares: '02', entries: '03', recall: '04', candidates: '05', writeback: '06', bases: '07', calendar: '08', worklog: '09', tokens: '10' }
   const nextShell = element('div', {
     class: 'app-shell', 'data-menu-open': String(state.menuOpen),
     'data-view': state.view, 'data-loading': String(state.loading),
@@ -1399,7 +1402,7 @@ function renderSidebar() {
   const pending = state.candidateCounts?.pending
   const navGroups = [
     ['笔记工作区', [['notes', '笔记文档'], ['shares', '已分享']]],
-    ['知识工作区', [['entries', '知识文档'], ['recall', '召回排行'], ['candidates', '待审核'], ['writeback', '回写任务'], ['bases', '知识库与挂载']]],
+    ['知识工作区', [['wiki', 'Wiki 知识库'], ['entries', '知识文档'], ['recall', '召回排行'], ['candidates', '待审核'], ['writeback', '回写任务'], ['bases', '知识库与挂载']]],
     ['工作记录', [['calendar', '工作日历'], ['worklog', '工作日报']]],
     ['连接', [['tokens', '访问管理']].filter(([id]) => id !== 'tokens' || !state.service.remote)],
   ].filter(([, items]) => items.length)
@@ -1443,6 +1446,7 @@ function renderCurrentView() {
     writebackWorkspace = createWritebackWorkspace({ element, actionButton, openConfirm, sessionId: mountContext.sessionId })
     return writebackWorkspace.root
   }
+  if (state.view === 'wiki') return createWikiWorkspace({ api, element, actionButton, badge, interfaceIcon, openModal, bases: state.knowledgeBases }).root
   if (state.view === 'overview') return renderOverview()
   if (state.view === 'bases') return renderKnowledgeBases()
   if (state.view === 'entries') return renderEntries()
