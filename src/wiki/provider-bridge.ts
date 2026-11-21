@@ -28,6 +28,7 @@ export class WikiProviderBridge {
   /** Prepared once: this is consulted on every entry sync, so it must stay cheap. */
   private readonly hasStmt
   private readonly connections = new Map<string, Promise<WikiConnectionReport>>()
+  private readonly updates = new Map<string, Promise<{ connection: WikiConnectionReport; job: WikiIngestJob; reused: boolean }>>()
   constructor(private readonly db: DatabaseSync, private readonly index: (page: WikiPage, draft: KnowledgeDraft) => void) {
     db.exec(`CREATE TABLE IF NOT EXISTS wiki_local_bases (kb_id TEXT PRIMARY KEY, layout_json TEXT NOT NULL, conversation_enabled INTEGER NOT NULL DEFAULT 0);`)
     db.exec('CREATE TABLE IF NOT EXISTS wiki_connection_status(kb_id TEXT PRIMARY KEY, body TEXT NOT NULL)')
@@ -96,7 +97,15 @@ export class WikiProviderBridge {
     return next
   }
 
-  async update(kbId: string, settings: WikiIngestSettings): Promise<{ connection: WikiConnectionReport; job: WikiIngestJob; reused: boolean }> {
+  update(kbId: string, settings: WikiIngestSettings): Promise<{ connection: WikiConnectionReport; job: WikiIngestJob; reused: boolean }> {
+    const pending = this.updates.get(kbId)
+    if (pending) return pending.then(result => ({ ...result, reused: true }))
+    const work = this.performUpdate(kbId, settings)
+    this.updates.set(kbId, work)
+    void work.finally(() => { if (this.updates.get(kbId) === work) this.updates.delete(kbId) }).catch(() => {})
+    return work
+  }
+  private async performUpdate(kbId: string, settings: WikiIngestSettings): Promise<{ connection: WikiConnectionReport; job: WikiIngestJob; reused: boolean }> {
     const active = this.ingest.running(kbId)
     if (active) return { connection: this.connectionStatus(kbId), job: active, reused: true }
     const config = this.list().find(item => item.kbId === kbId)

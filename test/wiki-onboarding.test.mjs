@@ -117,3 +117,5 @@ test('connection persists explicit scope for later daily updates',async t=>{
  assert.deepEqual(value.scope,{kind:'project',id:'private'})
  assert.deepEqual(f.provider.wiki.connectionStatus(f.base).scope,value.scope)
 })
+
+test("concurrent daily update requests cannot enqueue duplicate source tasks", async t=>{const f=await fixture(t),scope={kind:"global"};await f.provider.wiki.connect({kbId:f.base,sourceDir:f.sourceDir,workspaceRoot:f.workspaceRoot,scope});let calls=0,release;const barrier=new Promise(r=>release=r);f.provider.wiki.ingest.start=async()=>{calls++;await barrier;return{id:"queued",kbId:f.base,state:"running",settings:{},items:[],createdAt:"now",updatedAt:"now"}};f.provider.wiki.ingest.running=()=>undefined;const settings={python:"python",provider:"mock",model:"model",allowModel:true,scope};const one=f.provider.wiki.update(f.base,settings),two=f.provider.wiki.update(f.base,settings);await new Promise(r=>setTimeout(r,80));release();const result=await Promise.all([one,two]);assert.equal(calls,1);assert.equal(result[0].job.id,result[1].job.id);assert.equal(result.filter(r=>r.reused).length,1);});
