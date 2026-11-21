@@ -30,6 +30,7 @@ const resources = lazyModule.createLazyResources({ moduleUrl, scriptUrl: name =>
 const loadMarkdownPreview = () => resources.script('markdown-preview', 'DshKnowledgeMarkdown')
 const loadChangeReview = () => resources.script('change-review', 'DshKnowledgeReview')
 let createWikiWorkspace
+let wikiWorkspace
 let readModelCatalog
 let createWritebackWorkspace
 let createWorklogWorkspace
@@ -335,6 +336,8 @@ function signOut() {
   worklogWorkspace = undefined
   writebackWorkspace?.dispose()
   writebackWorkspace = undefined
+  wikiWorkspace?.dispose()
+  wikiWorkspace = undefined
   disposeInfiniteScroll()
   notePages.clear()
   cancelPendingSearches()
@@ -1181,6 +1184,8 @@ function renderShell() {
   worklogWorkspace = undefined
   writebackWorkspace?.dispose()
   writebackWorkspace = undefined
+  wikiWorkspace?.dispose()
+  wikiWorkspace = undefined
   closeDocumentMenus()
   releaseNoteEditors()
   captureScrollPosition()
@@ -1446,7 +1451,10 @@ function renderCurrentView() {
     writebackWorkspace = createWritebackWorkspace({ element, actionButton, openConfirm, sessionId: mountContext.sessionId })
     return writebackWorkspace.root
   }
-  if (state.view === 'wiki') return createWikiWorkspace({ api, element, actionButton, badge, interfaceIcon, openModal, bases: state.knowledgeBases }).root
+  if (state.view === 'wiki') {
+    wikiWorkspace = createWikiWorkspace({ api, element, actionButton, badge, interfaceIcon, openModal, bases: state.knowledgeBases })
+    return wikiWorkspace.root
+  }
   if (state.view === 'overview') return renderOverview()
   if (state.view === 'bases') return renderKnowledgeBases()
   if (state.view === 'entries') return renderEntries()

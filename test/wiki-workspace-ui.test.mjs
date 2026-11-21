@@ -18,11 +18,12 @@ const all=node=>[node,...node.children.filter(c=>c instanceof Element).flatMap(a
 const text=node=>typeof node==='string'?node:node.children.map(text).join(' ')
 const pending=()=>new Promise(resolve=>setTimeout(resolve,25))
 
-function fixture(t, {configured=true, confirm=false, gate, jobs}={}) {
+function fixture(t, {configured=true, confirm=false, gate, jobs, connection}={}) {
  const calls=[], confirms=[]; let hash="old-hash";
  const previous=globalThis.window;globalThis.window={confirm:m=>{confirms.push(m);return confirm},setTimeout:(fn,ms)=>setTimeout(fn,ms),clearTimeout:id=>clearTimeout(id)};
  t.after(()=>{globalThis.window=previous});
  const api=async(path,options={})=>{calls.push({path,...options}); if(gate)await gate(path,options);
+ if(path.endsWith("/connection"))return connection??{state:configured?"ready":"unconfigured",layout:configured?{sourceDir:"s",workspaceRoot:"w",rawDir:"r",pageDir:"w/wiki"}:undefined,report:{registered:0,existing:2,rejected:0,items:[]}};
  if(path==="wiki")return configured?[{kbId:"A",layout:{sourceDir:"s",workspaceRoot:"w",rawDir:"r"}}]:[];
  if(path.endsWith("/pages"))return [{pageId:"p",relPath:"wiki/notes/a.md",status:"active",version:1}];
  if(path.endsWith("/jobs"))return jobs?jobs():[{id:"job-1",state:"done",items:[]}];
@@ -87,3 +88,8 @@ test("a running job shows discovery counts, per-stage progress and refreshes its
   await flush()
   assert.equal(reads, 2, "polling stops when no job is running")
 })
+
+test("onboarding shows one connection action instead of a separate legacy import section",async t=>{const f=fixture(t,{configured:false});await pending();assert.ok(f.button("接入知识库"));assert.equal(f.button("登记已有 Wiki"),undefined);assert.ok(f.nodes().some(n=>n.tag==="h2"&&text(n)==="接入知识库"));});
+test("ready and partial connection show real outcomes and daily update action",async t=>{const f=fixture(t,{connection:{state:"partial",layout:{pageDir:"w/wiki"},report:{registered:3,existing:2,rejected:1,items:[{relPath:"bad.md",status:"invalid",error:"格式错误"}]}}});await pending();assert.ok(f.button("扫描更新"));assert.ok(f.nodes().some(n=>text(n).includes("部分接入")));assert.ok(f.nodes().some(n=>text(n).includes("bad.md")));});
+
+test("disposing a workspace aborts pending reads and stops polling", async t=>{t.mock.timers.enable({apis:["setTimeout"]});const flush=async()=>{for(let i=0;i<20;i++)await Promise.resolve()};let reads=0;const f=fixture(t,{jobs:()=>{reads++;return[{id:"active",state:"running",items:[]}]}});await flush();f.dispose();t.mock.timers.tick(10000);await flush();assert.equal(reads,1);assert.ok(f.calls.every(c=>!c.signal||c.signal.aborted||c.signal instanceof AbortSignal));});

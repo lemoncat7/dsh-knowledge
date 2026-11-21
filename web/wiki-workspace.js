@@ -12,6 +12,19 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   const state = { kbId: '', configs: [], pages: [], page: undefined, standard: undefined, dirty: false }
   const status = element('p', { class: 'wiki-status', role: 'status', 'aria-live': 'polite' })
   let busy = false
+  let disposed = false, generation = 0
+  const connectionView = element('div', { class: 'wiki-connection', role: 'status' })
+  let directorySettings, connectTitle, dailySection
+  const requestControllers = new Set()
+  const call = async (path, options = {}) => {
+    const token = generation, controller = new AbortController()
+    requestControllers.add(controller)
+    try {
+      const value = await api(path, { ...options, signal: controller.signal })
+      if (disposed || token !== generation) throw new Error('WIKI_VIEW_CHANGED')
+      return value
+    } finally { requestControllers.delete(controller) }
+  }
 
   const baseSelect = element('select', { class: 'select', 'aria-label': '选择知识库' }, bases.map(b => element('option', { value: b.id }, b.name)))
   const sourceInput = element('input', { class: 'input', placeholder: '原件投放与归档目录', 'aria-label': '原件目录' })
@@ -78,6 +91,8 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
       baseSelect.value = state.kbId
       return
     }
+    generation++; window.clearTimeout(progressTimer)
+    for (const controller of requestControllers) controller.abort()
     state.kbId = next
     state.page = undefined; state.standard = undefined; state.dirty = false; state.pages = []
     editor.value = ''; editorTitle.textContent = '未选择文件'; saveButton.disabled = true
@@ -87,7 +102,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   })
 
   async function run(action) {
-    if (busy) return
+    if (busy || disposed) return
     busy = true; baseSelect.disabled = true; root.setAttribute('aria-busy', 'true'); status.textContent = '处理中…'
     try { status.textContent = (await action()) ?? '已完成' }
     catch (error) { status.textContent = error.message }
@@ -95,7 +110,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   }
 
   function browse(input, label) {
-    return createWikiDirectoryBrowser({ api, endpoint: url("browse"), element, actionButton, interfaceIcon, openModal,
+    return createWikiDirectoryBrowser({ api: call, endpoint: url("browse"), element, actionButton, interfaceIcon, openModal,
       initial: input.value.trim(), label,
       onSelect: path => { input.value = path; input.dispatchEvent(new Event("input", { bubbles: true })); status.textContent = "已选择 " + path },
     })
@@ -106,7 +121,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
     actionButton('选择目录', () => browse(input, label), 'ghost small', { 'aria-label': `选择${label}` }))
 
   async function refreshConfig() {
-    state.configs = await api('wiki')
+    state.configs = await call('wiki')
     const current = state.configs.find(entry => entry.kbId === state.kbId)
     sourceInput.value = current?.layout.sourceDir ?? ''
     workspaceInput.value = current?.layout.workspaceRoot ?? ''
@@ -116,7 +131,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   }
 
   async function loadPython() {
-    const data = await api(url('python'))
+    const data = await call(url('python'))
     pythonSelect.replaceChildren(...(data.candidates.length
       ? data.candidates.map(candidate => element('option', { value: candidate.path },
         `${candidate.path}${candidate.version ? ` · ${candidate.version}` : ''}${candidate.ok ? '' : '（缺依赖）'}`))
@@ -129,7 +144,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   }
 
   async function loadModels() {
-    const data = await api(url('models'))
+    const data = await call(url('models'))
     const providers = data.providers ?? []
     providerSelect.replaceChildren(...(providers.length
       ? providers.map(item => element('option', { value: item.provider }, item.name))
@@ -162,7 +177,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
       pageList.append(element('p', { class: 'muted' }, '该知识库还没有绑定 Wiki 目录。保存配置后可登记已有页面。'))
       return
     }
-    state.pages = await api(url('pages'))
+    state.pages = await call(url('pages'))
     if (!state.pages.length) { pageList.append(element('p', { class: 'muted' }, '还没有登记任何页面。')); return }
     for (const page of state.pages) {
       pageList.append(element('div', { class: 'wiki-row' },
@@ -194,8 +209,8 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
         badge(STATUS_LABEL[job.state] ?? job.state, job.state === 'done' ? 'success' : job.state === 'paused' ? 'warning' : ''),
         element('span', { class: 'muted' }, job.discovery ? `发现 ${job.discovery.found} 个，跳过 ${job.discovery.duplicates} 个已处理` : ''),
         actionButton('刷新', () => void run(loadJobs), 'ghost small'),
-        actionButton('续跑', () => void run(async () => { await api(url(`job/${job.id}`), { method: 'POST', body: { action: 'resume' } }); await loadJobs() }), 'ghost small'),
-        actionButton('取消', () => void run(async () => { await api(url(`job/${job.id}`), { method: 'POST', body: { action: 'cancel' } }); await loadJobs() }), 'ghost small'))
+        actionButton('续跑', () => void run(async () => { await call(url(`job/${job.id}`), { method: 'POST', body: { action: 'resume' } }); await loadJobs() }), 'ghost small'),
+        actionButton('取消', () => void run(async () => { await call(url(`job/${job.id}`), { method: 'POST', body: { action: 'cancel' } }); await loadJobs() }), 'ghost small'))
       const progress = element('p', { class: job.state === 'running' ? 'wiki-progress is-running' : 'wiki-progress', 'aria-live': 'polite' }, stageSummary(job))
       const detail = element('div', { class: 'wiki-job-items' })
       for (const item of job.items) {
@@ -207,7 +222,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
           row.append(actionButton('指定分类', () => void run(async () => {
             const category = window.prompt('输入分类文件夹名')
             if (!category) return
-            await api(url(`job/${job.id}`), { method: 'POST', body: { action: 'classify', itemId: item.id, category } })
+            await call(url(`job/${job.id}`), { method: 'POST', body: { action: 'classify', itemId: item.id, category } })
             await loadJobs()
           }), 'ghost small'))
         }
@@ -218,7 +233,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   }
 
   async function loadJobs(options = {}) {
-    const jobs = await api(url('jobs'))
+    const jobs = await call(url('jobs'))
     drawJobs(jobs)
     if (!options.quiet) scheduleProgress(jobs)
     return null
@@ -233,7 +248,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
     progressTimer = window.setTimeout(async () => {
       if (!root.isConnected) return
       try {
-        const next = await api(url('jobs'))
+        const next = await call(url('jobs'))
         drawJobs(next)
         const stillRunning = next.some(job => job.state === 'running')
         if (!stillRunning && progressWasRunning) { progressWasRunning = false; void loadPages().catch(() => {}) }
@@ -244,7 +259,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
 
   async function loadProposals() {
     proposalList.replaceChildren()
-    const values = await api(url('proposals'))
+    const values = await call(url('proposals'))
     if (!values.length) { proposalList.append(element('p', { class: 'muted' }, '没有待审核的旧页更新。')); return }
     for (const proposal of values) {
       const card = element('div', { class: 'wiki-card' }, element('details', { class: 'wiki-details' },
@@ -252,8 +267,8 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
         element('pre', { class: 'wiki-pre' }, proposal.content)))
       if (proposal.state === 'pending') {
         card.append(element('div', { class: 'wiki-actions' },
-          actionButton('批准替换', () => void run(async () => { await api(url(`proposal/${proposal.id}`), { method: 'POST', body: { approve: true } }); await loadProposals() }), 'small'),
-          actionButton('拒绝', () => void run(async () => { await api(url(`proposal/${proposal.id}`), { method: 'POST', body: { approve: false } }); await loadProposals() }), 'ghost small')))
+          actionButton('批准替换', () => void run(async () => { await call(url(`proposal/${proposal.id}`), { method: 'POST', body: { approve: true } }); await loadProposals() }), 'small'),
+          actionButton('拒绝', () => void run(async () => { await call(url(`proposal/${proposal.id}`), { method: 'POST', body: { approve: false } }); await loadProposals() }), 'ghost small')))
       }
       proposalList.append(card)
     }
@@ -261,7 +276,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
 
   async function loadRaw() {
     rawList.replaceChildren(); rawView.hidden = true
-    const entries = await api(url('raw'))
+    const entries = await call(url('raw'))
     rawEntries = entries
     rawLoaded = true
     rawSummary.textContent = `raw 产物（只读）· ${entries.length} 个文件`
@@ -293,7 +308,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   }
 
   async function showRaw(path) {
-    const first = await api(url('raw-content') + '?' + new URLSearchParams({ path, offset: '0' }))
+    const first = await call(url('raw-content') + '?' + new URLSearchParams({ path, offset: '0' }))
     rawView.textContent = first.text
     rawView.hidden = false
     let offset = first.nextOffset
@@ -301,7 +316,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
       const more = actionButton('继续读取', () => void run(async () => {
         let next = offset
         while (next !== undefined && rawView.textContent.length < 200_000) {
-          const chunk = await api(url('raw-content') + '?' + new URLSearchParams({ path, offset: String(next) }))
+          const chunk = await call(url('raw-content') + '?' + new URLSearchParams({ path, offset: String(next) }))
           rawView.textContent += chunk.text
           next = chunk.nextOffset
         }
@@ -314,7 +329,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
 
   async function openPage(page, { afterSave = false } = {}) {
     if (!afterSave && state.dirty && !window.confirm('放弃未保存的内容？')) return
-    const value = await api(url(`page/${encodeURIComponent(page.pageId)}`))
+    const value = await call(url(`page/${encodeURIComponent(page.pageId)}`))
     state.page = value; state.standard = undefined; state.dirty = false
     editorTitle.textContent = value.relPath
     editor.value = value.content
@@ -324,7 +339,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
 
   async function openStandard({ afterSave = false } = {}) {
     if (!afterSave && state.dirty && !window.confirm('放弃未保存的内容？')) return
-    const value = await api(url('standard'))
+    const value = await call(url('standard'))
     state.page = undefined; state.standard = value; state.dirty = false
     editorTitle.textContent = 'schema.md（文档标准）'
     editor.value = value.content
@@ -335,10 +350,10 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   async function save() {
     if (!state.page && !state.standard) throw new Error('先选择一个页面或文档标准')
     if (state.page) {
-      await api(url(`page/${encodeURIComponent(state.page.pageId)}`), { method: 'PUT', body: { content: editor.value, expectedHash: state.page.sha256 } })
+      await call(url(`page/${encodeURIComponent(state.page.pageId)}`), { method: 'PUT', body: { content: editor.value, expectedHash: state.page.sha256 } })
       await openPage(state.page, { afterSave: true })
     } else {
-      await api(url('standard'), { method: 'PUT', body: { content: editor.value, expectedHash: state.standard.sha256 } })
+      await call(url('standard'), { method: 'PUT', body: { content: editor.value, expectedHash: state.standard.sha256 } })
       await openStandard({ afterSave: true })
     }
     state.dirty = false; saveButton.disabled = true
@@ -349,11 +364,13 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   async function reload() {
     if (!state.kbId) return '请先创建一个空知识库'
     const config = await refreshConfig()
+    const connection = await call(url('connection'))
+    renderConnection(connection)
     if (!config) {
       jobList.replaceChildren(); proposalList.replaceChildren(); rawList.replaceChildren()
       pageList.replaceChildren()
       await Promise.all([loadPython(), loadModels()])
-      return '请先选择目录并保存库配置'
+      return '请选择目录并接入知识库'
     }
     await Promise.all([resetPages(), loadJobs(), loadProposals(), resetRaw(), loadPython(), loadModels()])
   }
@@ -361,47 +378,73 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   const section = (title, note, ...body) => element('section', { class: 'wiki-section' },
     element('h2', {}, title), note ? element('p', { class: 'wiki-section-note' }, note) : null, ...body.filter(Boolean))
 
+  advancedDetails.append(element('div', { class: 'wiki-actions' },
+    actionButton('只读检查', () => void run(async () => {
+      const items = await call(url('inspect'))
+      connectionView.replaceChildren(...items.map(item => element('p', { class: 'wiki-hint' }, item.relPath + ' · ' + (item.error || item.status))))
+      return '检查完成；未修改文件'
+    }), 'ghost small'),
+    actionButton('重建索引', () => void run(async () => { await call(url('rebuild'), { method: 'POST', body: {} }); return '索引已重建' }), 'ghost small'),
+    actionButton('恢复中断提交', () => void run(async () => { await call(url('recover'), { method: 'POST', body: {} }); await reload(); return '恢复检查完成' }), 'ghost small')))
+
+  function renderConnection(value) {
+    const labels = { unconfigured: '未接入', configured: '目录已保存，尚未接入', ready: '已接入', partial: '部分接入', failed: '接入失败' }
+    const connected = ['ready', 'partial'].includes(value.state)
+    if (directorySettings) directorySettings.open = !connected
+    if (dailySection) dailySection.hidden = !connected
+    connectionView.replaceChildren(element('strong', {}, labels[value.state] || '正在检查接入状态'))
+    if (value.layout) connectionView.append(element('p', { class: 'wiki-hint' }, '成文目录：' + value.layout.pageDir))
+    if (value.report) {
+      const report = value.report
+      connectionView.append(element('p', { class: 'wiki-hint' }, '本次登记 ' + report.registered + ' 篇 · 已登记 ' + report.existing + ' 篇 · 异常 ' + report.rejected + ' 篇'))
+      if (!report.items.length) connectionView.append(element('p', { class: 'wiki-hint' }, '还没有页面，可添加原件后扫描更新。'))
+      for (const item of report.items.filter(item => ['invalid', 'too_long'].includes(item.status))) {
+        connectionView.append(element('p', { class: 'wiki-error' }, item.relPath + '：' + (item.error || '正文过长，未接入')))
+      }
+    }
+    if (value.error) connectionView.append(element('p', { class: 'wiki-error' }, value.error))
+  }
+
   root.append(
-    section('库与目录', '文件是成文权威，raw 只读。目录必须是已存在的绝对路径，且不能与其他库重叠。',
-      element('div', { class: 'wiki-toolbar' }, baseSelect),
-      element('div', { class: 'wiki-grid' }, pathField(sourceInput, '原件目录'), pathField(workspaceInput, '工作区目录'), pathField(rawInput, 'raw 目录')),
-      element('label', { class: 'check-option' }, conversationToggle, element('span', {}, '允许对话证据写入该库', element('small', {}, '默认关闭；开启后批准的对话候选才会落地为文件'))),
-      element('div', { class: 'wiki-actions' },
-        actionButton('保存库配置', () => void run(async () => {
-          await api(`wiki/${encodeURIComponent(state.kbId)}`, { method: 'PUT', body: {
-            sourceDir: sourceInput.value.trim(), workspaceRoot: workspaceInput.value.trim(),
-            ...(rawInput.value.trim() ? { rawDir: rawInput.value.trim() } : {}), conversationEnabled: conversationToggle.checked,
-          } })
-          await reload(); return '库配置已保存'
-        }), 'small'),
-        actionButton('刷新', () => void run(reload), 'ghost small'))),
-    section('存量接管', '先只读对账，确认无误后再登记。登记只新增身份与索引，不改写旧 Markdown。',
+    section('知识库', '', element('div', { class: 'wiki-toolbar' }, baseSelect), connectionView),
+    directorySettings = element('details', { class: 'wiki-details wiki-connect-settings' },
+      element('summary', {}, '目录与接入设置'),
+      connectTitle = element('h2', {}, '接入知识库'),
+      element('p', { class: 'wiki-hint' }, '首次接入只登记和索引已有页面，不改原文、不移动原件、不调用模型。'),
+      element('div', { class: 'wiki-grid' }, pathField(sourceInput, '原件目录'), pathField(workspaceInput, 'Wiki 工作区')),
+      element('p', { class: 'wiki-hint' }, '选择包含 wiki/ 的工作区；正文实际在工作区/wiki，不要重复选择内部的 wiki 文件夹。'),
       element('div', { class: 'wiki-toolbar' }, scopeSelect, projectInput),
+      element('p', { class: 'wiki-hint' }, '明确选择本库范围；已有页面的范围不因再次接入而被覆盖。'),
+      element('details', { class: 'wiki-details' }, element('summary', {}, '更多设置'),
+        pathField(rawInput, 'raw 目录'),
+        element('label', { class: 'check-option' }, conversationToggle, element('span', {}, '允许对话证据写入该库'))),
       element('div', { class: 'wiki-actions' },
-        actionButton('只读对账', () => void run(async () => {
-          const report = await api(url('inspect'))
-          const counts = report.reduce((accumulator, item) => { accumulator[item.status] = (accumulator[item.status] ?? 0) + 1; return accumulator }, {})
-          return `对账完成：${Object.entries(counts).map(([key, value]) => `${key} ${value}`).join('，')}`
+        actionButton('接入知识库', () => void run(async () => {
+          try {
+            const result = await call(url('connect'), { method: 'POST', body: {
+              sourceDir: sourceInput.value.trim(), workspaceRoot: workspaceInput.value.trim(),
+              ...(rawInput.value.trim() ? { rawDir: rawInput.value.trim() } : {}),
+              conversationEnabled: conversationToggle.checked, scope: requireProject(),
+            } })
+            renderConnection(result); await reload()
+            return result.state === 'partial' ? '部分接入，请查看异常文件' : '接入完成，可投递原件后扫描更新'
+          } catch (error) {
+            renderConnection(await call(url('connection')))
+            throw error
+          }
         }), 'small'),
-        actionButton('登记已有 Wiki', () => void run(async () => {
-          const value = requireProject()
-          if (!window.confirm('将登记现有页面身份与权限，不改写原文。继续？')) return
-          await api(url('import'), { method: 'POST', body: { scope: value, dryRun: false } })
-          await reload(); return '登记完成'
-        }), 'small'),
-        actionButton('刷新索引', () => void run(async () => { await api(url('rebuild'), { method: 'POST', body: {} }); await reload(); return '索引已重建' }), 'ghost small'),
-        actionButton('恢复中断提交', () => void run(async () => { const result = await api(url('recover'), { method: 'POST', body: {} }); return `恢复 ${result.length} 条提交` }), 'ghost small'))),
-    section('扫描并入库', '只扫描原件根目录的新投递文件；已有分类目录不重排。模型只返回结构化候选，由宿主写入文件。',
+        actionButton('刷新状态', () => void run(reload), 'ghost small'))),
+    dailySection = section('扫描更新', '只扫描原件根目录的新投递文件；已有分类目录不重排。模型只返回结构化候选，由宿主写入文件。',
       element('div', { class: 'wiki-grid' }, pythonSelect, providerSelect, modelSelect),
       pythonNote,
       element('label', { class: 'check-option' }, consentToggle, element('span', {}, '允许把本批资料发送给所选模型', element('small', {}, '分类只看受限预览，蒸馏只看抽取后的正文'))),
       element('div', { class: 'wiki-actions' },
-        actionButton('扫描并入库', () => void run(async () => {
+        actionButton('扫描更新', () => void run(async () => {
           const value = requireProject()
           if (!consentToggle.checked) throw new Error('请先确认允许发送资料给模型')
           if (!pythonSelect.value) throw new Error('未检测到 Python，请先安装或在下方手动指定')
           if (!providerSelect.value || !modelSelect.value) throw new Error('请选择模型渠道与模型')
-          const job = await api(url('ingest'), { method: 'POST', body: {
+          const job = await call(url('ingest'), { method: 'POST', body: {
             python: pythonSelect.value, provider: providerSelect.value, model: modelSelect.value, allowModel: true, scope: value,
           } })
           await loadJobs()
@@ -413,7 +456,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
         actionButton('安装缺失依赖', () => void run(async () => {
           if (!pythonSelect.value) throw new Error('未检测到 Python')
           if (!window.confirm('将用该解释器联网安装缺失的解析库（pypdf / xlrd 等）。继续？')) return
-          await api(url('python-install'), { method: 'POST', body: { path: pythonSelect.value } })
+          await call(url('python-install'), { method: 'POST', body: { path: pythonSelect.value } })
           await loadPython()
           return '依赖安装完成'
         }), 'ghost small', { hidden: true, 'data-python-install': '1' }),
@@ -429,5 +472,5 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   if (bases.length) { state.kbId = bases[0].id; baseSelect.value = state.kbId }
   else status.textContent = '还没有知识库，请先在「知识库与挂载」中创建一个空知识库。'
   void run(reload)
-  return { root }
+  return { root, dispose() { disposed = true; generation++; window.clearTimeout(progressTimer); for (const controller of requestControllers) controller.abort() } }
 }
