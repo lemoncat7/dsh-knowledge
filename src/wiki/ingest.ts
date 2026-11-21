@@ -12,7 +12,7 @@ import type { KnowledgeScope } from '../domain.js'
 
 export interface WikiIngestSettings { python: string; provider: string; model: string; allowModel: boolean; scope: KnowledgeScope }
 interface Item { id: string; source: string; sha: string; size: number; category?: string; archived?: string; raw?: string; rawHash?: string; stage: 'new' | 'classified' | 'archived' | 'extracted' | 'done' | 'review' | 'failed'; error?: string; pages?: string[] }
-export interface WikiIngestJob { id: string; kbId: string; state: 'running' | 'paused' | 'done' | 'cancelled'; settings: WikiIngestSettings; items: Item[]; createdAt: string; updatedAt: string }
+export interface WikiIngestJob { id: string; kbId: string; state: 'running' | 'paused' | 'done' | 'cancelled'; settings: WikiIngestSettings; items: Item[]; createdAt: string; updatedAt: string; discovery?: { found: number; duplicates: number } }
 export type WikiDistiller = (kbId: string, item: Item, settings: WikiIngestSettings, operationId: string, signal: AbortSignal) => Promise<string[]>
 const registration = new Set(['.mp4','.exe','.rar','.zip','.msi','.7z','.doc'])
 function safeCategory(value: unknown): string {
@@ -56,7 +56,8 @@ export class WikiIngest {
     if (!settings.python.trim() || !settings.provider || !settings.model || !settings.allowModel) throw new Error('WIKI_INGEST_SETTINGS_REQUIRED')
     if (!settings.scope || !['global','project'].includes(settings.scope.kind) || settings.scope.kind === 'project' && !settings.scope.id.trim()) throw new Error('WIKI_SCOPE_REQUIRED')
     const candidates = await this.discover(kbId), now = new Date().toISOString()
-    const job: WikiIngestJob = {id:randomUUID(),kbId,state:'paused',settings,items:candidates.filter(c=>!c.duplicate).map(c=>({...c,id:randomUUID(),stage:'new'})),createdAt:now,updatedAt:now}
+    const fresh = candidates.filter(c => !c.duplicate)
+    const job: WikiIngestJob = {id:randomUUID(),kbId,state:'paused',settings,items:fresh.map(c=>({...c,id:randomUUID(),stage:'new'})),createdAt:now,updatedAt:now,discovery:{found:candidates.length,duplicates:candidates.length-fresh.length}}
     this.save(job); this.launch(job); return job
   }
   resume(kbId: string,id: string): WikiIngestJob {

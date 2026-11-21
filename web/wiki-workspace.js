@@ -40,6 +40,8 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   const rawDetails = element('details', { class: 'wiki-details wiki-raw' }, rawSummary, rawFilter, rawNote, rawList, rawView)
   let rawLoaded = false
   let rawEntries = []
+  let progressTimer
+  let progressWasRunning = false
   const RAW_PAGE = 100
   const editor = element('textarea', { class: 'textarea wiki-editor', rows: 22, spellcheck: 'false', 'aria-label': 'Markdown 编辑器' })
   const editorTitle = element('strong', { class: 'wiki-editor-title' }, '未选择文件')
@@ -148,23 +150,36 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
     }
   }
 
-  async function loadJobs() {
+  function stageSummary(job) {
+    const total = job.items.length
+    const done = job.items.filter(item => item.stage === 'done').length
+    const failed = job.items.filter(item => item.stage === 'failed').length
+    const review = job.items.filter(item => item.stage === 'review').length
+    const current = job.state === 'running' ? job.items.find(item => !['done', 'review'].includes(item.stage)) : undefined
+    const parts = [`完成 ${done}/${total}`]
+    if (failed) parts.push(`失败 ${failed}`)
+    if (review) parts.push(`待人工 ${review}`)
+    if (current) parts.push(`当前：${current.source.split(/[\\/]/).pop()}（${STAGE_LABEL[current.stage] ?? current.stage}）`)
+    return parts.join(' · ')
+  }
+
+  function drawJobs(jobs) {
     jobList.replaceChildren()
-    const jobs = await api(url('jobs'))
     if (!jobs.length) { jobList.append(element('p', { class: 'muted' }, '还没有入库任务。')); return }
     for (const job of jobs) {
       const head = element('div', { class: 'wiki-row' },
         element('strong', {}, `任务 ${job.id.slice(0, 8)}`),
-        badge(STATUS_LABEL[job.state] ?? job.state, job.state === 'done' ? 'success' : job.state === 'failed' ? 'danger' : ''),
-        element('span', { class: 'muted' }, `${job.items.filter(item => item.stage === 'done').length}/${job.items.length} 完成`),
+        badge(STATUS_LABEL[job.state] ?? job.state, job.state === 'done' ? 'success' : job.state === 'paused' ? 'warning' : ''),
+        element('span', { class: 'muted' }, job.discovery ? `发现 ${job.discovery.found} 个，跳过 ${job.discovery.duplicates} 个已处理` : ''),
         actionButton('刷新', () => void run(loadJobs), 'ghost small'),
         actionButton('续跑', () => void run(async () => { await api(url(`job/${job.id}`), { method: 'POST', body: { action: 'resume' } }); await loadJobs() }), 'ghost small'),
         actionButton('取消', () => void run(async () => { await api(url(`job/${job.id}`), { method: 'POST', body: { action: 'cancel' } }); await loadJobs() }), 'ghost small'))
+      const progress = element('p', { class: job.state === 'running' ? 'wiki-progress is-running' : 'wiki-progress', 'aria-live': 'polite' }, stageSummary(job))
       const detail = element('div', { class: 'wiki-job-items' })
       for (const item of job.items) {
         const row = element('div', { class: 'wiki-row wiki-row-detail' },
           element('span', { class: 'wiki-path', title: item.source }, item.source.split(/[\\/]/).pop()),
-          badge(STAGE_LABEL[item.stage] ?? item.stage, item.stage === 'failed' ? 'danger' : item.stage === 'review' ? 'warning' : ''),
+          badge(STAGE_LABEL[item.stage] ?? item.stage, item.stage === 'failed' ? 'danger' : item.stage === 'review' ? 'warning' : item.stage === 'done' ? 'success' : ''),
           item.error ? element('small', { class: 'wiki-error' }, item.error) : null)
         if (item.stage === 'review') {
           row.append(actionButton('指定分类', () => void run(async () => {
@@ -176,8 +191,33 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
         }
         detail.append(row)
       }
-      jobList.append(element('div', { class: 'wiki-card' }, head, detail))
+      jobList.append(element('div', { class: 'wiki-card' }, head, progress, detail))
     }
+  }
+
+  async function loadJobs(options = {}) {
+    const jobs = await api(url('jobs'))
+    drawJobs(jobs)
+    if (!options.quiet) scheduleProgress(jobs)
+    return null
+  }
+
+  /** While a job runs, refresh the card so stage changes are visible without clicking. */
+  function scheduleProgress(jobs) {
+    window.clearTimeout(progressTimer)
+    const running = jobs.some(job => job.state === 'running')
+    if (!running || !root.isConnected) { if (!running) progressWasRunning = false; return }
+    progressWasRunning = true
+    progressTimer = window.setTimeout(async () => {
+      if (!root.isConnected) return
+      try {
+        const next = await api(url('jobs'))
+        drawJobs(next)
+        const stillRunning = next.some(job => job.state === 'running')
+        if (!stillRunning && progressWasRunning) { progressWasRunning = false; void loadPages().catch(() => {}) }
+        scheduleProgress(next)
+      } catch { scheduleProgress([{ state: 'running' }]) }
+    }, 2000)
   }
 
   async function loadProposals() {
@@ -342,7 +382,10 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
             python: pythonSelect.value, provider: providerSelect.value, model: modelSelect.value, allowModel: true, scope: value,
           } })
           await loadJobs()
-          return `已创建任务 ${job.id.slice(0, 8)}（${job.items.length} 个新文件）`
+          if (!job.discovery) return `已有任务在运行（${job.id.slice(0, 8)}），请查看下方进度`
+          const { found, duplicates } = job.discovery
+          if (!job.items.length) return `没有需要处理的新文件：发现 ${found} 个，全部已处理过（跳过 ${duplicates} 个）`
+          return `发现 ${found} 个文件，跳过 ${duplicates} 个已处理；任务 ${job.id.slice(0, 8)} 已开始，进度见下方（自动刷新）`
         }), 'small'),
         actionButton('安装缺失依赖', () => void run(async () => {
           if (!pythonSelect.value) throw new Error('未检测到 Python')
@@ -352,7 +395,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
           return '依赖安装完成'
         }), 'ghost small', { hidden: true, 'data-python-install': '1' }),
         actionButton('重新检测 Python', () => void run(async () => { await loadPython(); return '已重新检测' }), 'ghost small'),
-        actionButton('刷新任务', () => void run(loadJobs), 'ghost small')),
+        actionButton('刷新任务', () => void run(async () => { await loadJobs(); return '任务状态已刷新' }), 'ghost small')),
       jobList),
     section('页面与 raw', '页面可直接编辑，保存前校验磁盘哈希；raw 只读，按需展开。',
       element('div', { class: 'wiki-columns' },

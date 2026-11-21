@@ -2351,3 +2351,6 @@ html,
   .wiki-browser-main { padding: 12px; }
   .wiki-browser-count { display: none; }
 }
+
+.wiki-progress { margin: 2px 0 0; font-size: 12px; line-height: 1.6; color: var(--text-secondary); }
+.wiki-progress.is-running { color: var(--accent); }

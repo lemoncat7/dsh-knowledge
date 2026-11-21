@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 // Calls the real renderer with a small injectable DOM adapter; no production UI/data.
 import { createWikiWorkspace } from '../web/wiki-workspace.js'
 class Element {
-  constructor(tag,attrs={},...children){this.tag=tag;this.attrs=attrs;this.children=[];this.listeners={};this.value=attrs.value??'';this.textContent='';this.disabled=!!attrs.disabled;this.append(...children.flat(Infinity))}
+  constructor(tag,attrs={},...children){this.tag=tag;this.attrs=attrs;this.children=[];this.listeners={};this.value=attrs.value??'';this.textContent='';this.disabled=!!attrs.disabled;this.isConnected=true;this.append(...children.flat(Infinity))}
   append(...children){for(const c of children.flat(Infinity)){if(c===null||c===undefined||c===false)continue;this.children.push(c);if(typeof c==='object')c.parentElement=this}}
   replaceChildren(...children){this.children=[];this.append(...children)}
   addEventListener(name,fn){this.listeners[name]=fn}
@@ -18,14 +18,14 @@ const all=node=>[node,...node.children.filter(c=>c instanceof Element).flatMap(a
 const text=node=>typeof node==='string'?node:node.children.map(text).join(' ')
 const pending=()=>new Promise(resolve=>setTimeout(resolve,25))
 
-function fixture(t, {configured=true, confirm=false, gate}={}) {
+function fixture(t, {configured=true, confirm=false, gate, jobs}={}) {
  const calls=[], confirms=[]; let hash="old-hash";
- const previous=globalThis.window;globalThis.window={confirm:m=>{confirms.push(m);return confirm}};
+ const previous=globalThis.window;globalThis.window={confirm:m=>{confirms.push(m);return confirm},setTimeout:(fn,ms)=>setTimeout(fn,ms),clearTimeout:id=>clearTimeout(id)};
  t.after(()=>{globalThis.window=previous});
  const api=async(path,options={})=>{calls.push({path,...options}); if(gate)await gate(path,options);
  if(path==="wiki")return configured?[{kbId:"A",layout:{sourceDir:"s",workspaceRoot:"w",rawDir:"r"}}]:[];
  if(path.endsWith("/pages"))return [{pageId:"p",relPath:"wiki/notes/a.md",status:"active",version:1}];
- if(path.endsWith("/jobs"))return [{id:"job-1",state:"done",items:[]}];
+ if(path.endsWith("/jobs"))return jobs?jobs():[{id:"job-1",state:"done",items:[]}];
  if(path.endsWith("/proposals")||path.endsWith("/raw"))return [];
  if(path.endsWith("/python"))return {candidates:[],hint:""};
  if(path.endsWith("/models"))return {providers:[]};
@@ -67,3 +67,22 @@ test("an in-flight read prevents switching libraries and cannot bind the respons
  select.value="B";select.listeners.change();assert.equal(select.value,"A");
  release();await pending();const editor=f.nodes().find(n=>n.tag==="textarea");assert.equal(editor.value,"saved");
 });
+
+test("a running job shows discovery counts, per-stage progress and refreshes itself", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve() }
+  let reads = 0
+  const item = (stage) => ({ id: "i" + stage, source: "E:\\src\\a.docx", stage })
+  const f = fixture(t, { jobs: () => { reads++; return [{ id: "job-run", state: reads <= 1 ? "running" : "done", discovery: { found: 3, duplicates: 1 }, items: reads <= 1 ? [item("new"), item("done")] : [item("done"), item("done")] }] } })
+  await flush()
+  assert.match(text(f.root), /发现 3 个，跳过 1 个已处理/)
+  assert.match(text(f.root), /完成 1\/2/)
+  assert.match(text(f.root), /当前：a\.docx（待归类）/)
+  t.mock.timers.tick(2000)
+  await flush()
+  assert.equal(reads, 2, "running jobs poll once per interval")
+  assert.match(text(f.root), /完成 2\/2/)
+  t.mock.timers.tick(4000)
+  await flush()
+  assert.equal(reads, 2, "polling stops when no job is running")
+})
