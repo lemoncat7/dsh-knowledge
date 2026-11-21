@@ -83,6 +83,9 @@ export async function handleWikiApi(provider: LocalKnowledgeProvider, segments: 
   if (req.method === 'GET' && action === 'proposals') { send(provider.wiki.proposals.list(kbId).map(p => ({...p,content:Buffer.from(p.bytes,'base64').toString('utf8')}))); return }
   if (req.method === 'POST' && action === 'proposal' && segments[3]) { const body=await bodyOf(req); await provider.wiki.proposals.review(kbId,segments[3],body.approve===true); send({ok:true}); return }
   if (req.method === 'GET' && action === 'discover') { send(await provider.wiki.ingest.discover(kbId)); return }
+  // Change detection is read-only toward source files; POST refreshes and persists the report.
+  if (req.method === 'GET' && action === 'changes') { send(provider.wiki.ingest.changeReport(kbId) ?? null); return }
+  if (req.method === 'POST' && action === 'changes') { send(await provider.wiki.ingest.changes(kbId)); return }
   if (req.method === 'GET' && action === 'jobs') { send(provider.wiki.ingest.jobs(kbId)); return }
   // Scan is read-only toward source files: it reports candidates and registers page files only.
   if (req.method === 'POST' && action === 'scan') {
@@ -91,8 +94,15 @@ export async function handleWikiApi(provider: LocalKnowledgeProvider, segments: 
     if (!config) throw new Error('WIKI_BASE_NOT_FOUND')
     const connection = await provider.wiki.connect({ kbId, sourceDir: config.layout.sourceDir, wikiDir: config.layout.pageDir,
       rawDir: config.layout.rawDir, conversationEnabled: config.conversationEnabled })
-    const files = await provider.wiki.ingest.discover(kbId)
-    send({ connection, files: files.map(file => ({ name: basename(file.source), size: file.size, duplicate: file.duplicate })) }); return
+    const discovery = await provider.wiki.ingest.scanSources(kbId)
+    // Folder deliveries are reported per file (folder + path inside it) so the preview can group them.
+    const folders = new Map<string, number>()
+    const entries = discovery.files.map(file => {
+      if (file.delivery) folders.set(file.delivery, (folders.get(file.delivery) ?? 0) + 1)
+      return { name: basename(file.source), size: file.size, duplicate: file.duplicate, ...(file.delivery ? { folder: file.delivery } : {}), ...(file.relPath ? { relPath: file.relPath } : {}) }
+    })
+    const skipped = discovery.skipped.map(item => ({ name: item.name, size: item.size, reason: item.reason, ...(item.delivery ? { folder: item.delivery } : {}), ...(item.relPath ? { relPath: item.relPath } : {}) }))
+    send({ connection, files: entries, folders: [...folders].map(([name, count]) => ({ name, count })), skipped }); return
   }
   if (req.method === 'POST' && action === 'process') {
     const body = await bodyOf(req)

@@ -68,6 +68,21 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   const previewList = element('div', { class: 'wiki-list' })
   let processButton
   let previewCount = 0
+  // Source-change overview: the host runs the periodic comparison, so this view only shows the last result.
+  const CHANGE_EXAMPLES = 3
+  const changeHead = element('div', { class: 'wiki-row wiki-change-head' })
+  const changeBadge = badge('检查中…')
+  changeHead.append(element('h2', {}, '资料变化'), changeBadge)
+  const changeNote = element('p', { class: 'wiki-section-note' })
+  const changeStamp = element('p', { class: 'wiki-hint' })
+  const changeList = element('div', { class: 'wiki-list wiki-changes' })
+  let reviewButton
+  const changeSection = element('section', { class: 'wiki-section wiki-change-section' },
+    changeHead, changeNote, changeStamp, changeList,
+    element('div', { class: 'wiki-actions' },
+      actionButton('立即检查', () => void run(inspectChangesNow), 'small'),
+      reviewButton = actionButton('查看并处理', () => void run(previewChanges), 'ghost small', { hidden: true })))
+  changeSection.hidden = true
   const RAW_PAGE = 100
   const editor = element('textarea', { class: 'textarea wiki-editor', rows: 22, spellcheck: 'false', 'aria-label': 'Markdown 编辑器' })
   const editorTitle = element('strong', { class: 'wiki-editor-title' }, '未选择文件')
@@ -236,7 +251,8 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
             await loadJobs()
           }), 'ghost small'))
         }
-        if (item.stage === 'done' && !item.pages?.length) row.append(element('small', { class: 'wiki-hint' }, '已记录处理结果，未生成知识页'))
+        if (item.stage === 'done' && item.registered) row.append(element('small', { class: 'wiki-hint' }, '已登记（原位，不搬运）：该类型不抽取、不生成知识页'))
+        else if (item.stage === 'done' && !item.pages?.length) row.append(element('small', { class: 'wiki-hint' }, '已记录处理结果，未生成知识页'))
         if (item.error?.includes('WIKI_DISTILL_UPDATE_REQUIRES_REVIEW')) row.append(element('small', { class: 'wiki-hint' }, '已有页面的修改候选待审核，尚未替换原文'))
         for (const path of item.pages ?? []) row.append(actionButton('查看关联页：' + path, () => void run(async () => {
           const pages = await call(url('pages'))
@@ -400,7 +416,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
       await Promise.all([loadPython(), loadModels()])
       return '请选择目录并接入知识库'
     }
-    await Promise.all([resetPages(), loadJobs(), loadProposals(), resetRaw(), loadPython(), loadModels()])
+    await Promise.all([resetPages(), loadJobs(), loadProposals(), resetRaw(), loadPython(), loadModels(), loadChanges({ quiet: true })])
   }
 
   const section = (title, note, ...body) => element('section', { class: 'wiki-section' },
@@ -415,20 +431,296 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
     actionButton('重建索引', () => void run(async () => { await call(url('rebuild'), { method: 'POST', body: {} }); return '索引已重建' }), 'ghost small'),
     actionButton('恢复中断提交', () => void run(async () => { await call(url('recover'), { method: 'POST', body: {} }); await reload(); return '恢复检查完成' }), 'ghost small')))
 
+  const unreadable = item => ['invalid', 'too_long'].includes(item.status)
+  // Mirrors src/wiki/diagnostics.ts for reports stored before the host kept a readable reason.
+  const REJECTION_REASONS = {
+    INVALID_MARKDOWN: 'front matter 解析失败，读不出标题与来源',
+    UNKNOWN_SCOPE: 'scope 字段不是受支持的 global / project 结构',
+    UNKNOWN_PROVENANCE: 'provenance 字段不在允许取值内',
+    INVALID_ARGUMENT: 'front matter 取值不合法（status 只能是 active / archived）',
+    WIKI_PAGE_BODY_EMPTY: '页面正文为空',
+    WIKI_PAGE_BODY_TOO_LONG: '正文超过 50000 字符',
+    PATH_ESCAPE: '页面路径指向 Wiki 文件夹之外（可能是符号链接）',
+    RESERVED_PATH: '页面路径命中保留名或非法字符',
+  }
+  const REJECTION_SUFFIX = '，因此未登记、不可检索；原文件未被改写'
+  /**
+   * Stored reports keep the failing class in three shapes: `CODE：…`, `CODE: …` and a stringified
+   * `Error: CODE`. All three resolve to one code so a bare class still gets a readable reason.
+   */
+  function rejectionCode(item) {
+    if (item.errorCode) return item.errorCode
+    const match = /^(?:Error:\s*)?([A-Z][A-Z0-9_]{2,})(?=[：:]|\s*$)/.exec(String(item.error ?? '').trim())
+    return match?.[1] ?? 'WIKI_PAGE_UNREADABLE'
+  }
+  /** The code is shown on its own, so the stored prefix is dropped before the reason is displayed. */
+  function pageReason(item, code) {
+    if (item.errorReason) return item.errorReason
+    const detail = String(item.error ?? '')
+      .replace(/^Error:\s*/, '')
+      .replace(new RegExp('^' + code + '\\s*[:：]?\\s*'), '')
+      .trim()
+    const base = REJECTION_REASONS[code]
+    if (!base) return detail || '页面无法读取或解析'
+    if (!detail) return base + REJECTION_SUFFIX
+    return (/\p{Script=Han}/u.test(detail) ? detail : `${base}（${detail}）`) + REJECTION_SUFFIX
+  }
+  /**
+   * Old stored reports only carried a prose error per page, so recover the code from the message
+   * prefix and group them the same way the current report does.
+   */
+  function issueGroups(report) {
+    const rejected = (report.items ?? []).filter(unreadable)
+    if (report.issues?.length) return { rejected, issues: report.issues }
+    const groups = new Map()
+    for (const item of rejected) {
+      const code = rejectionCode(item)
+      const group = groups.get(code) ?? { code, reason: pageReason(item, code), count: 0, examples: [] }
+      group.count += 1
+      if (group.examples.length < 3) group.examples.push(item.relPath)
+      groups.set(code, group)
+    }
+    return { rejected, issues: [...groups.values()].sort((a, b) => b.count - a.count || a.code.localeCompare(b.code)) }
+  }
+
+  /** A count alone explains nothing: state the meaning, group the reasons, show real paths and the way out. */
+  function renderRejections(report) {
+    const { rejected, issues } = issueGroups(report)
+    if (!report.rejected || !rejected.length) return
+    const block = element('div', { class: 'wiki-explain', role: 'group', 'aria-label': '异常页面说明' })
+    block.append(element('p', { class: 'wiki-explain-title' }, `异常 ${report.rejected} 篇是什么意思`))
+    block.append(element('p', { class: 'wiki-hint' },
+      '这些页面没有登记进 Wiki 索引，所以也搜不到。最常见的原因是正文开头的 front matter（--- 之间的元数据）无法解析，'
+      + '读不出标题与来源；正文超过 5 万字符同样会被拒绝。页面文件本身没有被修改，仍原样留在 wiki 文件夹里。'))
+    const list = element('ul', { class: 'wiki-issues' })
+    for (const issue of issues) {
+      const row = element('li', { class: 'wiki-issue' },
+        element('span', { class: 'wiki-issue-count' }, `${issue.count} 篇`),
+        element('span', { class: 'wiki-issue-code' }, issue.code),
+        element('span', { class: 'wiki-issue-reason' }, issue.reason))
+      if (issue.examples?.length) row.append(element('small', { class: 'wiki-issue-examples' }, '示例：' + issue.examples.join('、')))
+      list.append(row)
+    }
+    block.append(list)
+    block.append(element('p', { class: 'wiki-hint' },
+      '怎么处理：把这些页面 front matter 里含冒号或反斜杠的取值加上引号，修好后点「刷新状态」或重新接入一次即可登记；'
+      + '在修好之前，其余页面照常可搜可用。'))
+    const details = element('details', { class: 'wiki-details wiki-rejection-list' },
+      element('summary', {}, `查看异常清单（${rejected.length} 条）`))
+    for (const item of rejected.slice(0, 200)) {
+      details.append(element('div', { class: 'wiki-row wiki-row-detail' },
+        element('span', { class: 'wiki-path', title: item.relPath }, item.relPath),
+        item.metadataRepair ? badge('需修复元数据', 'warning') : null,
+        element('small', { class: 'wiki-error' }, pageReason(item, rejectionCode(item)))))
+    }
+    if (rejected.length > 200) details.append(element('p', { class: 'wiki-hint' }, `还有 ${rejected.length - 200} 条未列出。`))
+    block.append(details)
+    connectionView.append(block)
+  }
+
+  function formatStamp(value) {
+    const date = new Date(value ?? '')
+    if (Number.isNaN(date.getTime())) return String(value ?? '')
+    const pad = number => String(number).padStart(2, '0')
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+  }
+
+  function setChangeBadge(label, variant = '') {
+    changeBadge.setAttribute('class', ('badge ' + variant).trim())
+    changeBadge.textContent = label
+  }
+
+  /** One class of change: its count, why it matters and a few real paths. It never owns an action of its own. */
+  function changeGroup(kind, label, entries) {
+    const group = element('div', { class: 'wiki-change-group' },
+      element('p', { class: 'wiki-change-title' }, `${label} ${entries.length} 个`))
+    if (kind === 'changed') group.append(element('p', { class: 'wiki-hint' }, '这些原件在归档后被修改过；扫描不会重排已归档的分类目录，如需重新入库，请把原件放回源文件夹根层或新建的投递文件夹。'))
+    if (kind === 'missing') group.append(element('p', { class: 'wiki-hint' }, '源文件已不存在，知识库内容不会自动删除；把原件放回原处即可消除这条提示。'))
+    if (kind === 'skipped') group.append(element('p', { class: 'wiki-hint' }, '这些文件因大小或类型无法抽取，已被跳过；可拆分或转换后重新投递。'))
+    for (const entry of entries.slice(0, CHANGE_EXAMPLES)) {
+      group.append(element('div', { class: 'wiki-row wiki-row-detail' },
+        element('span', { class: 'wiki-path', title: entry.relPath }, entry.relPath),
+        entry.folder ? badge('文件夹投递 · ' + entry.folder, 'accent') : null,
+        kind === 'skipped'
+          ? element('span', { class: 'muted' }, entry.reason ?? '未处理')
+          : (kind !== 'missing' && entry.size ? element('span', { class: 'muted' }, Math.round(entry.size / 1024) + ' KB') : null)))
+    }
+    if (entries.length > CHANGE_EXAMPLES) group.append(element('p', { class: 'wiki-hint' }, `还有 ${entries.length - CHANGE_EXAMPLES} 个未列出。`))
+    return group
+  }
+
+  function renderChanges(report) {
+    changeList.replaceChildren()
+    reviewButton.hidden = true
+    if (!report) {
+      setChangeBadge('待检查')
+      changeNote.textContent = '后台会定时核对源文件夹与已归档原件；本区只读，只显示最新结果，不会移动或删除文件。'
+      changeStamp.textContent = '还没有检查记录。点「立即检查」核对一次，或等后台定时检查。'
+      return
+    }
+    const fresh = report.new ?? [], changed = report.changed ?? [], missing = report.missing ?? []
+    // `skipped` is the list of files the scan could not process; `skippedRound` means nothing was looked at.
+    const skippedFiles = Array.isArray(report.skipped) ? report.skipped : []
+    const skippedRound = report.skippedRound === true
+    const baseNote = skippedRound
+      ? '有处理任务在运行，本次检查被跳过；下面仍是上一次完整的结果。'
+      : '后台会定时核对源文件夹与已归档原件；本区只读，只显示最新结果，不会移动或删除文件。'
+    // Unprocessed material must survive next to the change counts, never behind a "clean" badge.
+    changeNote.textContent = skippedFiles.length ? `${baseNote}另有 ${skippedFiles.length} 项因过大未处理（见下）。` : baseNote
+    changeStamp.textContent = `上次检查：${formatStamp(report.scannedAt)}`
+    const pending = fresh.length + changed.length
+    const badgeParts = []
+    if (pending) badgeParts.push(`${pending} 项待处理`)
+    if (missing.length) badgeParts.push(`${missing.length} 项缺失`)
+    if (skippedFiles.length) badgeParts.push(`另有 ${skippedFiles.length} 项因过大未处理`)
+    if (badgeParts.length) setChangeBadge(badgeParts.join(' · '), pending || skippedFiles.length ? 'warning' : '')
+    else if (skippedRound) setChangeBadge('已跳过')
+    else setChangeBadge('无变化', 'success')
+    if (fresh.length) changeList.append(changeGroup('new', '新增', fresh))
+    if (changed.length) changeList.append(changeGroup('changed', '变更', changed))
+    if (missing.length) changeList.append(changeGroup('missing', '缺失', missing))
+    if (skippedFiles.length) changeList.append(changeGroup('skipped', '因过大未处理', skippedFiles))
+    // A skipped round never looked at the source tree; skipped files mean there is still unprocessed material.
+    if (!pending && !missing.length) changeList.append(element('p', { class: 'wiki-hint' },
+      skippedRound ? '本次检查被跳过，暂无新的结果。'
+        : skippedFiles.length ? `没有新增或变更，但另有 ${skippedFiles.length} 项因过大未处理，不能算完全干净。`
+          : '未发现资料变化。'))
+    reviewButton.hidden = pending === 0
+  }
+
+  /** Opening the page reads the last stored result; only an explicit click starts a new comparison. */
+  async function loadChanges({ quiet = false } = {}) {
+    try {
+      const report = await call(url('changes'))
+      renderChanges(report)
+      return report
+    } catch (error) {
+      if (!quiet) throw error
+      setChangeBadge('未知')
+      changeStamp.textContent = '暂时读不到资料变化：' + error.message
+      return null
+    }
+  }
+
+  async function inspectChangesNow() {
+    const report = await call(url('changes'), { method: 'POST', body: {} })
+    renderChanges(report)
+    if (report?.skippedRound) return '有任务在处理，本次检查已跳过'
+    const pending = (report?.new ?? []).length + (report?.changed ?? []).length
+    const skipped = Array.isArray(report?.skipped) ? report.skipped.length : 0
+    if (pending) return `检查完成：${pending} 项待处理${skipped ? `，另有 ${skipped} 项因过大未处理` : ''}；未修改任何文件`
+    if (skipped) return `检查完成：另有 ${skipped} 项因过大未处理；未修改任何文件`
+    return '检查完成：未发现资料变化'
+  }
+
+  /** This entry only opens the existing two-step preview; starting the job stays a separate confirmation. */
+  async function previewChanges() {
+    const message = await startScan()
+    return `${message}；请在下方「扫描预览」核对，确认后再点「开始处理」`
+  }
+
+  /**
+   * Preview separates root-level files from folder deliveries so both kinds are visible.
+   * Files that are deliberately not processed (too large to extract) get their own explained block.
+   * Nothing is moved here: the confirmed processing step still does all the work.
+   */
+  function renderScanPreview(files, folders, skipped) {
+    const blocked = skipped ?? []
+    const fresh = files.filter(file => !file.duplicate)
+    const rootFiles = fresh.filter(file => !file.folder)
+    const groups = new Map()
+    for (const file of files) {
+      if (!file.folder) continue
+      const group = groups.get(file.folder) ?? { name: file.folder, total: 0, pending: [] }
+      group.total += 1
+      if (!file.duplicate) group.pending.push(file)
+      groups.set(file.folder, group)
+    }
+    // A declared folder with only already-processed files still deserves its name in the preview.
+    for (const entry of folders ?? []) if (!groups.has(entry.name)) groups.set(entry.name, { name: entry.name, total: entry.count, pending: [] })
+    const listed = [...groups.values()].sort((a, b) => a.name.localeCompare(b.name))
+    previewList.replaceChildren()
+    if (rootFiles.length) {
+      previewList.append(element('p', { class: 'wiki-preview-group' }, `根层文件（${rootFiles.length} 个待处理）`))
+      for (const file of rootFiles) {
+        previewList.append(element('div', { class: 'wiki-row' },
+          element('span', {}, file.name), element('span', { class: 'muted' }, Math.round(file.size / 1024) + ' KB')))
+      }
+    }
+    if (listed.length) {
+      const pending = listed.reduce((sum, group) => sum + group.pending.length, 0)
+      previewList.append(element('p', { class: 'wiki-preview-group' }, `文件夹投递（${listed.length} 个文件夹，${pending} 个待处理）`))
+      for (const group of listed) {
+        previewList.append(element('div', { class: 'wiki-row wiki-folder-row' },
+          element('strong', { class: 'wiki-folder-name' }, group.name),
+          badge(group.pending.length ? `${group.pending.length} 个待处理` : '已全部处理', group.pending.length ? 'accent' : ''),
+          element('span', { class: 'muted' }, `共 ${group.total} 个文件`)))
+        for (const file of group.pending) previewList.append(element('div', { class: 'wiki-row wiki-row-detail' },
+          element('span', { class: 'wiki-path', title: file.relPath ?? file.name }, file.relPath ?? file.name),
+          element('span', { class: 'muted' }, Math.round(file.size / 1024) + ' KB')))
+      }
+    }
+    if (blocked.length) {
+      // Skipping is never silent: every file that will not be processed says why.
+      previewList.append(element('p', { class: 'wiki-preview-group' }, `因过大未处理（${blocked.length} 个文件）`))
+      for (const file of blocked) previewList.append(element('div', { class: 'wiki-row wiki-row-detail' },
+        element('span', { class: 'wiki-path', title: file.relPath ?? file.name }, file.relPath ?? file.name),
+        element('span', { class: 'muted' }, `${Math.round(file.size / 1024 / 1024)} MB · ${file.reason ?? '未处理'}`)))
+    }
+    return {
+      fresh, rootPending: rootFiles.length,
+      folderPending: listed.reduce((sum, group) => sum + group.pending.length, 0),
+      folderCount: listed.filter(group => group.pending.length).length,
+      blocked: blocked.length,
+    }
+  }
+
+  function scanSummary(totals) {
+    const parts = []
+    if (totals.rootPending) parts.push(`根层文件 ${totals.rootPending} 个`)
+    if (totals.folderPending) parts.push(`文件夹投递 ${totals.folderPending} 个，来自 ${totals.folderCount} 个文件夹`)
+    const blocked = totals.blocked ? `；另有 ${totals.blocked} 个文件因过大未处理（见下方说明）` : ''
+    return `发现 ${totals.fresh.length} 个待处理原件：${parts.join('；')}（跳过 ${totals.skipped} 个已处理）${blocked}。确认后：可抽取资料移动到分类目录并调用模型；只登记类型只写回执、原件原地保留。`
+  }
+
+  /** One read-only scan preview shared by the scan button and the source-change entry point. */
+  async function startScan() {
+    activity.textContent = '正在检查目录与已有页面，只读取，不移动文件…'
+    const result = await call(url('scan'), { method: 'POST', body: {} })
+    renderConnection(result.connection)
+    const total = renderScanPreview(result.files, result.folders, result.skipped)
+    const totals = { ...total, skipped: result.files.length - total.fresh.length }
+    previewNote.textContent = total.fresh.length
+      ? scanSummary(totals)
+      : total.blocked
+        ? `没有待处理原件（跳过 ${totals.skipped} 个已处理）；另有 ${total.blocked} 个文件因过大未处理（见下方说明）。根层文件与根层文件夹都会扫描，已归档的分类目录不重复处理。`
+        : `没有待处理原件（跳过 ${totals.skipped} 个已处理）。根层文件与根层文件夹都会扫描，已归档的分类目录不重复处理。`
+    previewCount = total.fresh.length
+    processButton.disabled = !total.fresh.length || !consentToggle.checked
+    processButton.hidden = !total.fresh.length
+    await loadJobs()
+    return total.fresh.length ? `发现 ${total.fresh.length} 个原件，等待你确认处理` : '没有待处理原件'
+  }
+
   function renderConnection(value) {
     const labels = { unconfigured: '未接入', configured: '目录已保存，尚未接入', ready: '已接入', partial: '部分接入', failed: '接入失败' }
     const connected = ['ready', 'partial'].includes(value.state)
     if (directorySettings) directorySettings.open = !connected
     if (dailySection) dailySection.hidden = !connected
+    changeSection.hidden = !connected
     connectionView.replaceChildren(element('strong', {}, labels[value.state] || '正在检查接入状态'))
     if (value.layout) connectionView.append(element('p', { class: 'wiki-hint' }, '成文目录：' + value.layout.pageDir))
     if (value.report) {
       const report = value.report
-      connectionView.append(element('p', { class: 'wiki-hint' }, '本次登记 ' + report.registered + ' 篇 · 已登记 ' + report.existing + ' 篇 · 异常 ' + report.rejected + ' 篇'))
-      if (!report.items.length) connectionView.append(element('p', { class: 'wiki-hint' }, '还没有页面，可添加原件后扫描更新。'))
-      for (const item of report.items.filter(item => ['invalid', 'too_long'].includes(item.status))) {
-        connectionView.append(element('p', { class: 'wiki-error' }, item.relPath + '：' + (item.error || '正文过长，未接入')))
-      }
+      const summary = ['本次登记 ' + report.registered + ' 篇', '已登记 ' + report.existing + ' 篇']
+      // Repaired pages are readable through the restricted rule, but the manifest still flags them.
+      if (report.repaired) summary.push('需修复元数据 ' + report.repaired + ' 篇')
+      if (report.rejected) summary.push('异常 ' + report.rejected + ' 篇（未登记、不可检索）')
+      connectionView.append(element('p', { class: 'wiki-hint' }, summary.join(' · ')))
+      if (report.repaired) connectionView.append(element('p', { class: 'wiki-hint' },
+        report.repaired + ' 篇旧页已按受限规则读取，并在清单里标记「需修复元数据」；文件未改动。'))
+      if (!(report.items ?? []).length) connectionView.append(element('p', { class: 'wiki-hint' }, '还没有页面，可添加原件后扫描更新。'))
+      renderRejections(report)
     }
     if (value.error) connectionView.append(element('p', { class: 'wiki-error' }, value.error))
   }
@@ -459,32 +751,18 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
           }
         }), 'small'),
         actionButton('刷新状态', () => void run(reload), 'ghost small'))),
-    dailySection = section('扫描更新', '只扫描原件根目录的新投递文件；已有分类目录不重排。模型只返回结构化候选，由宿主写入文件。',
+    changeSection,
+    dailySection = section('扫描更新', '根层文件与根层新增文件夹里的资料都会扫描；已归档的分类目录不重复处理。模型只返回结构化候选，由宿主写入文件。',
       element('div', { class: 'wiki-grid' }, pythonSelect, providerSelect, modelSelect),
       pythonNote,
       element('label', { class: 'check-option' }, consentToggle, element('span', {}, '允许把本批资料发送给所选模型', element('small', {}, '分类只看受限预览，蒸馏只看抽取后的正文'))),
       element('div', { class: 'wiki-actions' },
-        actionButton('扫描更新', () => void run(async () => {
-          activity.textContent = '正在检查目录与已有页面，只读取，不移动文件…'
-          const result = await call(url('scan'), { method: 'POST', body: {} })
-          renderConnection(result.connection)
-          const fresh = result.files.filter(file => !file.duplicate)
-          const skipped = result.files.length - fresh.length
-          previewList.replaceChildren(...fresh.map(file => element('div', { class: 'wiki-row' }, element('span', {}, file.name), element('span', { class: 'muted' }, Math.round(file.size / 1024) + ' KB'))))
-          previewNote.textContent = fresh.length
-            ? `发现 ${fresh.length} 个待处理原件（跳过 ${skipped} 个已处理）。确认后才会移动到分类目录并调用模型。`
-            : `没有待处理原件（跳过 ${skipped} 个已处理）。原件需放在源文件夹根层，分类子目录不会被扫描。`
-          previewCount = fresh.length
-          processButton.disabled = !fresh.length || !consentToggle.checked
-          processButton.hidden = !fresh.length
-          await loadJobs()
-          return fresh.length ? `发现 ${fresh.length} 个原件，等待你确认处理` : '没有待处理原件'
-        }), 'small'),
+        actionButton('扫描更新', () => void run(startScan), 'small'),
         processButton = actionButton('开始处理', () => void run(async () => {
           if (!consentToggle.checked) throw new Error('请先确认允许发送资料给模型')
           if (!pythonSelect.value) throw new Error('未检测到 Python，请先安装或重新检测')
           if (!providerSelect.value || !modelSelect.value) throw new Error('请选择模型渠道与模型')
-          if (!window.confirm('将把源文件夹根层的待处理原件移动到分类子目录，并调用所选模型抽取与蒸馏。继续？')) return
+          if (!window.confirm('将处理待处理原件：可抽取资料移动到分类子目录并调用所选模型抽取与蒸馏；只登记类型（视频/安装包等）只写回执、原件原地保留。继续？')) return
           activity.textContent = '正在启动处理任务…'
           const job = await call(url('process'), { method: 'POST', body: {
             python: pythonSelect.value, provider: providerSelect.value, model: modelSelect.value, allowModel: true,

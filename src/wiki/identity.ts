@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { KnowledgeScope } from '../domain.js'
+import type { FrontMatterSalvage } from './markdown.js'
 
 export type WikiProvenance =
   | { kind: 'import'; originalPath: string }
@@ -18,6 +19,8 @@ export interface WikiPage {
   status: 'active' | 'archived'
   fileSha256: string | null
   lastOperation?: string
+  /** Set when the original bytes are only readable through the restricted front-matter salvage. The file itself is never rewritten. */
+  metadataRepair?: FrontMatterSalvage
 }
 export interface WikiManifest { format: 1; kbId: string; pages: WikiPage[] }
 
@@ -35,6 +38,13 @@ export function validateWikiRelativePath(value: unknown): string {
     throw new Error('WIKI_PATH_UNSAFE')
   }
   return path
+}
+function metadataRepairOf(value: unknown): FrontMatterSalvage | undefined {
+  if (value === undefined) return undefined
+  const repair = record(value)
+  if (repair.kind !== 'quoted-scalars' || !Array.isArray(repair.fields) || !Array.isArray(repair.lines)) throw new Error('WIKI_METADATA_INVALID')
+  return { kind: 'quoted-scalars', fields: repair.fields.map(field => text(field)),
+    lines: repair.lines.map(line => { if (!Number.isSafeInteger(line) || Number(line) < 1) throw new Error('WIKI_METADATA_INVALID'); return Number(line) }) }
 }
 function scopeOf(value: unknown): KnowledgeScope {
   const scope = record(value)
@@ -85,7 +95,8 @@ export function validateWikiManifest(value: unknown): WikiManifest {
     pageIds.add(pageId); entryIds.add(entryId); paths.add(relPath.toLowerCase())
     return { kbId, pageId, entryId, relPath, scope: scopeOf(p.scope), provenance: provenanceOf(p.provenance),
       version: Number(p.version), status: p.status as WikiPage['status'], fileSha256: p.fileSha256 as string | null,
-      ...(p.lastOperation === undefined ? {} : { lastOperation: text(p.lastOperation) }) }
+      ...(p.lastOperation === undefined ? {} : { lastOperation: text(p.lastOperation) }),
+      ...(p.metadataRepair === undefined ? {} : { metadataRepair: metadataRepairOf(p.metadataRepair)! }) }
   })
   return { format: 1, kbId, pages }
 }

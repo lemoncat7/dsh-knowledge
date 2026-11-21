@@ -13,12 +13,15 @@ export interface WikiConnectionReport {
   layout?: WikiLayout
   report?: WikiImportReport
   error?: string
+  /** Stable failure code so the interface can explain a failure instead of showing only prose. */
+  errorCode?: string
   updatedAt?: string
   scope?: KnowledgeScope
 }
 type WikiConnectInput = { kbId: string; sourceDir: string; workspaceRoot?: string; wikiDir?: string; rawDir?: string; conversationEnabled?: boolean; scope?: KnowledgeScope }
 import { resolveWikiLayout, type WikiLayout } from './paths.js'
 import { wikiHash, WikiCommitter } from './commit.js'
+import { explainWikiFailure } from './diagnostics.js'
 import { createWikiPage, wikiStorageKey, type WikiPage } from './identity.js'
 import { parseWikiMarkdown, renderWikiPage } from './markdown.js'
 
@@ -107,7 +110,8 @@ export class WikiProviderBridge {
         await this.rebuild(input.kbId, { acceptExternal: true, excludedPaths })
         return save({ state: report.rejected ? 'partial' : 'ready', layout, report, scope })
       } catch (error) {
-        save({ state: 'failed', error: error instanceof Error ? error.message : String(error) })
+        const failure = explainWikiFailure(error)
+        save({ state: 'failed', error: failure.message, errorCode: failure.code })
         throw error
       }
     })
@@ -166,6 +170,9 @@ export class WikiProviderBridge {
       if (page.fileSha256 !== observedHash) {
         if (!options.acceptExternal) throw new Error('WIKI_EXTERNAL_EDIT_DURING_INDEX_FINALIZATION')
         page.fileSha256 = observedHash; page.version++; metadataChanged = true
+        // The page bytes are accepted as they are; the registration only records whether they need metadata repair.
+        if (parsed.salvage) page.metadataRepair = parsed.salvage
+        else delete page.metadataRepair
       }
       if (!parsed.title || !parsed.body.trim() || parsed.body.length > 50_000) throw new Error('WIKI_PAGE_NOT_INDEXABLE')
       prepared.push({ page, draft: normalizeDraft({ knowledgeBaseId: kbId, title: parsed.title, body: parsed.body,

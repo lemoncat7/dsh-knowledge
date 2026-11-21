@@ -1,5 +1,6 @@
 import { createWikiModel } from './wiki/model.js'
 import { createWikiDistiller } from './wiki/distill.js'
+import { runWikiChangeCheck, startWikiChangeWatch } from './wiki/change-watch.js'
 import { normalizeWritebackFrequency } from './service-settings.js'
 import { NoteVault } from './notes/vault.js'
 import type { Context } from '@deepseek-ai/cordis'
@@ -144,6 +145,14 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
       const model = managementProvider.wiki.ingest.modelFor!(settings)
       return createWikiDistiller(managementProvider.wiki, model)(kbId,item,settings,operationId,signal)
     }
+  }
+  // Read-only material change detection for connected local Wiki bases. Failures are logged, never thrown.
+  if (managementProvider !== undefined && resolved.wikiChangeCheckMinutes > 0) {
+    const wiki = managementProvider.wiki
+    runtime.effect(() => startWikiChangeWatch(async () => {
+      if (connectionChanging || activeConnection.backend !== 'local') return
+      await runWikiChangeCheck(wiki, runtime.logger)
+    }, resolved.wikiChangeCheckMinutes * 60_000), 'dsh-knowledge.wiki-change-watch')
   }
   let journalRuntime: JournalRuntime | undefined
   ctx.inject?.(['connection'], journal => {

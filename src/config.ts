@@ -27,6 +27,7 @@ export interface Config {
   autoRecallLimit: number
   autoRecallMinScore: number
   recallMaxChars: number
+  wikiChangeCheckMinutes: number
   trustedShareOrigins: string[]
 }
 
@@ -53,6 +54,7 @@ export const Config: Schema<Config> = Schema.object({
   autoRecallLimit: Schema.number().min(0).max(10).default(3),
   autoRecallMinScore: Schema.number().min(0).max(1).default(0.2),
   recallMaxChars: Schema.number().min(500).max(20_000).default(5000),
+  wikiChangeCheckMinutes: Schema.number().min(0).max(1440).default(15).description('资料变化检查间隔（分钟）；0 关闭。检查只读源文件夹与归档记录，不移动文件、不调用模型。'),
   trustedShareOrigins: Schema.array(Schema.string()).default([]).description('允许分享导入在指定的精确 Origin 上使用内网 DNS 回流。不支持通配符；已安装远程访问插件时会自动合并其可信 Origin。'),
 })
 
@@ -68,6 +70,7 @@ export interface ResolvedConfig extends Config {
   autoRecallLimit: number
   autoRecallMinScore: number
   recallMaxChars: number
+  wikiChangeCheckMinutes: number
 }
 
 export function resolveConfig(config: Config): ResolvedConfig {
@@ -88,6 +91,7 @@ export function resolveConfig(config: Config): ResolvedConfig {
     autoRecallLimit: config.autoRecallLimit ?? 3,
     autoRecallMinScore: config.autoRecallMinScore ?? 0.2,
     recallMaxChars: config.recallMaxChars ?? 5000,
+    wikiChangeCheckMinutes: Math.max(0, Math.min(1440, Math.floor(config.wikiChangeCheckMinutes ?? 15))),
     trustedShareOrigins: normalizeTrustedShareOrigins(config.trustedShareOrigins ?? []),
   }
   if (resolved.backend === 'local' && (resolved.databasePath === undefined || resolved.databasePath.trim().length === 0)) {

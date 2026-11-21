@@ -2361,6 +2361,32 @@ html,
 .wiki-connection { display: grid; gap: 6px; min-width: 0; }
 .wiki-connection p { margin: 0; overflow-wrap: anywhere; }
 
+/* Rejected pages: the count alone is never the explanation, so this block carries meaning, groups and examples. */
+.wiki-explain { display: grid; gap: 8px; min-width: 0; margin-top: 2px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--warning) 26%, var(--panel-border)); border-radius: var(--radius-control); background: color-mix(in srgb, var(--warning-soft) 62%, transparent); }
+.wiki-explain-title { margin: 0; font-size: 12px; font-weight: 600; color: var(--text); }
+.wiki-explain .wiki-hint { color: var(--text-secondary); }
+.wiki-issues { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; min-width: 0; }
+.wiki-issue { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; min-width: 0; font-size: 12px; line-height: 1.6; }
+.wiki-issue-count { flex: 0 0 auto; padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, var(--danger-soft) 78%, transparent); color: var(--danger); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.wiki-issue-code { flex: 0 0 auto; color: var(--text-tertiary); font-family: var(--font-mono); font-size: 11px; }
+.wiki-issue-reason { flex: 1 1 220px; min-width: 0; color: var(--text-secondary); overflow-wrap: anywhere; }
+.wiki-issue-examples { flex-basis: 100%; color: var(--text-tertiary); overflow-wrap: anywhere; }
+.wiki-rejection-list { min-width: 0; }
+.wiki-rejection-list[open] { display: grid; gap: 4px; max-height: min(40vh, 360px); overflow: auto; overscroll-behavior: contain; }
+
+/* Scan preview: root-level files and folder deliveries are separate groups; neither is processed yet. */
+.wiki-preview-group { margin: 4px 0 0; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+.wiki-preview-group:first-child { margin-top: 0; }
+.wiki-folder-row { padding: 2px 0; }
+.wiki-folder-name { font-size: 12px; overflow-wrap: anywhere; }
+
+/* Source changes: counts, reasons and a few paths; this area never carries a write action of its own. */
+.wiki-change-head { align-items: center; }
+.wiki-changes { gap: 4px; }
+.wiki-change-group { display: grid; gap: 4px; min-width: 0; }
+.wiki-change-group + .wiki-change-group { margin-top: 6px; }
+.wiki-change-title { margin: 0; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+
 .wiki-runbar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 12px; border: 1px solid var(--panel-border); border-radius: var(--radius-control); background: var(--surface-pane); }
 .wiki-runbar span { flex: 1 1 240px; min-width: 0; font-size: 12px; color: var(--text); }
 .wiki-runbar[hidden] { display: none !important; }
