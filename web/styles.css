@@ -2360,3 +2360,7 @@ html,
 .wiki-connect-settings[open] { display: grid; gap: 10px; }
 .wiki-connection { display: grid; gap: 6px; min-width: 0; }
 .wiki-connection p { margin: 0; overflow-wrap: anywhere; }
+
+.wiki-runbar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 12px; border: 1px solid var(--panel-border); border-radius: var(--radius-control); background: var(--surface-pane); }
+.wiki-runbar span { flex: 1 1 240px; min-width: 0; font-size: 12px; color: var(--text); }
+.wiki-runbar[hidden] { display: none !important; }

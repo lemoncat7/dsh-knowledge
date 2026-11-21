@@ -2,7 +2,7 @@ import { listRaw, readRaw } from './raw.js'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
 import type { LocalKnowledgeProvider } from '../local-provider.js'
 import type { KnowledgeScope } from '../domain.js'
 import { wikiHash } from './commit.js'
@@ -84,6 +84,21 @@ export async function handleWikiApi(provider: LocalKnowledgeProvider, segments: 
   if (req.method === 'POST' && action === 'proposal' && segments[3]) { const body=await bodyOf(req); await provider.wiki.proposals.review(kbId,segments[3],body.approve===true); send({ok:true}); return }
   if (req.method === 'GET' && action === 'discover') { send(await provider.wiki.ingest.discover(kbId)); return }
   if (req.method === 'GET' && action === 'jobs') { send(provider.wiki.ingest.jobs(kbId)); return }
+  // Scan is read-only toward source files: it reports candidates and registers page files only.
+  if (req.method === 'POST' && action === 'scan') {
+    const body = await bodyOf(req)
+    const config = provider.wiki.list().find(item => item.kbId === kbId)
+    if (!config) throw new Error('WIKI_BASE_NOT_FOUND')
+    const connection = await provider.wiki.connect({ kbId, sourceDir: config.layout.sourceDir, wikiDir: config.layout.pageDir,
+      rawDir: config.layout.rawDir, conversationEnabled: config.conversationEnabled })
+    const files = await provider.wiki.ingest.discover(kbId)
+    send({ connection, files: files.map(file => ({ name: basename(file.source), size: file.size, duplicate: file.duplicate })) }); return
+  }
+  if (req.method === 'POST' && action === 'process') {
+    const body = await bodyOf(req)
+    send(await provider.wiki.ingest.start(kbId, { python: required(body.python), provider: required(body.provider), model: required(body.model), allowModel: body.allowModel === true,
+      scope: body.scope === undefined ? provider.wiki.connectionStatus(kbId).scope ?? { kind: 'global' } : scopeOf(body.scope) })); return
+  }
   if (req.method === 'POST' && action === 'update') {
     const body = await bodyOf(req)
     send(await provider.wiki.update(kbId, { python: required(body.python), provider: required(body.provider), model: required(body.model), allowModel: body.allowModel === true,

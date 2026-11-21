@@ -14,6 +14,13 @@ export interface WikiIngestSettings { python: string; provider: string; model: s
 interface Item { id: string; source: string; sha: string; size: number; category?: string; archived?: string; raw?: string; rawHash?: string; stage: 'new' | 'classified' | 'archived' | 'extracted' | 'done' | 'review' | 'failed'; error?: string; pages?: string[]; activity?: string }
 export interface WikiIngestJob { id: string; kbId: string; state: 'running' | 'paused' | 'done' | 'cancelled'; settings: WikiIngestSettings; items: Item[]; createdAt: string; updatedAt: string; discovery?: { found: number; duplicates: number } }
 export type WikiDistiller = (kbId: string, item: Item, settings: WikiIngestSettings, operationId: string, signal: AbortSignal) => Promise<string[]>
+// Catalog/index artifacts describe the library; they are never source material.
+const inventoryName = /^(?:readme|read_me|index|log|schema|knowledge-archive|license|changelog|归档清单|归档目录树|资料索引|资料目录|目录树|索引|清单)(?:[._-]|$)/i
+const inventoryStem = /\b(?:index|catalog|contents|inventory)\b/i
+function isInventory(name: string): boolean {
+  const base = name.replace(/\.[^.]+$/, '')
+  return inventoryName.test(name) || inventoryStem.test(base)
+}
 const registration = new Set(['.mp4','.exe','.rar','.zip','.msi','.7z','.doc'])
 function safeCategory(value: unknown): string {
   if (typeof value !== 'string' || !value.trim() || value.length > 100 || /[\\/:*?"<>|\u0000-\u001f]/.test(value) || /^[. ]|[. ]$/.test(value) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(value)) throw new Error('WIKI_CATEGORY_INVALID')
@@ -41,7 +48,7 @@ export class WikiIngest {
     const result = []
     // Root-level投递 only. Existing classified subtrees are baseline, never automatically reorganized.
     for (const entry of entries) {
-      if (!entry.isFile() || entry.isSymbolicLink() || entry.name.startsWith('.') || /^(readme|归档清单|knowledge-archive|index|log|schema)\./i.test(entry.name)) continue
+      if (!entry.isFile() || entry.isSymbolicLink() || entry.name.startsWith('.') || isInventory(entry.name)) continue
       const source = join(root,entry.name), stat = await lstat(source)
       if (stat.size > 256*1024*1024) continue
       const sha = wikiHash(await readFile(source))

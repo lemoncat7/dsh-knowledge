@@ -10,6 +10,8 @@ class Element {
   setAttribute(k,v){this.attrs[k]=v}
   removeAttribute(k){delete this.attrs[k]}
   querySelector(){return undefined}
+  get textContent(){return this.children.map(text).join("")}
+  set textContent(value){this.children=[];if(value!==""&&value!==undefined&&value!==null)this.append(String(value))}
 }
 const element=(...args)=>new Element(...args)
 const actionButton=(label,click,variant='',attrs={})=>{const n=element('button',attrs,label);n.click=click;return n}
@@ -26,6 +28,9 @@ function fixture(t, {configured=true, confirm=false, gate, jobs, connection}={})
  if(path.endsWith("/connection"))return connection??{state:configured?"ready":"unconfigured",layout:configured?{sourceDir:"s",workspaceRoot:"w",rawDir:"r",pageDir:"w/wiki"}:undefined,report:{registered:0,existing:2,rejected:0,items:[]}};
  if(path==="wiki")return configured?[{kbId:"A",layout:{sourceDir:"s",workspaceRoot:"w",rawDir:"r"}}]:[];
  if(path.endsWith("/pages"))return [{pageId:"p",relPath:"wiki/notes/a.md",status:"active",version:1}];
+ if(path.endsWith("/scan"))return {connection:{state:"ready",layout:{pageDir:"w/wiki"},report:{registered:0,existing:0,rejected:0,items:[]}},files:[{name:"a.docx",size:2048,duplicate:false},{name:"done.docx",size:10,duplicate:true}]};
+ if(path.endsWith("/process"))return {id:"job-new",state:"running",items:[{id:"i",source:"a.docx",stage:"new"}],discovery:{found:2,duplicates:1},kbId:"A",settings:{},createdAt:"",updatedAt:""};
+ if(path.includes("/job/"))return {ok:true};
  if(path.endsWith("/jobs"))return jobs?jobs():[{id:"job-1",state:"done",items:[]}];
  if(path.endsWith("/proposals")||path.endsWith("/raw"))return [];
  if(path.endsWith("/python"))return {candidates:[],hint:""};
@@ -98,3 +103,6 @@ test("a response arriving after dispose cannot repaint the workspace", async t=>
 test("finished tasks expose linked results without implying all done items created pages",async t=>{const f=fixture(t,{jobs:()=>[{id:"results",state:"done",items:[{source:"a.docx",stage:"done",pages:["wiki/notes/a.md"]},{source:"video.mp4",stage:"done"}]}]});await pending();assert.ok(f.button("查看关联页：wiki/notes/a.md"));assert.ok(text(f.root).includes("未生成知识页"));});
 
 test("setup has only three directory fields and no project controls",async t=>{const f=fixture(t,{configured:false});await pending();assert.equal(f.nodes().find(n=>n.attrs["aria-label"]==="范围"),undefined);assert.equal(f.nodes().find(n=>n.attrs["aria-label"]==="项目编号"),undefined);assert.ok(f.nodes().find(n=>n.attrs["aria-label"]==="Wiki 文件夹"));assert.equal(f.nodes().filter(n=>n.tag==="button"&&text(n)==="选择目录").length,3);});
+
+test("scan only previews candidates and offers a separate confirmed processing action",async t=>{const f=fixture(t);await pending();await f.button("扫描更新").click();await pending();assert.ok(f.calls.some(c=>c.path.endsWith("/scan")));assert.ok(!f.calls.some(c=>c.path.endsWith("/process")),"scan must not start processing");assert.match(text(f.root),/发现 1 个待处理原件/);const start=f.button("开始处理");assert.ok(start);assert.equal(start.disabled,true,"needs model consent");const consent=f.nodes().filter(n=>n.tag==="input"&&n.attrs.type==="checkbox").at(-1);consent.checked=true;consent.listeners.change();assert.equal(start.disabled,false);});
+test("a running job always exposes a stop control that cancels it",async t=>{const f=fixture(t,{jobs:()=>[{id:"running-1",state:"running",items:[{id:"i",source:"a.docx",stage:"new"}]}]});await pending();const stop=f.button("停止");const bar=f.nodes().find(n=>String(n.attrs.class||"").includes("wiki-runbar"));assert.equal(bar.hidden,false,"stop bar visible while running");assert.ok(stop);await stop.click();await pending();const cancel=f.calls.find(c=>c.path.includes("/job/running-1"));assert.deepEqual(cancel.body,{action:"cancel"});f.dispose();});

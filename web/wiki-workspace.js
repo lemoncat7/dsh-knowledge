@@ -9,9 +9,18 @@ const STAGE_LABEL = { new: '待归类', classified: '已归类', archived: '已�
  */
 export function createWikiWorkspace({ api, element, actionButton, badge, interfaceIcon, openModal, bases }) {
   const root = element('section', { class: 'wiki-workspace' })
-  const state = { kbId: '', configs: [], pages: [], page: undefined, standard: undefined, dirty: false }
+  const state = { kbId: '', configs: [], pages: [], page: undefined, standard: undefined, dirty: false, runningJobId: '' }
   const status = element('p', { class: 'wiki-status', role: 'status', 'aria-live': 'polite' })
   const activity = element('p', { class: 'wiki-progress', role: 'status', 'aria-live': 'polite' })
+  const runBar = element('div', { class: 'wiki-runbar', hidden: true })
+  const runText = element('span', {}, '')
+  const stopButton = actionButton('停止', () => void run(async () => {
+    if (!state.runningJobId) return
+    await call(url(`job/${state.runningJobId}`), { method: 'POST', body: { action: 'cancel' } })
+    activity.textContent = '已请求停止，正在结束当前文件…'
+    await loadJobs()
+  }), 'danger small')
+  runBar.append(runText, stopButton)
   let busy = false
   let disposed = false, generation = 0
   const connectionView = element('div', { class: 'wiki-connection', role: 'status' })
@@ -55,6 +64,10 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   let progressTimer
   let progressWasRunning = false
   let progressFailures = 0
+  const previewNote = element('p', { class: 'wiki-hint' })
+  const previewList = element('div', { class: 'wiki-list' })
+  let processButton
+  let previewCount = 0
   const RAW_PAGE = 100
   const editor = element('textarea', { class: 'textarea wiki-editor', rows: 22, spellcheck: 'false', 'aria-label': 'Markdown 编辑器' })
   const editorTitle = element('strong', { class: 'wiki-editor-title' }, '未选择文件')
@@ -70,6 +83,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
 
   const url = suffix => `wiki/${encodeURIComponent(state.kbId)}/${suffix}`
   editor.addEventListener('input', () => { state.dirty = true; saveButton.disabled = false })
+  consentToggle.addEventListener('change', () => { if (processButton) processButton.disabled = !consentToggle.checked || !previewCount })
   rawDetails.addEventListener('toggle', () => { if (rawDetails.open && !rawLoaded) void run(loadRaw) })
   rawFilter.addEventListener('input', () => { if (rawLoaded) renderRaw() })
   advancedDetails.addEventListener('toggle', () => {
@@ -193,6 +207,10 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   }
 
   function drawJobs(jobs) {
+    const active = jobs.find(job => job.state === 'running')
+    state.runningJobId = active?.id ?? ''
+    runBar.hidden = !active
+    if (active) runText.textContent = `处理中：${stageSummary(active)}`
     jobList.replaceChildren()
     if (!jobs.length) { jobList.append(element('p', { class: 'muted' }, '还没有入库任务。')); return }
     for (const job of jobs) {
@@ -447,22 +465,33 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
       element('label', { class: 'check-option' }, consentToggle, element('span', {}, '允许把本批资料发送给所选模型', element('small', {}, '分类只看受限预览，蒸馏只看抽取后的正文'))),
       element('div', { class: 'wiki-actions' },
         actionButton('扫描更新', () => void run(async () => {
-          activity.textContent = '准备扫描：检查目录、识别已有页面，然后发现原件根目录的新文件…'
+          activity.textContent = '正在检查目录与已有页面，只读取，不移动文件…'
+          const result = await call(url('scan'), { method: 'POST', body: {} })
+          renderConnection(result.connection)
+          const fresh = result.files.filter(file => !file.duplicate)
+          const skipped = result.files.length - fresh.length
+          previewList.replaceChildren(...fresh.map(file => element('div', { class: 'wiki-row' }, element('span', {}, file.name), element('span', { class: 'muted' }, Math.round(file.size / 1024) + ' KB'))))
+          previewNote.textContent = fresh.length
+            ? `发现 ${fresh.length} 个待处理原件（跳过 ${skipped} 个已处理）。确认后才会移动到分类目录并调用模型。`
+            : `没有待处理原件（跳过 ${skipped} 个已处理）。原件需放在源文件夹根层，分类子目录不会被扫描。`
+          previewCount = fresh.length
+          processButton.disabled = !fresh.length || !consentToggle.checked
+          processButton.hidden = !fresh.length
+          await loadJobs()
+          return fresh.length ? `发现 ${fresh.length} 个原件，等待你确认处理` : '没有待处理原件'
+        }), 'small'),
+        processButton = actionButton('开始处理', () => void run(async () => {
           if (!consentToggle.checked) throw new Error('请先确认允许发送资料给模型')
-          if (!pythonSelect.value) throw new Error('未检测到 Python，请先安装或在下方手动指定')
+          if (!pythonSelect.value) throw new Error('未检测到 Python，请先安装或重新检测')
           if (!providerSelect.value || !modelSelect.value) throw new Error('请选择模型渠道与模型')
-          const result = await call(url('update'), { method: 'POST', body: {
+          if (!window.confirm('将把源文件夹根层的待处理原件移动到分类子目录，并调用所选模型抽取与蒸馏。继续？')) return
+          activity.textContent = '正在启动处理任务…'
+          const job = await call(url('process'), { method: 'POST', body: {
             python: pythonSelect.value, provider: providerSelect.value, model: modelSelect.value, allowModel: true,
           } })
-          renderConnection(result.connection)
-          const job = result.job
-          activity.textContent = result.reused ? '已找到运行任务，进度正在刷新' : `扫描完成：发现 ${job.discovery?.found ?? job.items.length} 个原件，其中 ${job.discovery?.duplicates ?? 0} 个已处理，新增待处理 ${job.items.length} 个`
           await loadJobs()
-          if (result.reused) return `已有任务在运行（${job.id.slice(0, 8)}），未重复扫描，请查看下方进度`
-          const { found, duplicates } = job.discovery
-          if (!job.items.length) return `页面接入 ${result.connection.report?.registered ?? 0} 篇；原件根目录发现 ${found} 个，跳过 ${duplicates} 个已处理，无新原件待处理（不扫描分类子目录）`
-          return `发现 ${found} 个文件，跳过 ${duplicates} 个已处理；任务 ${job.id.slice(0, 8)} 已开始，进度见下方（自动刷新）`
-        }), 'small'),
+          return `已开始处理 ${job.items.length} 个文件，可在上方停止`
+        }), 'small', { disabled: true, hidden: true }),
         actionButton('安装缺失依赖', () => void run(async () => {
           if (!pythonSelect.value) throw new Error('未检测到 Python')
           if (!window.confirm('将用该解释器联网安装缺失的解析库（pypdf / xlrd 等）。继续？')) return
@@ -472,7 +501,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
         }), 'ghost small', { hidden: true, 'data-python-install': '1' }),
         actionButton('重新检测 Python', () => void run(async () => { await loadPython(); return '已重新检测' }), 'ghost small'),
         actionButton('刷新任务', () => void run(async () => { await loadJobs(); return '任务状态已刷新' }), 'ghost small')),
-      activity, jobList),
+      runBar, activity, previewNote, previewList, jobList),
     advancedDetails,
     section('蒸馏更新审核', '模型建议替换现有页时先保存候选，批准后才写文件。',
       element('div', { class: 'wiki-actions' }, actionButton('刷新候选', () => void run(loadProposals), 'ghost small')),
