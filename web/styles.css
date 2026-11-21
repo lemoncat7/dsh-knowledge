@@ -2354,3 +2354,9 @@ html,
 
 .wiki-progress { margin: 2px 0 0; font-size: 12px; line-height: 1.6; color: var(--text-secondary); }
 .wiki-progress.is-running { color: var(--accent); }
+
+/* Hidden onboarding states must win over grid display rules. */
+.wiki-workspace [hidden] { display: none !important; }
+.wiki-connect-settings[open] { display: grid; gap: 10px; }
+.wiki-connection { display: grid; gap: 6px; min-width: 0; }
+.wiki-connection p { margin: 0; overflow-wrap: anywhere; }
