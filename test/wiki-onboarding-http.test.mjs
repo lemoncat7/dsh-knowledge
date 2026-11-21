@@ -22,7 +22,8 @@ test('connection endpoints require local management auth, validate scope and ret
   assert.equal((await (await fetch(endpoint+'/connection',{headers})).json()).state,'unconfigured')
   const sourceDir=join(root,'source'),workspaceRoot=join(root,'work');await mkdir(sourceDir);await mkdir(workspaceRoot)
   const body={sourceDir,workspaceRoot}
-  assert.equal((await fetch(endpoint+'/connect',{method:'POST',headers,body:JSON.stringify(body)})).status,400)
+  assert.equal((await fetch(endpoint+'/connect',{method:'POST',headers,body:JSON.stringify({...body,scope:{kind:'invalid'}})})).status,400)
+  assert.equal((await fetch(endpoint+'/connect',{method:'POST',headers,body:JSON.stringify(body)})).status,200)
   const connected=await fetch(endpoint+'/connect',{method:'POST',headers,body:JSON.stringify({...body,scope:{kind:'global'}})})
   assert.equal(connected.status,200)
   const report=await connected.json();assert.equal(report.state,'ready');assert.equal(report.layout.pageDir,join(workspaceRoot,'wiki'))

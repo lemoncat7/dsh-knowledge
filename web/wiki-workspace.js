@@ -11,6 +11,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   const root = element('section', { class: 'wiki-workspace' })
   const state = { kbId: '', configs: [], pages: [], page: undefined, standard: undefined, dirty: false }
   const status = element('p', { class: 'wiki-status', role: 'status', 'aria-live': 'polite' })
+  const activity = element('p', { class: 'wiki-progress', role: 'status', 'aria-live': 'polite' })
   let busy = false
   let disposed = false, generation = 0
   const connectionView = element('div', { class: 'wiki-connection', role: 'status' })
@@ -27,15 +28,11 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   }
 
   const baseSelect = element('select', { class: 'select', 'aria-label': '选择知识库' }, bases.map(b => element('option', { value: b.id }, b.name)))
-  const sourceInput = element('input', { class: 'input', placeholder: '原件投放与归档目录', 'aria-label': '原件目录' })
-  const workspaceInput = element('input', { class: 'input', placeholder: 'Wiki 工作区目录', 'aria-label': '工作区目录' })
+  const sourceInput = element('input', { class: 'input', placeholder: '源文件夹（新原件放在这里）', 'aria-label': '源文件夹' })
+  const workspaceInput = element('input', { class: 'input', placeholder: 'Wiki 成文文件夹（直接选择 wiki）', 'aria-label': 'Wiki 文件夹' })
   const rawInput = element('input', { class: 'input', placeholder: '留空则使用工作区/raw', 'aria-label': 'raw 目录' })
   const conversationToggle = element('input', { type: 'checkbox' })
-  const scopeSelect = element('select', { class: 'select', 'aria-label': '范围' },
-    element('option', { value: 'project' }, '项目范围'),
-    element('option', { value: 'global' }, '全局范围'))
-  const projectInput = element('input', { class: 'input', placeholder: '项目 ID / 路径（项目范围必填）', 'aria-label': '项目编号' })
-
+  // Scope remains a backend compatibility policy, not a manual setup task.
   const pythonSelect = element('select', { class: 'select', 'aria-label': 'Python 解释器' })
   const pythonNote = element('p', { class: 'wiki-hint' })
   const providerSelect = element('select', { class: 'select', 'aria-label': '模型 provider' })
@@ -72,12 +69,6 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
     editor)
 
   const url = suffix => `wiki/${encodeURIComponent(state.kbId)}/${suffix}`
-  const scope = () => scopeSelect.value === 'global' ? { kind: 'global' } : { kind: 'project', id: projectInput.value.trim() }
-  const requireProject = () => {
-    if (scopeSelect.value === 'project' && !projectInput.value.trim()) throw new Error('请先填写项目范围')
-    return scope()
-  }
-
   editor.addEventListener('input', () => { state.dirty = true; saveButton.disabled = false })
   rawDetails.addEventListener('toggle', () => { if (rawDetails.open && !rawLoaded) void run(loadRaw) })
   rawFilter.addEventListener('input', () => { if (rawLoaded) renderRaw() })
@@ -106,7 +97,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
     if (busy || disposed) return
     busy = true; baseSelect.disabled = true; root.setAttribute('aria-busy', 'true'); status.textContent = '处理中…'
     try { status.textContent = (await action()) ?? '已完成' }
-    catch (error) { status.textContent = error.message }
+    catch (error) { status.textContent = error.message; activity.textContent = error.message }
     finally { busy = false; baseSelect.disabled = false; root.removeAttribute('aria-busy') }
   }
 
@@ -125,7 +116,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
     state.configs = await call('wiki')
     const current = state.configs.find(entry => entry.kbId === state.kbId)
     sourceInput.value = current?.layout.sourceDir ?? ''
-    workspaceInput.value = current?.layout.workspaceRoot ?? ''
+    workspaceInput.value = current?.layout.pageDir ?? ''
     rawInput.value = current?.layout.rawDir ?? ''
     conversationToggle.checked = Boolean(current?.conversationEnabled)
     return current
@@ -197,7 +188,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
     const parts = [`完成 ${done}/${total}`]
     if (failed) parts.push(`失败 ${failed}`)
     if (review) parts.push(`待人工 ${review}`)
-    if (current) parts.push(`当前：${current.source.split(/[\\/]/).pop()}（${STAGE_LABEL[current.stage] ?? current.stage}）`)
+    if (current) parts.push(`当前：${current.source.split(/[\\/]/).pop()}（${current.activity || STAGE_LABEL[current.stage] || current.stage}）`)
     return parts.join(' · ')
   }
 
@@ -383,10 +374,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
     if (!state.kbId) return '请先创建一个空知识库'
     const config = await refreshConfig()
     const connection = await call(url('connection'))
-    if (connection.scope) {
-      scopeSelect.value = connection.scope.kind
-      projectInput.value = connection.scope.kind === 'project' ? connection.scope.id : ''
-    }
+    if (config && connection.state === 'configured' && config.layout.workspaceRoot.split(/[\\/]/).pop()?.toLowerCase() === 'wiki') workspaceInput.value = config.layout.workspaceRoot
     renderConnection(connection)
     if (!config) {
       jobList.replaceChildren(); proposalList.replaceChildren(); rawList.replaceChildren()
@@ -433,20 +421,17 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
       element('summary', {}, '目录与接入设置'),
       connectTitle = element('h2', {}, '接入知识库'),
       element('p', { class: 'wiki-hint' }, '首次接入只登记和索引已有页面，不改原文、不移动原件、不调用模型。'),
-      element('div', { class: 'wiki-grid' }, pathField(sourceInput, '原件目录'), pathField(workspaceInput, 'Wiki 工作区')),
-      element('p', { class: 'wiki-hint' }, '选择包含 wiki/ 的工作区；正文实际在工作区/wiki，不要重复选择内部的 wiki 文件夹。'),
-      element('div', { class: 'wiki-toolbar' }, scopeSelect, projectInput),
-      element('p', { class: 'wiki-hint' }, '明确选择本库范围；已有页面的范围不因再次接入而被覆盖。'),
+      element('div', { class: 'wiki-grid' }, pathField(sourceInput, '源文件夹'), pathField(workspaceInput, 'Wiki 文件夹'), pathField(rawInput, 'raw 文件夹')),
+      element('p', { class: 'wiki-hint' }, '直接选择存放成文的 wiki 文件夹；不会再追加一层 wiki。新库按普通知识库使用，已有页面范围保持不变。'),
       element('details', { class: 'wiki-details' }, element('summary', {}, '更多设置'),
-        pathField(rawInput, 'raw 目录'),
         element('label', { class: 'check-option' }, conversationToggle, element('span', {}, '允许对话证据写入该库'))),
       element('div', { class: 'wiki-actions' },
         actionButton('接入知识库', () => void run(async () => {
           try {
             const result = await call(url('connect'), { method: 'POST', body: {
-              sourceDir: sourceInput.value.trim(), workspaceRoot: workspaceInput.value.trim(),
+              sourceDir: sourceInput.value.trim(), wikiDir: workspaceInput.value.trim(),
               ...(rawInput.value.trim() ? { rawDir: rawInput.value.trim() } : {}),
-              conversationEnabled: conversationToggle.checked, scope: requireProject(),
+              conversationEnabled: conversationToggle.checked,
             } })
             renderConnection(result); await reload()
             return result.state === 'partial' ? '部分接入，请查看异常文件' : '接入完成，可投递原件后扫描更新'
@@ -462,15 +447,16 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
       element('label', { class: 'check-option' }, consentToggle, element('span', {}, '允许把本批资料发送给所选模型', element('small', {}, '分类只看受限预览，蒸馏只看抽取后的正文'))),
       element('div', { class: 'wiki-actions' },
         actionButton('扫描更新', () => void run(async () => {
-          const value = requireProject()
+          activity.textContent = '准备扫描：检查目录、识别已有页面，然后发现原件根目录的新文件…'
           if (!consentToggle.checked) throw new Error('请先确认允许发送资料给模型')
           if (!pythonSelect.value) throw new Error('未检测到 Python，请先安装或在下方手动指定')
           if (!providerSelect.value || !modelSelect.value) throw new Error('请选择模型渠道与模型')
           const result = await call(url('update'), { method: 'POST', body: {
-            python: pythonSelect.value, provider: providerSelect.value, model: modelSelect.value, allowModel: true, scope: value,
+            python: pythonSelect.value, provider: providerSelect.value, model: modelSelect.value, allowModel: true,
           } })
           renderConnection(result.connection)
           const job = result.job
+          activity.textContent = result.reused ? '已找到运行任务，进度正在刷新' : `扫描完成：发现 ${job.discovery?.found ?? job.items.length} 个原件，其中 ${job.discovery?.duplicates ?? 0} 个已处理，新增待处理 ${job.items.length} 个`
           await loadJobs()
           if (result.reused) return `已有任务在运行（${job.id.slice(0, 8)}），未重复扫描，请查看下方进度`
           const { found, duplicates } = job.discovery
@@ -486,7 +472,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
         }), 'ghost small', { hidden: true, 'data-python-install': '1' }),
         actionButton('重新检测 Python', () => void run(async () => { await loadPython(); return '已重新检测' }), 'ghost small'),
         actionButton('刷新任务', () => void run(async () => { await loadJobs(); return '任务状态已刷新' }), 'ghost small')),
-      jobList),
+      activity, jobList),
     advancedDetails,
     section('蒸馏更新审核', '模型建议替换现有页时先保存候选，批准后才写文件。',
       element('div', { class: 'wiki-actions' }, actionButton('刷新候选', () => void run(loadProposals), 'ghost small')),

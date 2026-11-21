@@ -34,8 +34,10 @@ export async function handleWikiApi(provider: LocalKnowledgeProvider, segments: 
   if (req.method === 'GET' && action === 'connection') { send(provider.wiki.connectionStatus(kbId)); return }
   if (req.method === 'POST' && action === 'connect') {
     const body = await bodyOf(req)
-    send(await provider.wiki.connect({ kbId, sourceDir: required(body.sourceDir), workspaceRoot: required(body.workspaceRoot),
-      ...(body.rawDir === undefined ? {} : { rawDir: required(body.rawDir) }), conversationEnabled: body.conversationEnabled === true, scope: scopeOf(body.scope) })); return
+    send(await provider.wiki.connect({ kbId, sourceDir: required(body.sourceDir),
+      ...(body.wikiDir === undefined ? { workspaceRoot: required(body.workspaceRoot) } : { wikiDir: required(body.wikiDir) }),
+      ...(body.rawDir === undefined ? {} : { rawDir: required(body.rawDir) }), conversationEnabled: body.conversationEnabled === true,
+      ...(body.scope === undefined ? {} : { scope: scopeOf(body.scope) }) })); return
   }
   if (req.method === 'PUT' && segments.length === 2) {
     const body = await bodyOf(req)
@@ -84,7 +86,8 @@ export async function handleWikiApi(provider: LocalKnowledgeProvider, segments: 
   if (req.method === 'GET' && action === 'jobs') { send(provider.wiki.ingest.jobs(kbId)); return }
   if (req.method === 'POST' && action === 'update') {
     const body = await bodyOf(req)
-    send(await provider.wiki.update(kbId, { python: required(body.python), provider: required(body.provider), model: required(body.model), allowModel: body.allowModel === true, scope: scopeOf(body.scope) })); return
+    send(await provider.wiki.update(kbId, { python: required(body.python), provider: required(body.provider), model: required(body.model), allowModel: body.allowModel === true,
+      scope: body.scope === undefined ? provider.wiki.connectionStatus(kbId).scope ?? { kind: 'global' } : scopeOf(body.scope) })); return
   }
   if (req.method === 'POST' && action === 'ingest') {
     const body = await bodyOf(req)

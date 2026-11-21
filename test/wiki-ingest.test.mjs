@@ -109,3 +109,5 @@ test('same basename with different bytes is never overwritten', async t => {
   assert.equal(await readFile(join(sourceDir, '01_产品说明书', '同名.txt'), 'utf8'), '已归档的旧内容，不能被覆盖。')
   assert.equal(await readFile(join(sourceDir, '同名.txt'), 'utf8'), '新投递的不同内容。')
 })
+
+test("job exposes persisted activity while waiting for classification model",async t=>{const {provider,kb,sourceDir}=await fixture(t);let release,entered;const waiting=new Promise(r=>entered=r);provider.wiki.ingest.modelFor=()=>async()=>{entered();await new Promise(r=>release=r);return{category:"说明",confidence:.99}};provider.wiki.ingest.distill=async()=>[];await writeFile(join(sourceDir,"progress.txt"),"这是用于检测模型等待期间可见进度的正常原始文本资料。");const job=await provider.wiki.ingest.start(kb,{python:PYTHON,provider:"p",model:"m",allowModel:true,scope:{kind:"global"}});await waiting;const snapshot=provider.wiki.ingest.jobs(kb).find(j=>j.id===job.id);assert.equal(snapshot.items[0].activity,"正在由模型分类");assert.equal(snapshot.state,"running");release();});

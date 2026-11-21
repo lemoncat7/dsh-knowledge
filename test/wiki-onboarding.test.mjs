@@ -5,14 +5,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { LocalKnowledgeProvider } from '../lib/local-provider.js'
 
-async function fixture(t) {
+async function fixture(t, configured=true) {
   const root = await mkdtemp(join(tmpdir(), 'wiki-connect-'))
   const provider = new LocalKnowledgeProvider(join(root, 'db.sqlite'))
   const sourceDir = join(root, 'source'), workspaceRoot = join(root, 'workspace')
   await mkdir(sourceDir); await mkdir(workspaceRoot)
   const base = await provider.createKnowledgeBase({ name: '接入测试', description: '', defaultTags: [], extractionInstructions: '', writebackPolicy: 'conservative' })
-  await provider.wiki.configure({ kbId: base.id, sourceDir, workspaceRoot })
-  const store = provider.wiki.store(base.id)
+  if(configured) await provider.wiki.configure({ kbId: base.id, sourceDir, workspaceRoot })
+  const store = configured ? provider.wiki.store(base.id) : undefined
   t.after(async () => { await provider.close(); await rm(root, { recursive: true, force: true, maxRetries: 5 }) })
   return { provider, store, base: base.id, root, sourceDir, workspaceRoot }
 }
@@ -123,3 +123,19 @@ test("concurrent daily update requests cannot enqueue duplicate source tasks", a
 test("a quarantined invalid old page does not block subsequent valid Wiki writes",async t=>{const f=await fixture(t),config={kbId:f.base,sourceDir:f.sourceDir,workspaceRoot:f.workspaceRoot,scope:{kind:"global"}};const path=join(f.workspaceRoot,"wiki","bad.md");await writeFile(path,page);await f.provider.wiki.connect(config);await writeFile(path,"---\ntitle: [broken\n---\nbroken");assert.equal((await f.provider.wiki.connect(config)).state,"partial");const entry=await f.provider.wiki.write({knowledgeBaseId:f.base,title:"新知识",body:"正常新知识正文",tags:[],type:"fact",scope:{kind:"global"},confidence:.9},undefined,"after-partial");assert.ok(await f.provider.get(entry));});
 
 test("repairing a rejected page reconnects its original identity and clears partial status",async t=>{const f=await fixture(t),config={kbId:f.base,sourceDir:f.sourceDir,workspaceRoot:f.workspaceRoot,scope:{kind:"project",id:"p"}};const target=join(f.workspaceRoot,"wiki","repair.md");await writeFile(target,page);await f.provider.wiki.connect(config);const id=(await f.store.manifest()).pages[0].pageId;await writeFile(target,"---\ntitle: [broken\n---\nbad");assert.equal((await f.provider.wiki.connect(config)).state,"partial");await writeFile(target,page+"修正内容");assert.equal((await f.provider.wiki.connect(config)).state,"ready");assert.equal((await f.store.manifest()).pages[0].pageId,id);assert.equal((await f.provider.list({knowledgeBaseId:f.base,status:"active",limit:10})).items.length,1);});
+
+
+test('direct wiki folder input resolves exactly that folder without duplicating wiki and needs no scope field',async t=>{
+ const f=await fixture(t)
+ const value=await f.provider.wiki.connect({kbId:f.base,sourceDir:f.sourceDir,wikiDir:join(f.workspaceRoot,'wiki'),rawDir:join(f.workspaceRoot,'raw')})
+ assert.equal(value.layout.pageDir,join(f.workspaceRoot,'wiki'))
+ assert.deepEqual(value.scope,{kind:'global'})
+})
+
+test('omitted scope preserves previously established project scope',async t=>{
+ const f=await fixture(t),input={kbId:f.base,sourceDir:f.sourceDir,workspaceRoot:f.workspaceRoot}
+ await f.provider.wiki.connect({...input,scope:{kind:'project',id:'private'}})
+ assert.deepEqual((await f.provider.wiki.connect(input)).scope,{kind:'project',id:'private'})
+})
+
+test("empty unconnected mistaken wiki/wiki binding can be explicitly corrected without moving files",async t=>{const f=await fixture(t,false);const selected=join(f.workspaceRoot,"wiki");await mkdir(selected);await f.provider.wiki.configure({kbId:f.base,sourceDir:f.sourceDir,workspaceRoot:selected});const result=await f.provider.wiki.connect({kbId:f.base,sourceDir:f.sourceDir,wikiDir:selected,rawDir:join(f.workspaceRoot,"raw")});assert.equal(result.layout.pageDir,selected);assert.equal(result.state,"ready");});

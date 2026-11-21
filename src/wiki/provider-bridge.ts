@@ -1,7 +1,7 @@
 import { WikiProposals } from './proposals.js'
 import { WikiIngest, type WikiIngestSettings, type WikiIngestJob } from './ingest.js'
-import { join } from 'node:path'
-import { readFile, mkdir, realpath } from 'node:fs/promises'
+import { join, dirname, basename, resolve } from 'node:path'
+import { readFile, mkdir, realpath, readdir } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import type { KnowledgeDraft, KnowledgeEntry, KnowledgeScope } from '../domain.js'
@@ -16,7 +16,7 @@ export interface WikiConnectionReport {
   updatedAt?: string
   scope?: KnowledgeScope
 }
-type WikiConnectInput = { kbId: string; sourceDir: string; workspaceRoot: string; rawDir?: string; conversationEnabled?: boolean; scope: KnowledgeScope }
+type WikiConnectInput = { kbId: string; sourceDir: string; workspaceRoot?: string; wikiDir?: string; rawDir?: string; conversationEnabled?: boolean; scope?: KnowledgeScope }
 import { resolveWikiLayout, type WikiLayout } from './paths.js'
 import { wikiHash, WikiCommitter } from './commit.js'
 import { createWikiPage, wikiStorageKey, type WikiPage } from './identity.js'
@@ -72,21 +72,40 @@ export class WikiProviderBridge {
   connect(input: WikiConnectInput): Promise<WikiConnectionReport> {
     const queued = this.connections.get(input.kbId) ?? Promise.resolve({ state: 'configured' } as WikiConnectionReport)
     const next = queued.catch(() => ({ state: 'failed' } as WikiConnectionReport)).then(async () => {
-      if (!input.scope || !['global', 'project'].includes(input.scope.kind) || input.scope.kind === 'project' && !input.scope.id.trim()) throw new Error('WIKI_SCOPE_REQUIRED')
+      const scope = input.scope ?? this.connectionStatus(input.kbId).scope ?? { kind: 'global' as const }
+      if (!['global', 'project'].includes(scope.kind) || scope.kind === 'project' && !scope.id.trim()) throw new Error('WIKI_SCOPE_REQUIRED')
+      const selectedWiki = input.wikiDir ? resolve(input.wikiDir) : undefined
+      if (selectedWiki && basename(selectedWiki).toLowerCase() !== 'wiki') throw new Error('WIKI_DIRECTORY_NAME_REQUIRED：请选择名为 wiki 的成文文件夹')
+      const workspaceRoot = selectedWiki ? dirname(selectedWiki) : input.workspaceRoot
+      if (!workspaceRoot) throw new Error('WIKI_DIRECTORY_REQUIRED')
       const save = (value: WikiConnectionReport) => {
         this.db.prepare('INSERT INTO wiki_connection_status VALUES(?,?) ON CONFLICT(kb_id) DO UPDATE SET body=excluded.body')
           .run(input.kbId, JSON.stringify({ ...value, updatedAt: new Date().toISOString() }))
         return this.connectionStatus(input.kbId)
       }
       try {
-        const layout = await this.configure(input), store = this.store(input.kbId)
+        const old = this.list().find(item => item.kbId === input.kbId)
+        if (selectedWiki && old && resolve(old.layout.workspaceRoot) === selectedWiki && resolve(old.layout.pageDir) === join(selectedWiki, 'wiki')) {
+          const metadata = await readdir(old.layout.metaDir).catch((error: NodeJS.ErrnoException) => { if(error.code === 'ENOENT') return []; throw error })
+          const nested = await readdir(old.layout.pageDir).catch((error: NodeJS.ErrnoException) => { if(error.code === 'ENOENT') return []; throw error })
+          const indexed = this.db.prepare('SELECT 1 FROM knowledge_entries WHERE knowledge_base_id=? LIMIT 1').get(input.kbId)
+          if (metadata.length || nested.length || indexed || this.ingest.jobs(input.kbId).length) throw new Error('WIKI_RELOCATION_REQUIRES_DETACH')
+          // Explicit correction of an unused wrong binding only. Never move or delete user files.
+          const corrected = resolveWikiLayout({ kbId: input.kbId, sourceDir: await realpath(input.sourceDir), workspaceRoot: await realpath(workspaceRoot), ...(input.rawDir ? {rawDir:input.rawDir} : {}) })
+          for (const other of this.list().filter(item => item.kbId !== input.kbId)) {
+            const { isPathInside } = await import('./paths.js')
+            if ([corrected.sourceDir,corrected.workspaceRoot,corrected.rawDir].some(a => [other.layout.sourceDir,other.layout.workspaceRoot,other.layout.rawDir].some(b=>isPathInside(a,b)||isPathInside(b,a)))) throw new Error('WIKI_CROSS_BASE_OVERLAP')
+          }
+          this.db.prepare('UPDATE wiki_local_bases SET layout_json=? WHERE kb_id=?').run(JSON.stringify(corrected), input.kbId)
+        }
+        const layout = await this.configure({ ...input, workspaceRoot }), store = this.store(input.kbId)
         await store.committer.recover()
         await store.committer.assertSettled()
         const registrationStore = new WikiStore(layout)
-        const report = await registrationStore.importValid(input.scope, `connect:${randomUUID()}`)
+        const report = await registrationStore.importValid(scope, `connect:${randomUUID()}`)
         const excludedPaths = report.items.filter(item => item.status === 'invalid' || item.status === 'too_long').map(item => 'wiki/' + item.relPath)
         await this.rebuild(input.kbId, { acceptExternal: true, excludedPaths })
-        return save({ state: report.rejected ? 'partial' : 'ready', layout, report, scope: input.scope })
+        return save({ state: report.rejected ? 'partial' : 'ready', layout, report, scope })
       } catch (error) {
         save({ state: 'failed', error: error instanceof Error ? error.message : String(error) })
         throw error

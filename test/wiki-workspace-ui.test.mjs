@@ -96,3 +96,5 @@ test("disposing a workspace aborts pending reads and stops polling", async t=>{t
 
 test("a response arriving after dispose cannot repaint the workspace", async t=>{let release;const f=fixture(t,{gate:path=>path.endsWith("/connection")?new Promise(r=>release=r):undefined});await pending();f.dispose();release();await pending();assert.ok(!text(f.root).includes("成文目录："));});
 test("finished tasks expose linked results without implying all done items created pages",async t=>{const f=fixture(t,{jobs:()=>[{id:"results",state:"done",items:[{source:"a.docx",stage:"done",pages:["wiki/notes/a.md"]},{source:"video.mp4",stage:"done"}]}]});await pending();assert.ok(f.button("查看关联页：wiki/notes/a.md"));assert.ok(text(f.root).includes("未生成知识页"));});
+
+test("setup has only three directory fields and no project controls",async t=>{const f=fixture(t,{configured:false});await pending();assert.equal(f.nodes().find(n=>n.attrs["aria-label"]==="范围"),undefined);assert.equal(f.nodes().find(n=>n.attrs["aria-label"]==="项目编号"),undefined);assert.ok(f.nodes().find(n=>n.attrs["aria-label"]==="Wiki 文件夹"));assert.equal(f.nodes().filter(n=>n.tag==="button"&&text(n)==="选择目录").length,3);});
