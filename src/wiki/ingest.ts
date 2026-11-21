@@ -49,6 +49,7 @@ export class WikiIngest {
     }
     return result
   }
+  running(kbId: string): WikiIngestJob | undefined { return this.jobs(kbId).find(job => this.active.has(job.id)) }
   async start(kbId: string, settings: WikiIngestSettings): Promise<WikiIngestJob> {
     const running = this.jobs(kbId).find(j => j.state === 'running')
     if (running && this.active.has(running.id)) return running

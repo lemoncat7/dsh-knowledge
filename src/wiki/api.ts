@@ -82,6 +82,10 @@ export async function handleWikiApi(provider: LocalKnowledgeProvider, segments: 
   if (req.method === 'POST' && action === 'proposal' && segments[3]) { const body=await bodyOf(req); await provider.wiki.proposals.review(kbId,segments[3],body.approve===true); send({ok:true}); return }
   if (req.method === 'GET' && action === 'discover') { send(await provider.wiki.ingest.discover(kbId)); return }
   if (req.method === 'GET' && action === 'jobs') { send(provider.wiki.ingest.jobs(kbId)); return }
+  if (req.method === 'POST' && action === 'update') {
+    const body = await bodyOf(req)
+    send(await provider.wiki.update(kbId, { python: required(body.python), provider: required(body.provider), model: required(body.model), allowModel: body.allowModel === true, scope: scopeOf(body.scope) })); return
+  }
   if (req.method === 'POST' && action === 'ingest') {
     const body = await bodyOf(req)
     send(await provider.wiki.ingest.start(kbId, { python: required(body.python), provider: required(body.provider), model: required(body.model), allowModel: body.allowModel === true, scope: scopeOf(body.scope) })); return

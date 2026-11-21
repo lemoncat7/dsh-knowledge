@@ -57,6 +57,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   let rawEntries = []
   let progressTimer
   let progressWasRunning = false
+  let progressFailures = 0
   const RAW_PAGE = 100
   const editor = element('textarea', { class: 'textarea wiki-editor', rows: 22, spellcheck: 'false', 'aria-label': 'Markdown 编辑器' })
   const editorTitle = element('strong', { class: 'wiki-editor-title' }, '未选择文件')
@@ -226,6 +227,16 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
             await loadJobs()
           }), 'ghost small'))
         }
+        if (item.stage === 'done' && !item.pages?.length) row.append(element('small', { class: 'wiki-hint' }, '已记录处理结果，未生成知识页'))
+        if (item.error?.includes('WIKI_DISTILL_UPDATE_REQUIRES_REVIEW')) row.append(element('small', { class: 'wiki-hint' }, '已有页面的修改候选待审核，尚未替换原文'))
+        for (const path of item.pages ?? []) row.append(actionButton('查看关联页：' + path, () => void run(async () => {
+          const pages = await call(url('pages'))
+          const page = pages.find(page => page.relPath === path)
+          if (!page) throw new Error('关联页面未登记，请刷新索引后再试')
+          const value = await call(url(`page/${encodeURIComponent(page.pageId)}`))
+          openModal({ title: 'AI 处理结果 · ' + path, body: element('pre', { class: 'wiki-pre' }, value.content), cancelLabel: '关闭' })
+          return '已打开只读处理结果'
+        }), 'ghost small'))
         detail.append(row)
       }
       jobList.append(element('div', { class: 'wiki-card' }, head, progress, detail))
@@ -242,19 +253,26 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   /** While a job runs, refresh the card so stage changes are visible without clicking. */
   function scheduleProgress(jobs) {
     window.clearTimeout(progressTimer)
+    const token = generation
     const running = jobs.some(job => job.state === 'running')
-    if (!running || !root.isConnected) { if (!running) progressWasRunning = false; return }
+    if (disposed || !running || !root.isConnected) { if (!running) progressWasRunning = false; return }
     progressWasRunning = true
     progressTimer = window.setTimeout(async () => {
-      if (!root.isConnected) return
+      if (disposed || token !== generation || !root.isConnected) return
       try {
         const next = await call(url('jobs'))
+        progressFailures = 0
         drawJobs(next)
         const stillRunning = next.some(job => job.state === 'running')
         if (!stillRunning && progressWasRunning) { progressWasRunning = false; void loadPages().catch(() => {}) }
         scheduleProgress(next)
-      } catch { scheduleProgress([{ state: 'running' }]) }
-    }, 2000)
+      } catch (error) {
+        if (disposed || token !== generation) return
+        progressFailures++
+        status.textContent = `进度获取失败（${progressFailures}/3）：${error.message}；${progressFailures >= 3 ? '自动刷新已停止，请手动刷新任务' : '稍后重试'}`
+        if (progressFailures < 3) scheduleProgress([{ state: 'running' }])
+      }
+    }, 2000 * Math.max(1, 2 ** progressFailures))
   }
 
   async function loadProposals() {
@@ -444,13 +462,15 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
           if (!consentToggle.checked) throw new Error('请先确认允许发送资料给模型')
           if (!pythonSelect.value) throw new Error('未检测到 Python，请先安装或在下方手动指定')
           if (!providerSelect.value || !modelSelect.value) throw new Error('请选择模型渠道与模型')
-          const job = await call(url('ingest'), { method: 'POST', body: {
+          const result = await call(url('update'), { method: 'POST', body: {
             python: pythonSelect.value, provider: providerSelect.value, model: modelSelect.value, allowModel: true, scope: value,
           } })
+          renderConnection(result.connection)
+          const job = result.job
           await loadJobs()
-          if (!job.discovery) return `已有任务在运行（${job.id.slice(0, 8)}），请查看下方进度`
+          if (result.reused) return `已有任务在运行（${job.id.slice(0, 8)}），未重复扫描，请查看下方进度`
           const { found, duplicates } = job.discovery
-          if (!job.items.length) return `没有需要处理的新文件：发现 ${found} 个，全部已处理过（跳过 ${duplicates} 个）`
+          if (!job.items.length) return `页面接入 ${result.connection.report?.registered ?? 0} 篇；原件根目录发现 ${found} 个，跳过 ${duplicates} 个已处理，无新原件待处理（不扫描分类子目录）`
           return `发现 ${found} 个文件，跳过 ${duplicates} 个已处理；任务 ${job.id.slice(0, 8)} 已开始，进度见下方（自动刷新）`
         }), 'small'),
         actionButton('安装缺失依赖', () => void run(async () => {

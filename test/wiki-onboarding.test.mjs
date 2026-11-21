@@ -80,3 +80,20 @@ test('failed indexing is persisted as failed rather than ready and connect can b
   f.provider.wiki.rebuild=rebuild
   assert.equal((await f.provider.wiki.connect(config)).state,'ready')
 })
+
+
+test('daily update registers new authored pages and clearly reuses an existing running job',async t=>{
+ const f=await fixture(t),scope={kind:'global'}
+ await f.provider.wiki.connect({kbId:f.base,sourceDir:f.sourceDir,workspaceRoot:f.workspaceRoot,scope})
+ await writeFile(join(f.workspaceRoot,'wiki','new.md'),page)
+ const settings={python:'python',provider:'test',model:'mock',allowModel:true,scope}
+ const saved=f.provider.wiki.ingest.start.bind(f.provider.wiki.ingest)
+ let starts=0
+ f.provider.wiki.ingest.start=async()=>{starts++;return{id:'running',kbId:f.base,state:'running',settings,items:[],createdAt:'now',updatedAt:'now'}}
+ f.provider.wiki.ingest.running=()=>starts?{id:'running',kbId:f.base,state:'running',settings,items:[],createdAt:'now',updatedAt:'now'}:undefined
+ const first=await f.provider.wiki.update(f.base,settings)
+ assert.equal(first.connection.report.registered,1);assert.equal(first.reused,false)
+ const second=await f.provider.wiki.update(f.base,settings)
+ assert.equal(second.reused,true);assert.equal(starts,1)
+ f.provider.wiki.ingest.start=saved
+})

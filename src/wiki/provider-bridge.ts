@@ -1,5 +1,5 @@
 import { WikiProposals } from './proposals.js'
-import { WikiIngest } from './ingest.js'
+import { WikiIngest, type WikiIngestSettings, type WikiIngestJob } from './ingest.js'
 import { join } from 'node:path'
 import { readFile, mkdir, realpath } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
@@ -91,6 +91,20 @@ export class WikiProviderBridge {
     this.connections.set(input.kbId, next)
     void next.finally(() => { if (this.connections.get(input.kbId) === next) this.connections.delete(input.kbId) }).catch(() => {})
     return next
+  }
+
+  async update(kbId: string, settings: WikiIngestSettings): Promise<{ connection: WikiConnectionReport; job: WikiIngestJob; reused: boolean }> {
+    const active = this.ingest.running(kbId)
+    if (active) return { connection: this.connectionStatus(kbId), job: active, reused: true }
+    const config = this.list().find(item => item.kbId === kbId)
+    if (!config) throw new Error('WIKI_BASE_NOT_FOUND')
+    if (!settings.allowModel || !settings.python.trim() || !settings.provider || !settings.model) throw new Error('WIKI_INGEST_SETTINGS_REQUIRED')
+    const connection = await this.connect({ kbId, sourceDir: config.layout.sourceDir, workspaceRoot: config.layout.workspaceRoot,
+      rawDir: config.layout.rawDir, conversationEnabled: config.conversationEnabled, scope: settings.scope })
+    const other = this.ingest.running(kbId)
+    if (other) return { connection, job: other, reused: true }
+    const job = await this.ingest.start(kbId, settings)
+    return { connection, job, reused: false }
   }
 
   store(kbId: string): WikiStore {
