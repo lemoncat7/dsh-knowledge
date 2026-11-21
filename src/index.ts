@@ -1,3 +1,6 @@
+import { createWikiModel } from './wiki/model.js'
+import { createWikiDistiller } from './wiki/distill.js'
+import { runWikiChangeCheck, startWikiChangeWatch } from './wiki/change-watch.js'
 import { normalizeWritebackFrequency } from './service-settings.js'
 import { NoteVault } from './notes/vault.js'
 import type { Context } from '@deepseek-ai/cordis'
@@ -115,6 +118,42 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   const provider: KnowledgeProvider = providerRouter.provider
   let activeConnection = initialConnection
   let connectionChanging = false
+  if (managementProvider) {
+    managementProvider.wiki.host = {
+      defaultModel: () => {
+        const selector = runtime.get('agentDefaultModel') as { currentSelection(): { provider: string; model: string } } | undefined
+        try { return selector?.currentSelection() } catch { return undefined }
+      },
+      models: async () => {
+        const llm = runtime.get('llm') as { listProviders(): Array<{ id: string; name: string }>; listModels(provider: string): Promise<Array<{ id: string; name: string }>> } | undefined
+        if (!llm) return []
+        const providers = llm.listProviders()
+        return Promise.all(providers.map(async provider => ({
+          provider: provider.id, name: provider.name,
+          models: await llm.listModels(provider.id).then(list => list.map(model => ({ id: model.id, name: model.name }))).catch(() => []),
+        })))
+      },
+    }
+    managementProvider.wiki.ingest.authorize = () => {
+      if (connectionChanging || activeConnection.backend !== 'local') throw new Error('WIKI_CONNECTION_CHANGED')
+    }
+    managementProvider.wiki.ingest.modelFor = settings => createWikiModel(runtime, () => {
+      if (connectionChanging || activeConnection.backend !== 'local') throw new Error('WIKI_CONNECTION_CHANGED')
+      return { provider: settings.provider, model: settings.model }
+    })
+    managementProvider.wiki.ingest.distill = (kbId,item,settings,operationId,signal) => {
+      const model = managementProvider.wiki.ingest.modelFor!(settings)
+      return createWikiDistiller(managementProvider.wiki, model)(kbId,item,settings,operationId,signal)
+    }
+  }
+  // Read-only material change detection for connected local Wiki bases. Failures are logged, never thrown.
+  if (managementProvider !== undefined && resolved.wikiChangeCheckMinutes > 0) {
+    const wiki = managementProvider.wiki
+    runtime.effect(() => startWikiChangeWatch(async () => {
+      if (connectionChanging || activeConnection.backend !== 'local') return
+      await runWikiChangeCheck(wiki, runtime.logger)
+    }, resolved.wikiChangeCheckMinutes * 60_000), 'dsh-knowledge.wiki-change-watch')
+  }
   let journalRuntime: JournalRuntime | undefined
   ctx.inject?.(['connection'], journal => {
     const connection = journal.get('connection') as { requestRejection?: unknown } | undefined
@@ -235,6 +274,12 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   const registerHttpSurfaces = (httpRuntime: RuntimeContextLike): void => {
     const disposeActivityControl = registerKnowledgeActivityControl(httpRuntime, provider, {
       codec: noteHandleCodec,
+      wiki: { codec: handleCodec, isWiki: id => activeConnection.backend === 'local' && !!managementProvider?.wiki.has(id), projectFor: async sessionId => {
+        const agents = runtime.get('agents') as { get(id: string): { session: { header: { cwd?: string } } } | undefined } | undefined
+        const agent = agents?.get(sessionId)
+        if (!agent) throw connectionError(403,'会话未激活，请重新打开会话')
+        return agent.session.header.cwd
+      } },
       sourceKey: () => createHash('sha256').update(destination()).digest('hex'),
     })
     httpRuntime.effect(() => disposeActivityControl, 'dsh-knowledge.activity-control')

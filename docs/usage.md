@@ -122,11 +122,14 @@ pnpm dsh web
     autoRecallLimit: 3
     autoRecallMinScore: 0.2
     recallMaxChars: 5000
+    wikiChangeCheckMinutes: 15
     exposeApi: false
     exposeWeb: true
 ```
 
 本地管理台默认开启。它使用独立的同源管理接口，不要求开放远程 API，也不要求输入访问令牌；侧栏“知识库”安装后即可使用。任何能访问 DSH Web 的用户都具有本地管理权限，因此把 DSH 暴露到公网时，应继续使用反向代理登录保护整个 DSH 站点。
+
+`wikiChangeCheckMinutes` 控制资料变化检测的间隔（默认 15 分钟，0 关闭）：只对已接入的本地 Wiki 库执行，只读源文件夹与归档记录，识别新增、被外部修改与被删除的原件，不移动或改写任何文件、不调用模型；有处理任务在运行的那一轮跳过。检查结果持久化在知识库数据库中，供界面读取，也可通过管理接口 `POST /wiki/:kbId/changes` 立即触发一次、`GET /wiki/:kbId/changes` 读取上次结果。
 
 提取模型默认沿用刚完成回答的 provider/model。可在单个知识库中设置专用回写模型；“本机回写模型”是当前客户端的最高优先级覆盖，适合中央知识库在不同客户端使用不同模型。实际优先级为：本机覆盖 → 知识库专用模型 → 当前会话模型 → 以下兼容性后备配置：
 

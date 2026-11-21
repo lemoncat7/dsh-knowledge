@@ -1,4 +1,6 @@
 import { dirname, join } from 'node:path'
+import { WikiProviderBridge } from './wiki/provider-bridge.js'
+import { wikiStorageKey, type WikiPage } from './wiki/identity.js'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -99,6 +101,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     return this.recallRanking.incident(id, value)
   }
   readonly mode = 'local' as const
+  readonly wiki: WikiProviderBridge
   readonly notes: NoteStore
   private readonly db: DatabaseSync
   private readonly documentStore: KnowledgeDocumentStore
@@ -127,7 +130,34 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     }
     this.db.exec('CREATE TABLE IF NOT EXISTS note_excerpt_receipts (request_id TEXT PRIMARY KEY, input_hash TEXT NOT NULL, knowledge_id TEXT NOT NULL);')
     this.db.exec('CREATE TABLE IF NOT EXISTS writeback_receipts (source_key TEXT NOT NULL, proposal_hash TEXT NOT NULL, result_json TEXT NOT NULL, PRIMARY KEY(source_key, proposal_hash));')
+    this.wiki = new WikiProviderBridge(this.db, (page, draft) => this.indexWikiPage(page, draft))
     this.documentsReady = this.enqueueDocumentSync(() => this.syncAllDocuments())
+  }
+
+  private indexWikiPage(page: WikiPage, draft: KnowledgeDraft): void {
+    const timestamp = nowIso()
+    const old = this.db.prepare('SELECT version FROM knowledge_entries WHERE id=?').get(page.entryId) as SqlRow | undefined
+    this.db.prepare(`INSERT INTO knowledge_entries(id,knowledge_base_id,title,body,type,tags_json,scope_kind,scope_id,confidence,status,document_state,version,content_hash,source_json,created_at,updated_at,document_group)
+      VALUES(?,?,?,?,?,?,?,?,?,'active','open',?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET title=excluded.title,body=excluded.body,type=excluded.type,tags_json=excluded.tags_json,scope_kind=excluded.scope_kind,scope_id=excluded.scope_id,confidence=excluded.confidence,status='active',version=excluded.version,content_hash=excluded.content_hash,source_json=excluded.source_json,updated_at=excluded.updated_at,document_group=excluded.document_group`)
+      .run(page.entryId,page.kbId,draft.title,draft.body,draft.type,JSON.stringify(draft.tags),draft.scope.kind,draft.scope.kind==='project'?draft.scope.id:null,draft.confidence,page.version,wikiStorageKey(page),draft.source?JSON.stringify(draft.source):null,timestamp,timestamp,draft.group ?? 'Wiki')
+    const entry = this.entriesByIds([page.entryId])[0]!
+    if (!old || Number(old.version) !== page.version) this.writeVersion(entry, old ? 'update' : 'create')
+    this.upsertFts(entry)
+    this.upsertProjectedDocument(entry,page.relPath,page.fileSha256 ?? '')
+  }
+
+  private rejectWikiMutation(...baseIds: string[]): void {
+    if (baseIds.some(id => this.wiki.has(id))) throw conflict('Wiki 文档请使用 Wiki 管理入口；此操作尚未适配文件提交。')
+  }
+
+  /** Synchronous on purpose: avoids an extra await on hot paths that would change write timing. */
+  private wikiBaseStmt: ReturnType<DatabaseSync['prepare']> | undefined
+  private wikiBaseOfEntry(id: string): string | undefined {
+    this.wikiBaseStmt ??= this.db.prepare('SELECT knowledge_base_id FROM knowledge_entries WHERE id=?')
+    const row = this.wikiBaseStmt.get(id) as SqlRow | undefined
+    const baseId = row === undefined ? undefined : String(row.knowledge_base_id)
+    return baseId !== undefined && this.wiki.has(baseId) ? baseId : undefined
   }
 
   private assertOpen(): void {
@@ -300,6 +330,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   }
 
   async deleteKnowledgeBase(id: string): Promise<void> {
+    this.rejectWikiMutation(id)
     this.assertOpen()
     await this.documentsReady
     const base = await this.getKnowledgeBase(id)
@@ -440,6 +471,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   }
 
   async assignDocumentGroup(knowledgeBaseId: string, ids: string[], group: string): Promise<KnowledgeEntry[]> {
+    this.rejectWikiMutation(knowledgeBaseId)
     this.assertOpen(); await this.documentsReady
     const name = normalizeDocumentGroup(group)
     if (!Array.isArray(ids) || ids.length < 1 || ids.length > 500 || ids.some(id => typeof id !== 'string')) throw inputError('请选择 1 到 500 篇文档')
@@ -758,6 +790,10 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   async create(draft: KnowledgeDraft): Promise<KnowledgeEntry> {
     this.assertOpen()
     await this.documentsReady
+    if (this.wiki.has(draft.knowledgeBaseId ?? 'default')) {
+      const id = await this.wiki.write(draft, undefined, 'manual:' + randomUUID())
+      return (await this.get(id))!
+    }
     const entry = this.transaction(() => this.insertEntry(draft))
     await this.syncKnowledgeEntryQueued(entry.id)
     return entry
@@ -765,6 +801,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   /** Content, reference, and retry receipt share one SQLite transaction. */
   async excerptNote(input: NoteExcerptRequest): Promise<KnowledgeEntry> {
+    this.rejectWikiMutation(input.knowledgeBaseId)
     this.assertOpen()
     await this.documentsReady
     if (!/^[a-zA-Z0-9_-]{16,100}$/.test(input.requestId)) throw inputError('无效的摘录请求标识')
@@ -832,6 +869,15 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   async update(id: string, draft: KnowledgeDraft, _signal?: AbortSignal, expectedVersion?: number): Promise<KnowledgeEntry> {
     this.assertOpen()
     await this.documentsReady
+    const wikiTargetBase = this.wikiBaseOfEntry(id)
+    if (this.wiki.has(draft.knowledgeBaseId) || wikiTargetBase !== undefined) {
+      if (wikiTargetBase === undefined || wikiTargetBase !== draft.knowledgeBaseId) throw conflict('Wiki 跨库移动未开放')
+      const currentWikiTarget = await this.get(id)
+      if (!currentWikiTarget) throw notFound('knowledge entry', id)
+      if (expectedVersion === undefined || currentWikiTarget.version !== expectedVersion) throw conflict('Wiki 编辑必须携带当前版本')
+      await this.wiki.write(draft, currentWikiTarget, 'manual:' + randomUUID())
+      return (await this.get(id))!
+    }
     const entry = this.transaction(() => {
       if (expectedVersion !== undefined) {
         const current = this.entriesByIds([id])[0]
@@ -844,6 +890,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   }
 
   async finalize(id: string, state: 'resolved' | 'complete', note?: string): Promise<KnowledgeEntry> {
+    this.rejectWikiMutation(this.wikiBaseOfEntry(id) ?? '')
     this.assertOpen()
     await this.documentsReady
     const entry = this.transaction(() => this.finalizeEntry(id, state, note))
@@ -879,6 +926,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   }
 
   async reopen(id: string): Promise<KnowledgeEntry> {
+    this.rejectWikiMutation(this.wikiBaseOfEntry(id) ?? '')
     this.assertOpen()
     await this.documentsReady
     const entry = this.transaction(() => {
@@ -909,6 +957,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   }
 
   async moveDocument(id: string, knowledgeBaseId: string): Promise<KnowledgeEntry> {
+    this.rejectWikiMutation(knowledgeBaseId,this.wikiBaseOfEntry(id) ?? '')
     this.assertOpen()
     await this.documentsReady
     let changed = false
@@ -979,6 +1028,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   }
 
   async archive(id: string): Promise<KnowledgeEntry> {
+    this.rejectWikiMutation(this.wikiBaseOfEntry(id) ?? '')
     this.assertOpen()
     await this.documentsReady
     const entry = this.transaction(() => {
@@ -997,6 +1047,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   }
 
   async delete(id: string): Promise<void> {
+    this.rejectWikiMutation(this.wikiBaseOfEntry(id) ?? '')
     this.assertOpen()
     await this.documentsReady
     const current = await this.get(id)
@@ -1198,7 +1249,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   async propose(input: CandidateProposal, sourceKey?: string): Promise<KnowledgeCandidate> {
     this.assertOpen()
     const proposal = normalizeProposal(input)
-    const finalized = this.finalizedMatch(proposal)
+    const finalized = this.wiki.has(proposal.draft.knowledgeBaseId) && proposal.action === 'create' ? undefined : this.finalizedMatch(proposal)
     if (finalized !== undefined) throw finalizedConflict(finalized)
     return this.insertCandidate(proposal, sourceKey)
   }
@@ -1208,6 +1259,25 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     await this.documentsReady
     let touchedEntryId: string | undefined
     const normalized = normalizeProposal(input)
+    if (this.wiki.has(normalized.draft.knowledgeBaseId)) {
+      const candidate = await this.propose(normalized, sourceKey)
+      if (candidate.status === 'approved') {
+        const pages = (await this.wiki.store(normalized.draft.knowledgeBaseId).manifest()).pages
+        const operation = 'candidate:' + candidate.id
+        const path = 'wiki/notes/' + createHash('sha256').update(operation).digest('hex') + '.md'
+        const page = pages.find(p => p.lastOperation === operation || p.relPath === path)
+        const entry = candidate.targetId ? await this.get(candidate.targetId) : page ? await this.get(page.entryId) : undefined
+        return { outcome: 'duplicate', candidate, ...(entry ? { entry } : {}) }
+      }
+      if (candidate.action === 'conflict') return { outcome: 'conflict', candidate }
+      const target = candidate.targetId ? await this.get(candidate.targetId) : undefined
+      const reviewed = await this.review(candidate.id, { decision: 'approve', ...(target ? { expectedVersion: target.version } : {}) })
+      const operation = 'candidate:' + candidate.id
+      const path = 'wiki/notes/' + createHash('sha256').update(operation).digest('hex') + '.md'
+      const page = (await this.wiki.store(normalized.draft.knowledgeBaseId).manifest()).pages.find(p => p.lastOperation === operation || p.relPath === path)
+      const entry = candidate.targetId ? await this.get(candidate.targetId) : page ? await this.get(page.entryId) : undefined
+      return { outcome: normalized.action === 'create' ? 'created' : 'merged', candidate: reviewed, ...(entry ? { entry } : {}) }
+    }
     const requestHash = createHash('sha256').update(JSON.stringify([
       contentHash(normalized.draft), normalized.action, normalized.targetId ?? '', normalized.change ?? null,
     ])).digest('hex')
@@ -1398,6 +1468,43 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   async review(id: string, decision: ReviewDecision): Promise<KnowledgeCandidate> {
     this.assertOpen()
     await this.documentsReady
+    const wikiRow = this.db.prepare('SELECT * FROM knowledge_candidates WHERE id=?').get(id) as SqlRow | undefined
+    if (wikiRow) {
+      const c = rowToCandidate(wikiRow)
+      const selected = decision.draft ?? c.draft
+      if (this.wiki.has(c.draft.knowledgeBaseId) || this.wiki.has(selected.knowledgeBaseId ?? 'default')) {
+        if (c.draft.knowledgeBaseId !== selected.knowledgeBaseId) throw conflict('Wiki 审批不能更换所属库')
+        if (c.status !== 'pending') {
+          if (c.status === 'approved' && decision.decision === 'approve') return c
+          throw conflict('候选已处理')
+        }
+        if (decision.decision === 'approve') {
+          if (c.change?.kind === 'group' || c.change?.kind === 'finalize') throw conflict('Wiki 不支持分组或定稿候选')
+          if (c.action === 'conflict' && decision.resolution !== 'merge') throw conflict('必须明确合并冲突')
+          const alreadyWritten = (await this.wiki.store(c.draft.knowledgeBaseId).manifest()).pages.some(page => page.lastOperation === 'candidate:' + c.id || page.relPath === 'wiki/notes/' + createHash('sha256').update('candidate:' + c.id).digest('hex') + '.md')
+          let draft = normalizeDraft(selected)
+          const target = c.targetId ? this.activeEntry(c.targetId) : undefined
+          if (alreadyWritten) {
+            await this.wiki.rebuild(c.draft.knowledgeBaseId)
+            const reviewedAt = nowIso()
+            this.db.prepare("UPDATE knowledge_candidates SET status='approved',reviewed_at=? WHERE id=?").run(reviewedAt,id)
+            return { ...c, status: 'approved', reviewedAt }
+          }
+          if (target) {
+            assertExpectedReviewVersion(target, decision.expectedVersion)
+            if (!decision.draft) {
+              const applied = applyCandidateToTarget(target, c, c.action === 'conflict')
+              if (!applied.ok) throw conflict(applied.reason)
+              draft = applied.draft
+            } else draft = editedKnowledgeDraft(target, draft)
+          }
+          await this.wiki.write(draft, target, 'candidate:' + c.id)
+        }
+        const status = decision.decision === 'approve' ? 'approved' : 'rejected', reviewedAt = nowIso()
+        this.db.prepare('UPDATE knowledge_candidates SET status=?,reviewed_at=?,review_note=? WHERE id=?').run(status,reviewedAt,decision.note ?? null,id)
+        return { ...c, status, reviewedAt, ...(decision.note ? { reviewNote: decision.note } : {}) }
+      }
+    }
     let touchedEntryId: string | undefined
     const reviewed: KnowledgeCandidate = this.transaction(() => {
       const row = this.db.prepare('SELECT * FROM knowledge_candidates WHERE id = ?').get(id) as SqlRow | undefined
@@ -1658,6 +1765,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   }
 
   async close(): Promise<void> {
+    await this.wiki.ingest.close()
     if (this.closed) return
     await this.documentsReady
     this.closed = true
@@ -1721,6 +1829,8 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
   /** Keep the derived Markdown projection proportional to one changed entry. */
   private async syncKnowledgeEntry(entryId: string): Promise<void> {
+    const wikiEntry = this.db.prepare('SELECT knowledge_base_id FROM knowledge_entries WHERE id=?').get(entryId) as SqlRow | undefined
+    if (wikiEntry && this.wiki.has(String(wikiEntry.knowledge_base_id))) return
     const projected = this.db.prepare(`
       SELECT id,knowledge_base_id,rel_path FROM knowledge_documents WHERE id=?
     `).get(entryId) as SqlRow | undefined
@@ -1788,6 +1898,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   }
 
   private async syncKnowledgeDocuments(knowledgeBaseId: string): Promise<void> {
+    if (this.wiki.has(knowledgeBaseId)) { await this.wiki.initialize(knowledgeBaseId); return }
     const baseRow = this.db.prepare('SELECT * FROM knowledge_bases WHERE id=?').get(knowledgeBaseId) as SqlRow | undefined
     if (baseRow === undefined) return
     const base = rowToKnowledgeBase(baseRow)
