@@ -10,6 +10,7 @@ import { assertPageTargetSafe, type WikiLayout } from './paths.js'
 const manifestHashes = new WeakMap<WikiManifest, string | null>()
 
 export interface WikiImportItem { relPath: string; title: string; sha256: string; chars: number; status: 'existing' | 'new' | 'too_long' | 'invalid'; error?: string }
+export interface WikiImportReport { items: WikiImportItem[]; registered: number; existing: number; rejected: number }
 export class WikiStore {
   readonly committer: WikiCommitter
   constructor(readonly layout: WikiLayout, finalize?: (operationId: string) => Promise<void>) {
@@ -74,6 +75,28 @@ export class WikiStore {
     if (report.some(r => r.status === 'new')) await this.committer.commit({ operationId, targets: [await this.manifestTarget(manifest)] })
     return report
   }
+  /** Register valid old pages without rewriting them; malformed pages remain visible in the report. */
+  async importValid(scope: KnowledgeScope, operationId: string): Promise<WikiImportReport> {
+    const items = await this.inspect(), manifest = await this.manifest()
+    const pending = items.filter(item => item.status === 'new')
+    const checks: { path: string; hash: string }[] = []
+    for (const item of pending) {
+      const path = await assertPageTargetSafe(this.layout, item.relPath)
+      const bytes = await readFile(path)
+      if (wikiHash(bytes) !== item.sha256) throw new Error('WIKI_IMPORT_FILE_CHANGED: ' + item.relPath)
+      const parsed = parseWikiMarkdown(bytes)
+      if (!parsed.body.trim()) { item.status = 'invalid'; item.error = '页面正文为空'; continue }
+      const page = createWikiPage(this.layout.kbId, `wiki/${item.relPath}`, parsed.scope ?? scope, { kind: 'import', originalPath: item.relPath })
+      page.fileSha256 = item.sha256
+      manifest.pages.push(page); checks.push({ path, hash: item.sha256 })
+    }
+    if (checks.length) await this.committer.commit({ operationId, targets: [await this.manifestTarget(manifest)] }, async () => {
+      for (const item of checks) if (wikiHash(await readFile(item.path)) !== item.hash) throw new Error('WIKI_IMPORT_FILE_CHANGED: ' + item.path)
+    })
+    return { items, registered: checks.length, existing: items.filter(item => item.status === 'existing').length,
+      rejected: items.filter(item => item.status === 'invalid' || item.status === 'too_long').length }
+  }
+
   async page(pageId: string): Promise<{ page: WikiPage; bytes: Buffer }> {
     const page = (await this.manifest()).pages.find(p => p.pageId === pageId || p.entryId === pageId)
     if (!page) throw new Error('WIKI_PAGE_NOT_FOUND')
