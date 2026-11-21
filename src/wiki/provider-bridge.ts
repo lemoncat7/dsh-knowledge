@@ -14,6 +14,7 @@ export interface WikiConnectionReport {
   report?: WikiImportReport
   error?: string
   updatedAt?: string
+  scope?: KnowledgeScope
 }
 type WikiConnectInput = { kbId: string; sourceDir: string; workspaceRoot: string; rawDir?: string; conversationEnabled?: boolean; scope: KnowledgeScope }
 import { resolveWikiLayout, type WikiLayout } from './paths.js'
@@ -80,9 +81,11 @@ export class WikiProviderBridge {
         const layout = await this.configure(input), store = this.store(input.kbId)
         await store.committer.recover()
         await store.committer.assertSettled()
-        const report = await store.importValid(input.scope, `connect:${randomUUID()}`)
-        await this.rebuild(input.kbId)
-        return save({ state: report.rejected ? 'partial' : 'ready', layout, report })
+        const registrationStore = new WikiStore(layout)
+        const report = await registrationStore.importValid(input.scope, `connect:${randomUUID()}`)
+        const excludedPaths = report.items.filter(item => item.status === 'invalid' || item.status === 'too_long').map(item => 'wiki/' + item.relPath)
+        await this.rebuild(input.kbId, { acceptExternal: true, excludedPaths })
+        return save({ state: report.rejected ? 'partial' : 'ready', layout, report, scope: input.scope })
       } catch (error) {
         save({ state: 'failed', error: error instanceof Error ? error.message : String(error) })
         throw error
@@ -117,14 +120,14 @@ export class WikiProviderBridge {
     if (result.some(r => r.state === 'conflict')) throw new Error('WIKI_RECOVERY_CONFLICT')
     await this.rebuild(kbId)
   }
-  async rebuild(kbId: string, options: { acceptExternal: boolean } = { acceptExternal: true }): Promise<void> {
+  async rebuild(kbId: string, options: { acceptExternal: boolean; excludedPaths?: string[] } = { acceptExternal: true }): Promise<void> {
     const store = this.store(kbId), manifest = await store.manifest()
     const indexed = new Set<string>()
     // Read and validate all before changing derived rows.
     const prepared: { page: WikiPage; draft: KnowledgeDraft }[] = []
     let metadataChanged = false
     for (const page of manifest.pages) {
-      if (page.status !== 'active') continue
+      if (page.status !== 'active' || options.excludedPaths?.includes(page.relPath)) continue
       let bytes: Buffer
       try { bytes = (await store.page(page.pageId)).bytes } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue; throw e }
       const parsed = parseWikiMarkdown(bytes)

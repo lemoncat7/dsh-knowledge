@@ -383,6 +383,10 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
     if (!state.kbId) return '请先创建一个空知识库'
     const config = await refreshConfig()
     const connection = await call(url('connection'))
+    if (connection.scope) {
+      scopeSelect.value = connection.scope.kind
+      projectInput.value = connection.scope.kind === 'project' ? connection.scope.id : ''
+    }
     renderConnection(connection)
     if (!config) {
       jobList.replaceChildren(); proposalList.replaceChildren(); rawList.replaceChildren()

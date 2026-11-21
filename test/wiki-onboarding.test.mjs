@@ -97,3 +97,23 @@ test('daily update registers new authored pages and clearly reuses an existing r
  assert.equal(second.reused,true);assert.equal(starts,1)
  f.provider.wiki.ingest.start=saved
 })
+
+
+test('connection keeps existing valid index when another registered page becomes invalid',async t=>{
+ const f=await fixture(t),config={kbId:f.base,sourceDir:f.sourceDir,workspaceRoot:f.workspaceRoot,scope:{kind:'global'}}
+ const path=join(f.workspaceRoot,'wiki','first.md');await writeFile(path,page)
+ await f.provider.wiki.connect(config)
+ await writeFile(path,'---\ntitle: [broken\n---\ninvalid')
+ await writeFile(join(f.workspaceRoot,'wiki','second.md'),'# 第二篇\n\n正常正文')
+ const value=await f.provider.wiki.connect(config)
+ assert.equal(value.state,'partial');assert.equal(value.report.rejected,1)
+ const listed=await f.provider.list({knowledgeBaseId:f.base,status:'active',limit:10})
+ assert.equal(listed.items.length,1);assert.equal(listed.items[0].title,'第二篇')
+})
+
+test('connection persists explicit scope for later daily updates',async t=>{
+ const f=await fixture(t)
+ const value=await f.provider.wiki.connect({kbId:f.base,sourceDir:f.sourceDir,workspaceRoot:f.workspaceRoot,scope:{kind:'project',id:'private'}})
+ assert.deepEqual(value.scope,{kind:'project',id:'private'})
+ assert.deepEqual(f.provider.wiki.connectionStatus(f.base).scope,value.scope)
+})
