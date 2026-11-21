@@ -38,6 +38,8 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   const rawFilter = element('input', { class: 'input', type: 'search', placeholder: '筛选 raw 文件名', 'aria-label': '筛选 raw 文件' })
   const rawNote = element('p', { class: 'wiki-hint' })
   const rawDetails = element('details', { class: 'wiki-details wiki-raw' }, rawSummary, rawFilter, rawNote, rawList, rawView)
+  // Editing and diagnostics stay available but out of the everyday AI-driven flow.
+  let pagesLoaded = false
   let rawLoaded = false
   let rawEntries = []
   let progressTimer
@@ -47,6 +49,13 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   const editorTitle = element('strong', { class: 'wiki-editor-title' }, '未选择文件')
   const saveButton = actionButton('保存当前文件', () => void run(save), 'small')
   saveButton.disabled = true
+  const advancedDetails = element('details', { class: 'wiki-details wiki-advanced' },
+    element('summary', {}, '高级：手工编辑与诊断（一般不需要）'),
+    element('div', { class: 'wiki-columns' },
+      element('div', { class: 'wiki-column' }, element('h3', {}, 'Wiki 页面'), pageList),
+      element('div', { class: 'wiki-column' }, rawDetails)),
+    element('div', { class: 'wiki-editor-bar' }, editorTitle, actionButton('打开文档标准', () => void run(openStandard), 'ghost small'), saveButton),
+    editor)
 
   const url = suffix => `wiki/${encodeURIComponent(state.kbId)}/${suffix}`
   const scope = () => scopeSelect.value === 'global' ? { kind: 'global' } : { kind: 'project', id: projectInput.value.trim() }
@@ -58,6 +67,11 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   editor.addEventListener('input', () => { state.dirty = true; saveButton.disabled = false })
   rawDetails.addEventListener('toggle', () => { if (rawDetails.open && !rawLoaded) void run(loadRaw) })
   rawFilter.addEventListener('input', () => { if (rawLoaded) renderRaw() })
+  advancedDetails.addEventListener('toggle', () => {
+    if (!advancedDetails.open || pagesLoaded) return
+    pagesLoaded = true
+    void run(loadPages)
+  })
   baseSelect.addEventListener('change', () => {
     const next = baseSelect.value
     if (busy || (state.dirty && !window.confirm('放弃未保存的内容并切换知识库？'))) {
@@ -132,6 +146,14 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
       fill()
       if (providers.find(item => item.provider === data.default.provider)?.models.some(model => model.id === data.default.model)) modelSelect.value = data.default.model
     } else fill()
+  }
+
+  async function resetPages() {
+    pagesLoaded = false
+    pageList.replaceChildren()
+    if (!advancedDetails.open) return
+    pagesLoaded = true
+    await loadPages()
   }
 
   async function loadPages() {
@@ -329,10 +351,11 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
     const config = await refreshConfig()
     if (!config) {
       jobList.replaceChildren(); proposalList.replaceChildren(); rawList.replaceChildren()
-      await Promise.all([loadPages(), loadPython(), loadModels()])
+      pageList.replaceChildren()
+      await Promise.all([loadPython(), loadModels()])
       return '请先选择目录并保存库配置'
     }
-    await Promise.all([loadPages(), loadJobs(), loadProposals(), resetRaw(), loadPython(), loadModels()])
+    await Promise.all([resetPages(), loadJobs(), loadProposals(), resetRaw(), loadPython(), loadModels()])
   }
 
   const section = (title, note, ...body) => element('section', { class: 'wiki-section' },
@@ -397,12 +420,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
         actionButton('重新检测 Python', () => void run(async () => { await loadPython(); return '已重新检测' }), 'ghost small'),
         actionButton('刷新任务', () => void run(async () => { await loadJobs(); return '任务状态已刷新' }), 'ghost small')),
       jobList),
-    section('页面与 raw', '页面可直接编辑，保存前校验磁盘哈希；raw 只读，按需展开。',
-      element('div', { class: 'wiki-columns' },
-        element('div', { class: 'wiki-column' }, element('h3', {}, 'Wiki 页面'), pageList),
-        element('div', { class: 'wiki-column' }, rawDetails)),
-      element('div', { class: 'wiki-editor-bar' }, editorTitle, actionButton('打开文档标准', () => void run(openStandard), 'ghost small'), saveButton),
-      editor),
+    advancedDetails,
     section('蒸馏更新审核', '模型建议替换现有页时先保存候选，批准后才写文件。',
       element('div', { class: 'wiki-actions' }, actionButton('刷新候选', () => void run(loadProposals), 'ghost small')),
       proposalList),

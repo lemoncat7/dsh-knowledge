@@ -33,7 +33,8 @@ function fixture(t, {configured=true, confirm=false, gate, jobs}={}) {
  throw Error("unhandled "+path)};
  const workspace=createWikiWorkspace({api,element,actionButton,badge:label=>element("span",{},label),interfaceIcon:()=>element("svg"),openModal:()=>{},bases:[{id:"A",name:"A"},{id:"B",name:"B"}]});
  const nodes=()=>all(workspace.root),button=label=>nodes().find(n=>n.tag==="button"&&text(n)===label);
- return{...workspace,calls,confirms,nodes,button};
+ const openAdvanced=async()=>{const d=nodes().find(n=>n.tag==="details"&&String(n.attrs.class||"").includes("wiki-advanced"));if(!d)return;d.open=true;d.listeners.toggle&&d.listeners.toggle();await pending()};
+ return{...workspace,calls,confirms,nodes,button,openAdvanced};
 }
 test("task list is attached and unconfigured libraries make no configured-only requests",async t=>{
  const f=fixture(t);await pending();assert.ok(f.nodes().some(n=>n.tag==="strong"&&text(n)==="任务 job-1"));
@@ -42,19 +43,19 @@ test("fresh library initializes without jobs/raw/proposals requests",async t=>{
  const f=fixture(t,{configured:false});await pending();assert.equal(f.calls.filter(c=>/\/(jobs|raw|proposals)$/.test(c.path)).length,0);
 });
 test("save refreshes the hash without discard prompt and a second save uses it",async t=>{
- const f=fixture(t);await pending();await f.button("wiki/notes/a.md").click();await pending();
+ const f=fixture(t);await pending();await f.openAdvanced();await f.button("wiki/notes/a.md").click();await pending();
  const editor=f.nodes().find(n=>n.tag==="textarea");
  for(let i=0;i<2;i++){editor.value="edit "+i;editor.listeners.input();await f.button("保存当前文件").click();await pending()}
  assert.equal(f.confirms.length,0);assert.deepEqual(f.calls.filter(c=>c.method==="PUT").map(c=>c.body.expectedHash),["old-hash","new-hash"]);
 });
 test("declining discard prevents a dirty library switch",async t=>{
- const f=fixture(t);await pending();await f.button("wiki/notes/a.md").click();await pending();
+ const f=fixture(t);await pending();await f.openAdvanced();await f.button("wiki/notes/a.md").click();await pending();
  const editor=f.nodes().find(n=>n.tag==="textarea");editor.value="unsaved";editor.listeners.input();
  const select=f.nodes().find(n=>n.attrs["aria-label"]==="选择知识库");select.value="B";select.listeners.change();await pending();
  assert.equal(select.value,"A");assert.equal(editor.value,"unsaved");assert.equal(f.confirms.length,1);
 });
 test("accepting discard clears the editor binding on library switch",async t=>{
- const f=fixture(t,{confirm:true});await pending();await f.button("wiki/notes/a.md").click();await pending();
+ const f=fixture(t,{confirm:true});await pending();await f.openAdvanced();await f.button("wiki/notes/a.md").click();await pending();
  const editor=f.nodes().find(n=>n.tag==="textarea");editor.value="unsaved";editor.listeners.input();
  const select=f.nodes().find(n=>n.attrs["aria-label"]==="选择知识库");select.value="B";select.listeners.change();await pending();
  assert.equal(editor.value,"");assert.equal(f.button("保存当前文件").disabled,true);
@@ -62,7 +63,7 @@ test("accepting discard clears the editor binding on library switch",async t=>{
 
 test("an in-flight read prevents switching libraries and cannot bind the response to another base",async t=>{
  let release;const f=fixture(t,{gate:path=>path.endsWith("/page/p")?new Promise(r=>{release=r}):undefined});
- await pending();f.button("wiki/notes/a.md").click();await pending();
+ await pending();await f.openAdvanced();f.button("wiki/notes/a.md").click();await pending();
  const select=f.nodes().find(n=>n.attrs["aria-label"]==="选择知识库");assert.equal(select.disabled,true);
  select.value="B";select.listeners.change();assert.equal(select.value,"A");
  release();await pending();const editor=f.nodes().find(n=>n.tag==="textarea");assert.equal(editor.value,"saved");
