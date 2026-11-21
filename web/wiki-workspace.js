@@ -32,8 +32,15 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   const pageList = element('div', { class: 'wiki-list' })
   const jobList = element('div', { class: 'wiki-list' })
   const proposalList = element('div', { class: 'wiki-list' })
-  const rawList = element('div', { class: 'wiki-list' })
+  const rawList = element('div', { class: 'wiki-list wiki-raw-list' })
   const rawView = element('pre', { class: 'wiki-pre', hidden: true })
+  const rawSummary = element('summary', {}, 'raw 产物（只读）· 展开后加载')
+  const rawFilter = element('input', { class: 'input', type: 'search', placeholder: '筛选 raw 文件名', 'aria-label': '筛选 raw 文件' })
+  const rawNote = element('p', { class: 'wiki-hint' })
+  const rawDetails = element('details', { class: 'wiki-details wiki-raw' }, rawSummary, rawFilter, rawNote, rawList, rawView)
+  let rawLoaded = false
+  let rawEntries = []
+  const RAW_PAGE = 100
   const editor = element('textarea', { class: 'textarea wiki-editor', rows: 22, spellcheck: 'false', 'aria-label': 'Markdown 编辑器' })
   const editorTitle = element('strong', { class: 'wiki-editor-title' }, '未选择文件')
   const saveButton = actionButton('保存当前文件', () => void run(save), 'small')
@@ -47,6 +54,8 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   }
 
   editor.addEventListener('input', () => { state.dirty = true; saveButton.disabled = false })
+  rawDetails.addEventListener('toggle', () => { if (rawDetails.open && !rawLoaded) void run(loadRaw) })
+  rawFilter.addEventListener('input', () => { if (rawLoaded) renderRaw() })
   baseSelect.addEventListener('change', () => {
     const next = baseSelect.value
     if (busy || (state.dirty && !window.confirm('放弃未保存的内容并切换知识库？'))) {
@@ -76,23 +85,9 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
     })
   }
 
-  /** Native Windows dialog first; the in-console browser is only the fallback. */
-  async function chooseDirectory(input, label) {
-    try {
-      const result = await api(url('pick'), { method: 'POST', body: { ...(input.value.trim() ? { initial: input.value.trim() } : {}) } })
-      if (result?.path) { input.value = result.path; return '已选择 ' + result.path }
-      return '已取消选择'
-    } catch (error) {
-      if (/PICK_CANCELLED/.test(error.message)) return '已取消选择'
-      browse(input, label)
-      return error.message + '；已改为站内浏览'
-    }
-  }
-
   const pathField = (input, label) => element('div', { class: 'wiki-path-field' },
     input,
-    actionButton('选择目录…', () => void run(() => chooseDirectory(input, label)), 'ghost small', { 'aria-label': `选择${label}` }),
-    actionButton('站内浏览', () => browse(input, label), 'ghost small'))
+    actionButton('选择目录', () => browse(input, label), 'ghost small', { 'aria-label': `选择${label}` }))
 
   async function refreshConfig() {
     state.configs = await api('wiki')
@@ -205,12 +200,34 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
   async function loadRaw() {
     rawList.replaceChildren(); rawView.hidden = true
     const entries = await api(url('raw'))
-    if (!entries.length) { rawList.append(element('p', { class: 'muted' }, 'raw 目录为空。')); return }
-    for (const entry of entries) {
+    rawEntries = entries
+    rawLoaded = true
+    rawSummary.textContent = `raw 产物（只读）· ${entries.length} 个文件`
+    renderRaw()
+  }
+
+  function renderRaw() {
+    rawList.replaceChildren()
+    if (!rawEntries.length) { rawNote.textContent = 'raw 目录为空。'; return }
+    const query = rawFilter.value.trim().toLocaleLowerCase()
+    const matched = rawEntries.filter(entry => entry.path.toLocaleLowerCase().includes(query))
+    if (!matched.length) { rawNote.textContent = '没有匹配的 raw 文件。'; return }
+    const shown = matched.slice(0, RAW_PAGE)
+    rawNote.textContent = matched.length > shown.length
+      ? `匹配 ${matched.length} 个，显示前 ${shown.length} 个；可用筛选缩小范围。`
+      : `匹配 ${matched.length} 个文件。`
+    for (const entry of shown) {
       rawList.append(element('div', { class: 'wiki-row' },
         actionButton(entry.path, () => void run(() => showRaw(entry.path)), 'ghost small'),
         element('span', { class: 'muted' }, `${Math.round(entry.bytes / 1024)} KB`)))
     }
+  }
+
+  async function resetRaw() {
+    rawEntries = []; rawLoaded = false; rawFilter.value = ''; rawNote.textContent = ''
+    rawList.replaceChildren(); rawView.hidden = true
+    rawSummary.textContent = 'raw 产物（只读）· 展开后加载'
+    if (rawDetails.open) await loadRaw()
   }
 
   async function showRaw(path) {
@@ -275,7 +292,7 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
       await Promise.all([loadPages(), loadPython(), loadModels()])
       return '请先选择目录并保存库配置'
     }
-    await Promise.all([loadPages(), loadJobs(), loadProposals(), loadRaw(), loadPython(), loadModels()])
+    await Promise.all([loadPages(), loadJobs(), loadProposals(), resetRaw(), loadPython(), loadModels()])
   }
 
   const section = (title, note, ...body) => element('section', { class: 'wiki-section' },
@@ -337,10 +354,10 @@ export function createWikiWorkspace({ api, element, actionButton, badge, interfa
         actionButton('重新检测 Python', () => void run(async () => { await loadPython(); return '已重新检测' }), 'ghost small'),
         actionButton('刷新任务', () => void run(loadJobs), 'ghost small')),
       jobList),
-    section('页面与 raw', '页面可直接编辑，保存前校验磁盘哈希；raw 只读。',
+    section('页面与 raw', '页面可直接编辑，保存前校验磁盘哈希；raw 只读，按需展开。',
       element('div', { class: 'wiki-columns' },
         element('div', { class: 'wiki-column' }, element('h3', {}, 'Wiki 页面'), pageList),
-        element('div', { class: 'wiki-column' }, element('h3', {}, 'raw（只读）'), rawList, rawView)),
+        element('div', { class: 'wiki-column' }, rawDetails)),
       element('div', { class: 'wiki-editor-bar' }, editorTitle, actionButton('打开文档标准', () => void run(openStandard), 'ghost small'), saveButton),
       editor),
     section('蒸馏更新审核', '模型建议替换现有页时先保存候选，批准后才写文件。',
