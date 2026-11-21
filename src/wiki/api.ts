@@ -31,6 +31,12 @@ export async function handleWikiApi(provider: LocalKnowledgeProvider, segments: 
   const kbId = segments[1], action = segments[2]
   if (req.method === 'GET' && segments.length === 1) { send(provider.wiki.list()); return }
   if (!kbId) throw new Error('WIKI_BASE_REQUIRED')
+  if (req.method === 'GET' && action === 'connection') { send(provider.wiki.connectionStatus(kbId)); return }
+  if (req.method === 'POST' && action === 'connect') {
+    const body = await bodyOf(req)
+    send(await provider.wiki.connect({ kbId, sourceDir: required(body.sourceDir), workspaceRoot: required(body.workspaceRoot),
+      ...(body.rawDir === undefined ? {} : { rawDir: required(body.rawDir) }), conversationEnabled: body.conversationEnabled === true, scope: scopeOf(body.scope) })); return
+  }
   if (req.method === 'PUT' && segments.length === 2) {
     const body = await bodyOf(req)
     send(await provider.wiki.configure({ kbId, sourceDir: required(body.sourceDir), workspaceRoot: required(body.workspaceRoot),

@@ -51,3 +51,32 @@ test('partial registration rejects a corrupt identity manifest', async t => {
   await writeFile(join(f.workspaceRoot, '_meta', 'knowledge', 'manifest.json'), '{broken')
   await assert.rejects(() => f.store.importValid({ kind: 'global' }, 'broken-import'))
 })
+
+
+test('connection distinguishes configured, ready empty, partial, and repeat registration without model calls', async t => {
+  const f = await fixture(t)
+  assert.equal(f.provider.wiki.connectionStatus(f.base).state, 'configured')
+  const config = { kbId:f.base, sourceDir:f.sourceDir, workspaceRoot:f.workspaceRoot, scope:{kind:'project',id:'p'} }
+  const empty = await f.provider.wiki.connect(config)
+  assert.equal(empty.state,'ready'); assert.equal(empty.report.registered,0)
+  await writeFile(join(f.workspaceRoot,'wiki','ok.md'),page)
+  await writeFile(join(f.workspaceRoot,'wiki','long.md'),'# 太长\n\n'+'a'.repeat(51000))
+  const partial = await f.provider.wiki.connect(config)
+  assert.equal(partial.state,'partial'); assert.equal(partial.report.registered,1); assert.equal(partial.report.rejected,1)
+  assert.equal((await f.provider.list({knowledgeBaseId:f.base,limit:10})).items.length,1)
+  const id=(await f.store.manifest()).pages[0].pageId
+  const repeat=await f.provider.wiki.connect(config)
+  assert.equal(repeat.report.registered,0); assert.equal((await f.store.manifest()).pages[0].pageId,id)
+  assert.equal(f.provider.wiki.connectionStatus(f.base).state,'partial')
+  assert.equal(f.provider.wiki.ingest.jobs(f.base).length,0)
+})
+
+test('failed indexing is persisted as failed rather than ready and connect can be retried', async t => {
+  const f=await fixture(t),config={kbId:f.base,sourceDir:f.sourceDir,workspaceRoot:f.workspaceRoot,scope:{kind:'global'}}
+  const rebuild=f.provider.wiki.rebuild.bind(f.provider.wiki)
+  f.provider.wiki.rebuild=async()=>{throw Error('INJECT_INDEX_FAILURE')}
+  await assert.rejects(()=>f.provider.wiki.connect(config),/INJECT_INDEX_FAILURE/)
+  assert.equal(f.provider.wiki.connectionStatus(f.base).state,'failed')
+  f.provider.wiki.rebuild=rebuild
+  assert.equal((await f.provider.wiki.connect(config)).state,'ready')
+})

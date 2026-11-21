@@ -6,7 +6,16 @@ import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import type { KnowledgeDraft, KnowledgeEntry, KnowledgeScope } from '../domain.js'
 import { normalizeDraft } from '../domain.js'
-import { WikiStore } from './store.js'
+import { WikiStore, type WikiImportReport } from './store.js'
+
+export interface WikiConnectionReport {
+  state: 'unconfigured' | 'configured' | 'ready' | 'partial' | 'failed'
+  layout?: WikiLayout
+  report?: WikiImportReport
+  error?: string
+  updatedAt?: string
+}
+type WikiConnectInput = { kbId: string; sourceDir: string; workspaceRoot: string; rawDir?: string; conversationEnabled?: boolean; scope: KnowledgeScope }
 import { resolveWikiLayout, type WikiLayout } from './paths.js'
 import { wikiHash, WikiCommitter } from './commit.js'
 import { createWikiPage, wikiStorageKey, type WikiPage } from './identity.js'
@@ -17,8 +26,10 @@ export class WikiProviderBridge {
   readonly proposals: WikiProposals
   /** Prepared once: this is consulted on every entry sync, so it must stay cheap. */
   private readonly hasStmt
+  private readonly connections = new Map<string, Promise<WikiConnectionReport>>()
   constructor(private readonly db: DatabaseSync, private readonly index: (page: WikiPage, draft: KnowledgeDraft) => void) {
     db.exec(`CREATE TABLE IF NOT EXISTS wiki_local_bases (kb_id TEXT PRIMARY KEY, layout_json TEXT NOT NULL, conversation_enabled INTEGER NOT NULL DEFAULT 0);`)
+    db.exec('CREATE TABLE IF NOT EXISTS wiki_connection_status(kb_id TEXT PRIMARY KEY, body TEXT NOT NULL)')
     this.hasStmt = db.prepare('SELECT 1 FROM wiki_local_bases WHERE kb_id=?')
     this.ingest = new WikiIngest(db, this)
     this.proposals = new WikiProposals(db, this)
@@ -50,6 +61,38 @@ export class WikiProviderBridge {
       .run(input.kbId, JSON.stringify(layout), input.conversationEnabled ? 1 : 0)
     return layout
   }
+  connectionStatus(kbId: string): WikiConnectionReport {
+    const config = this.list().find(item => item.kbId === kbId)
+    if (!config) return { state: 'unconfigured' }
+    const row = this.db.prepare('SELECT body FROM wiki_connection_status WHERE kb_id=?').get(kbId) as { body: string } | undefined
+    return row ? { ...JSON.parse(row.body) as WikiConnectionReport, layout: config.layout } : { state: 'configured', layout: config.layout }
+  }
+  connect(input: WikiConnectInput): Promise<WikiConnectionReport> {
+    const queued = this.connections.get(input.kbId) ?? Promise.resolve({ state: 'configured' } as WikiConnectionReport)
+    const next = queued.catch(() => ({ state: 'failed' } as WikiConnectionReport)).then(async () => {
+      if (!input.scope || !['global', 'project'].includes(input.scope.kind) || input.scope.kind === 'project' && !input.scope.id.trim()) throw new Error('WIKI_SCOPE_REQUIRED')
+      const save = (value: WikiConnectionReport) => {
+        this.db.prepare('INSERT INTO wiki_connection_status VALUES(?,?) ON CONFLICT(kb_id) DO UPDATE SET body=excluded.body')
+          .run(input.kbId, JSON.stringify({ ...value, updatedAt: new Date().toISOString() }))
+        return this.connectionStatus(input.kbId)
+      }
+      try {
+        const layout = await this.configure(input), store = this.store(input.kbId)
+        await store.committer.recover()
+        await store.committer.assertSettled()
+        const report = await store.importValid(input.scope, `connect:${randomUUID()}`)
+        await this.rebuild(input.kbId)
+        return save({ state: report.rejected ? 'partial' : 'ready', layout, report })
+      } catch (error) {
+        save({ state: 'failed', error: error instanceof Error ? error.message : String(error) })
+        throw error
+      }
+    })
+    this.connections.set(input.kbId, next)
+    void next.finally(() => { if (this.connections.get(input.kbId) === next) this.connections.delete(input.kbId) }).catch(() => {})
+    return next
+  }
+
   store(kbId: string): WikiStore {
     const config = this.list().find(b => b.kbId === kbId)
     if (!config) throw new Error('WIKI_BASE_NOT_FOUND')
