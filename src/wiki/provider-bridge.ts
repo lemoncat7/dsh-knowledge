@@ -131,12 +131,15 @@ export class WikiProviderBridge {
   }
   async rebuild(kbId: string, options: { acceptExternal: boolean; excludedPaths?: string[] } = { acceptExternal: true }): Promise<void> {
     const store = this.store(kbId), manifest = await store.manifest()
+    const connection = this.connectionStatus(kbId)
+    const quarantined = options.excludedPaths ?? (connection.state === 'partial'
+      ? connection.report?.items.filter(item => item.status === 'invalid' || item.status === 'too_long').map(item => 'wiki/' + item.relPath) ?? [] : [])
     const indexed = new Set<string>()
     // Read and validate all before changing derived rows.
     const prepared: { page: WikiPage; draft: KnowledgeDraft }[] = []
     let metadataChanged = false
     for (const page of manifest.pages) {
-      if (page.status !== 'active' || options.excludedPaths?.includes(page.relPath)) continue
+      if (page.status !== 'active' || quarantined.includes(page.relPath)) continue
       let bytes: Buffer
       try { bytes = (await store.page(page.pageId)).bytes } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue; throw e }
       const parsed = parseWikiMarkdown(bytes)
