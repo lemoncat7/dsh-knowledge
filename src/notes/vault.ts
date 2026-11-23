@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { readVaultBytes, snapshotVault, vaultIdentity, type VaultEntry } from './vault-snapshot.js'
 import { vaultVolumeUUID } from './vault-volume.js'
 import { mergeVaultText } from './vault-merge.js'
-import { mkdir, lstat, open, readdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, lstat, open, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, relative, resolve, sep, extname, basename } from 'node:path'
 import { atomicWriteFile } from '../atomic-file.js'
 import { hash, syncError, noteFingerprint } from './sync-protocol.js'
@@ -40,7 +40,8 @@ export class NoteVault {
   private mappings: Mapping[] = []
   private persistedManifest: string | undefined
   private running: Promise<void> | undefined
-  private timer: ReturnType<typeof setInterval> | undefined
+  private timer: ReturnType<typeof setTimeout> | undefined
+  private idleScans = 0
   private stopped = false
   private loaded = false
   private rescan = false
@@ -65,10 +66,6 @@ export class NoteVault {
     private readonly timing = { stableMs: 1500, missingMs: 30000, now: () => Date.now() },
   ) {
     if (autoStart) {
-      this.timer = setInterval(() => {
-        if (!this.running) void this.scan()
-      }, 5000)
-      this.timer.unref()
       void this.scan()
     }
   }
@@ -120,6 +117,8 @@ export class NoteVault {
   }
   scan(): Promise<void> {
     if (this.stopped) return Promise.resolve()
+    if (this.timer) clearTimeout(this.timer)
+    this.timer = undefined
     if (this.running) {
       this.rescan = true
       return this.running
@@ -132,14 +131,21 @@ export class NoteVault {
     })()
       .catch((e) => {
         for (const m of this.mappings) { delete m.missingSince; delete m.missingScans }
+        this.idleScans++
         this.warning = e instanceof Error ? e.message : '本地文件工作区暂不可用'
       })
       .finally(() => {
         this.running = undefined
+        if (this.autoStart && !this.stopped) {
+          this.timer = setTimeout(() => { void this.scan() }, Math.min(30_000, 5000 * 2 ** Math.min(this.idleScans, 3)))
+          this.timer.unref()
+        }
       })
     return this.running
   }
   private async cycle() {
+    const priorManifest = this.persistedManifest
+    const priorSnapshot = this.previousSnapshot
     if (!this.loaded) {
       try {
         const saved = JSON.parse(await readFile(this.manifestPath, 'utf8'))
@@ -281,6 +287,10 @@ export class NoteVault {
       if (m?.conflict || m?.missing || m?.trash || m?.pendingMove || m && this.blocked(m.path)) continue
       const rel = m?.path ?? pathFor(n),
         path = join(this.path, rel)
+      // The complete snapshot already checked file identities and links. An
+      // unchanged projection needs no extra path walk or recursive mkdir.
+      if (m && snapshot.has(rel) && m.version === n.version && m.hash === n.sha256
+        && m.name === n.name && m.parentId === n.parentId) continue
       await this.safe(path, true)
       if (n.kind === 'folder') {
         if (m && m.name === n.name && m.parentId === n.parentId) m.version = n.version
@@ -324,34 +334,39 @@ export class NoteVault {
     }
     // New Markdown files can be created in OB; configuration, symlinks and hidden files are excluded.
     const mapped = new Set(this.mappings.map((m) => m.path))
-    let count = 0
+    const children = new Map<string, VaultEntry[]>()
+    for (const entry of snapshot.values()) {
+      const parent = dirname(entry.path)
+      const entries = children.get(parent) ?? []
+      entries.push(entry); children.set(parent, entries)
+    }
     const walk = async (dir: string, parentId: string | null, depth: number): Promise<void> => {
       if (depth > 24) throw Error('工作区目录层级过深')
-      for (const entry of await readdir(join(this.path, dir), { withFileTypes: true })) {
-        if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue
-        if (++count > 10000) throw Error('工作区文件数量超过第一版上限')
-        const rel = join(dir, entry.name)
+      // Reuse the complete, validated traversal instead of walking every
+      // directory twice. Changed file content is still rechecked before import.
+      for (const entry of children.get(dir || '.') ?? []) {
+        const rel = entry.path, name = basename(rel)
         if (this.recycled(rel) || this.blocked(rel)) continue
         const m = this.mappings.find((m) => m.path === rel)
-        if (entry.isDirectory()) {
+        if (entry.directory) {
           if (m) {
             await walk(rel, m.id, depth + 1)
           } else {
             // Only import folders that contain Markdown, not arbitrary application folders.
             if (![...snapshot.values()].some(x => x.path.startsWith(rel + sep) && !x.directory && /\.(md|markdown)$/i.test(x.path))) continue
             if (this.mappings.some(m => m.missing && !m.trash)) { this.warning = '存在待识别的移动或删除，新文件暂缓导入'; continue }
-            const node = await this.notes.create('folder', entry.name, parentId, new Uint8Array())
+            const node = await this.notes.create('folder', name, parentId, new Uint8Array())
             this.mappings.push({ id: node.id, path: rel, hash: null, version: node.version, kind: 'folder' })
             await this.persist()
             await walk(rel, node.id, depth + 1)
           }
-        } else if (entry.isFile() && !mapped.has(rel) && /\.(md|markdown)$/i.test(entry.name)) {
+        } else if (!mapped.has(rel) && /\.(md|markdown)$/i.test(name)) {
           const entrySnapshot = snapshot.get(rel)
           if (!entrySnapshot || !this.stable(entrySnapshot)) continue
           if (this.mappings.some(m => m.missing && !m.trash)) { this.warning = '存在待识别的移动或删除，新文件暂缓导入'; continue }
           const bytes = await this.bytes(join(this.path, rel))
           if (hash(bytes) !== entrySnapshot.digest) continue
-          const node = await this.notes.create('document', entry.name, parentId, bytes)
+          const node = await this.notes.create('document', name, parentId, bytes)
           this.mappings.push({ id: node.id, path: rel, hash: hash(bytes), version: node.version, kind: 'document' })
           this.record(node, rel, '外部文件新建')
           await this.persist()
@@ -363,9 +378,14 @@ export class NoteVault {
       if (m.trash || m.missing || m.conflict || m.pendingMove || this.blocked(m.path)) continue
       const n = nodes.find(n => n.id === m.id)
       if (n) { m.name ??= n.name; if (m.parentId === undefined) m.parentId = n.parentId }
+      if (snapshot.get(m.path)?.identity === m.identity) continue
       try { m.identity = (await vaultIdentity(join(this.path, m.path))).identity } catch { /* Next complete scan decides. */ }
     }
     await this.persist()
+    const changed = priorManifest !== this.persistedManifest || priorSnapshot.size !== snapshot.size
+      || [...snapshot].some(([path, entry]) => priorSnapshot.get(path)?.signature !== entry.signature)
+    const confirmingDeletion = this.mappings.some(m => m.missing && !m.trash && !m.conflict)
+    this.idleScans = changed || confirmingDeletion ? 0 : this.idleScans + 1
   }
   private async reconcileNativeDeletes(nodes: NoteNode[], snapshot: Map<string, VaultEntry>) {
     let changed = false
@@ -781,7 +801,7 @@ export class NoteVault {
   }
   async close() {
     this.stopped = true
-    if (this.timer) clearInterval(this.timer)
+    if (this.timer) clearTimeout(this.timer)
     if (this.debounce) clearTimeout(this.debounce)
     this.watcher?.close()
     await this.running

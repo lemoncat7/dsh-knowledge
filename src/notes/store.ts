@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { atomicWriteFile } from '../atomic-file.js'
 import { decodePageCursor, encodePageCursor } from '../page-cursor.js'
+import { sqliteRevision } from '../storage/sqlite-revision.js'
 import {
   isEditableNoteNode,
   isNoteId,
@@ -29,6 +30,7 @@ export class NoteStore {
   private readonly versionsPath: string
   private readonly contentMutationTails = new Map<string, Promise<void>>()
   private closed = false
+  private manifestCache: { revision: string; manifest: NoteManifest } | undefined
 
   constructor(private readonly rootPath: string, private readonly removeOnClose = false) {
     this.objectsPath = join(rootPath, 'objects')
@@ -498,9 +500,17 @@ export class NoteStore {
   }
 
   syncManifest(): NoteManifest {
+    this.assertOpen()
+    const revision = sqliteRevision(this.db)
+    if (!this.db.isTransaction && this.manifestCache?.revision === revision) return structuredClone(this.manifestCache.manifest)
     const nodes = (this.db.prepare(`SELECT ${NOTE_COLUMNS} FROM note_nodes ORDER BY id LIMIT 10001`).all() as SqlRow[]).map(mapNoteNode)
     if(nodes.length>10000) throw syncError(413,'第一版离线工作区最多支持 10000 个笔记节点；未截断或删除任何内容')
-    return {protocol:1,instance:String((this.db.prepare("SELECT value FROM note_sync_meta WHERE key='instance'").get() as SqlRow).value),revision:treeFingerprint(nodes),nodes}
+    const manifest = {protocol:1,instance:String((this.db.prepare("SELECT value FROM note_sync_meta WHERE key='instance'").get() as SqlRow).value),revision:treeFingerprint(nodes),nodes}
+    // A manifest read inside a transaction may observe changes later rolled
+    // back. total_changes() itself is not rolled back, so never cache that view.
+    if (this.db.isTransaction) this.manifestCache = undefined
+    else this.manifestCache = {revision, manifest}
+    return structuredClone(manifest)
   }
 
   /** Content, metadata and deduplication receipt commit in one SQLite transaction. */

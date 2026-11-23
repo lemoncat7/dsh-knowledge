@@ -384,8 +384,13 @@ export class NoteReplica {
     })
   }
   private checkInstance(manifest: NoteManifest) {
-    if (manifest.protocol !== 1 || !Array.isArray(manifest.nodes) || manifest.nodes.length > 10000)
+    if (!manifest || manifest.protocol !== 1 || !Array.isArray(manifest.nodes) || manifest.nodes.length > 10000)
       throw syncError(426, '远程尚不支持此离线同步协议')
+    if (typeof manifest.instance !== 'string' || !manifest.instance || typeof manifest.revision !== 'string'
+      || manifest.nodes.some(node => !node || !isNoteId(node.id) || !['folder','document','file'].includes(node.kind)
+        || !Number.isSafeInteger(node.version) || node.version < 1)
+      || new Set(manifest.nodes.map(node => node.id)).size !== manifest.nodes.length
+      || treeFingerprint(manifest.nodes) !== manifest.revision) throw syncError(502, '远程笔记清单不完整或校验失败，已保留本地副本')
     const known = this.db.prepare("SELECT value FROM meta WHERE key='instance'").get() as { value: string } | undefined
     if (known && known.value !== manifest.instance)
       throw syncError(409, '远程数据库身份已变化，已停止上传，原本地副本保留')
@@ -419,6 +424,7 @@ export class NoteReplica {
       this.state = 'syncing'
       let manifest = (await this.remote('note-sync')) as NoteManifest
       this.checkInstance(manifest)
+      let uploaded = false
       // A parent deletion carries the complete subtree precondition; never split it into child deletes.
       for (const candidate of this.rows()
         .filter((r) => r.dirty && !r.conflict)
@@ -471,6 +477,7 @@ export class NoteReplica {
         this.db.prepare('UPDATE replica SET operation=? WHERE id=?').run(JSON.stringify(change), row.id)
         try {
           const result = (await this.remote('note-sync', 'POST', change)) as NoteNode | null
+          uploaded = true
           this.transaction(() => {
             if (result) this.save({ ...result, version: node.version }, row.content, result, false)
             else
@@ -488,37 +495,18 @@ export class NoteReplica {
           throw e
         }
       }
-      manifest = (await this.remote('note-sync')) as NoteManifest
-      this.checkInstance(manifest)
-      // Stage downloads first. Never infer deletion from a partial/failed listing.
-      this.db.exec('DELETE FROM incoming')
-      for (const node of manifest.nodes) {
-        if (!isNoteId(node.id)) throw syncError(502, 'invalid remote note ID')
-        const r = this.row(node.id)
-        if (r?.dirty) continue
-        if (r && !r.deleted && noteFingerprint(r.base ? JSON.parse(r.base) : null) === noteFingerprint(node)) continue
-        this.db.prepare('INSERT INTO incoming VALUES(?,?,?)').run(node.id, JSON.stringify(node), await this.bytes(node))
+      if (uploaded) {
+        manifest = (await this.remote('note-sync')) as NoteManifest
+        this.checkInstance(manifest)
       }
-      const confirmed = (await this.remote('note-sync')) as NoteManifest
-      this.checkInstance(confirmed)
-      if (confirmed.revision !== manifest.revision) throw syncError(423, '远程正在变化，已保留本地副本，稍后再同步')
-      this.transaction(() => {
-        for (const { id } of this.db.prepare('SELECT id FROM incoming').all() as { id: string }[]) {
-          const item = this.db.prepare('SELECT node,content FROM incoming WHERE id=?').get(id) as {
-            node: string
-            content: Uint8Array
-          }
-          const node = JSON.parse(item.node) as NoteNode,
-            old = this.row(node.id)
-          if (old?.dirty) continue // An offline edit may arrive while a download is in flight.
-          this.save({ ...node, version: old ? this.node(old).version + 1 : node.version }, item.content, node, false)
-        }
-        this.db.exec('DELETE FROM incoming')
-        const present = new Set(manifest.nodes.map((n) => n.id))
-        for (const r of this.rows()) {
-          if (!r.dirty && !present.has(r.id)) this.db.prepare('UPDATE replica SET deleted=1 WHERE id=?').run(r.id)
-        }
+      const rows = this.rows(), byId = new Map(rows.map(row => [row.id, row]))
+      const present = new Set(manifest.nodes.map(node => node.id))
+      const downloads = manifest.nodes.filter(node => {
+        const row = byId.get(node.id)
+        return !row?.dirty && (!row || row.deleted || noteFingerprint(row.base ? JSON.parse(row.base) : null) !== noteFingerprint(node))
       })
+      const removals = rows.filter(row => !row.dirty && !row.deleted && !present.has(row.id))
+      if (downloads.length || removals.length) await this.pull(manifest, downloads, removals)
       this.state = 'online'
       this.message = '远程已连接，本地副本已更新'
     } catch (e) {
@@ -540,6 +528,34 @@ export class NoteReplica {
               ? e.message
               : '远程暂不可用，本地内容已保留'
     }
+  }
+
+  private async pull(manifest: NoteManifest, downloads: NoteNode[], removals: Row[]) {
+    // Stage downloads first. Never infer deletion from a partial/failed listing.
+    if (this.db.prepare('SELECT 1 FROM incoming LIMIT 1').get()) this.db.exec('DELETE FROM incoming')
+    for (const node of downloads) {
+      this.db.prepare('INSERT INTO incoming VALUES(?,?,?)').run(node.id, JSON.stringify(node), await this.bytes(node))
+    }
+    const confirmed = (await this.remote('note-sync')) as NoteManifest
+    this.checkInstance(confirmed)
+    if (confirmed.revision !== manifest.revision) throw syncError(423, '远程正在变化，已保留本地副本，稍后再同步')
+    this.transaction(() => {
+      for (const { id } of this.db.prepare('SELECT id FROM incoming').all() as { id: string }[]) {
+        const item = this.db.prepare('SELECT node,content FROM incoming WHERE id=?').get(id) as {
+          node: string
+          content: Uint8Array
+        }
+        const node = JSON.parse(item.node) as NoteNode,
+          old = this.row(node.id)
+        if (old?.dirty) continue // An offline edit may arrive while a download is in flight.
+        this.save({ ...node, version: old ? this.node(old).version + 1 : node.version }, item.content, node, false)
+      }
+      if (downloads.length) this.db.exec('DELETE FROM incoming')
+      for (const r of removals) {
+        // A local edit can arrive while the manifest confirmation is in flight.
+        this.db.prepare('UPDATE replica SET deleted=1 WHERE id=? AND dirty=0 AND deleted=0').run(r.id)
+      }
+    })
   }
   private depth(n: NoteNode) {
     let count = 0,

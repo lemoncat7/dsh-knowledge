@@ -34,6 +34,7 @@ dsh plugin --profile web add @lemoncat7/dsh-knowledge@latest
 - [使用、权限与部署配置](docs/usage.md)
 - [文档分组](docs/document-groups.md)
 - [笔记 @ 引用](docs/note-mentions.md)
+- [空闲读写与后台处理](docs/idle-performance.md)
 - [版本与发布说明](https://github.com/lemoncat7/dsh-knowledge/releases)
 - [发布维护约定](docs/releases/README.md)
 

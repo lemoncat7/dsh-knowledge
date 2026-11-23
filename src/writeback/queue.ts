@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { decodePageCursor, encodePageCursor } from '../page-cursor.js'
+import { sqliteRevision } from '../storage/sqlite-revision.js'
 import type { ExtractionWriteDestination } from '../domain.js'
 import type { ExtractionCheckpoint, PlannedWrite, TurnSnapshot } from '../extraction.js'
 
@@ -38,6 +39,8 @@ export class WritebackQueue {
   private controller: AbortController | undefined
   private activeKey: string | undefined
   private closed = false
+  private started = false
+  private notifiedRevision: string | undefined
   private closing: Promise<void> | undefined
   private readonly listeners = new Set<() => void>()
 
@@ -48,12 +51,14 @@ export class WritebackQueue {
 
   get revision(): string {
     if (this.closed) return `${this.owner}:closed`
-    const external = this.db.prepare('PRAGMA data_version').get() as { data_version: number }
-    const local = this.db.prepare('SELECT total_changes() AS changes').get() as { changes: number }
-    return `${this.owner}:${external.data_version}:${local.changes}`
+    return `${this.owner}:${sqliteRevision(this.db)}`
   }
 
   private notify(): void {
+    if (!this.listeners.size) return
+    const revision = this.revision
+    if (revision === this.notifiedRevision) return
+    this.notifiedRevision = revision
     for (const listener of this.listeners) {
       try { listener() } catch (error) { this.warn(`writeback status notification: ${String(error)}`) }
     }
@@ -192,9 +197,8 @@ export class WritebackQueue {
   }
 
   start(): void {
-    if (this.timer || this.closed) return
-    this.timer = setInterval(() => this.kick(), 2_000)
-    this.timer.unref?.()
+    if (this.started || this.closed) return
+    this.started = true
     this.kick()
   }
 
@@ -203,9 +207,18 @@ export class WritebackQueue {
   private kick(): void {
     if (!this.closed) this.notify()
     if (this.closed || this.active) return
+    if (this.timer) clearTimeout(this.timer)
+    this.timer = undefined
     // A macrotask boundary lets the host finish its turn/channel reply first.
     this.active = new Promise<void>(resolve => setImmediate(resolve)).then(() => this.drain())
-      .catch(error => this.warn(`knowledge writeback worker: ${String(error)}`)).finally(() => { this.active = undefined })
+      .catch(error => this.warn(`knowledge writeback worker: ${String(error)}`)).finally(() => {
+        this.active = undefined
+        if (this.started && !this.closed) {
+          const pending = this.db.prepare("SELECT 1 FROM queue_jobs WHERE status IN ('queued','running') LIMIT 1").get()
+          this.timer = setTimeout(() => { this.timer = undefined; this.kick() }, pending ? 2_000 : 30_000)
+          this.timer.unref?.()
+        }
+      })
   }
 
   /** Explicit flush never reruns a completed batch. */
@@ -261,6 +274,9 @@ export class WritebackQueue {
   }
 
   private claim(): Row | undefined {
+    // An empty/completed outbox must not acquire a SQLite write transaction on
+    // every timer tick. Recheck all eligibility under the transaction below.
+    if (!this.db.prepare("SELECT 1 FROM queue_jobs WHERE status IN ('queued','running') LIMIT 1").get()) return undefined
     this.db.exec('BEGIN IMMEDIATE')
     try {
       const now = Date.now()
@@ -344,7 +360,7 @@ export class WritebackQueue {
   close(): Promise<void> {
     if (this.closing) return this.closing
     this.closed = true
-    if (this.timer) clearInterval(this.timer)
+    if (this.timer) clearTimeout(this.timer)
     this.controller?.abort(new Error('知识库服务停止，回写任务已保留'))
     this.closing = Promise.resolve(this.active).then(() => { this.db.close() })
     return this.closing
