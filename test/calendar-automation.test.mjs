@@ -331,3 +331,70 @@ test('legacy iCloud bindings migrate existing notes without overwriting either s
   await sync.begin(true)
   assert.equal(store.calendar.get(goals[2].id).description, '保留右边')
 })
+
+test('iCloud deletion requires an explicit decision and the exact revision that was reviewed', async t => {
+  const store = new Store(':memory:'); t.after(() => store.close())
+  const nowDay = store.calendar.info().today
+  const goals = ['单边保留', '确认删除', '手动处理'].map(title => make(store, title, nowDay))
+  const entries = new Map()
+  const deletes = []
+  let seq = 0
+  function put(href, data) { entries.set(href, { href, data, etag: '"' + (++seq) + '"' }) }
+  const client = {
+    async discover() { return [{ id: calendar, name: '目标' }] },
+    async list() { return { calendar, entries: [...entries.values()] } },
+    async put(href, data) { put(href, data) },
+    async remove(href, expected) {
+      assert.equal(entries.get(href)?.etag, expected)
+      deletes.push(href); entries.delete(href)
+    },
+  }
+  const sync = new ICloudSync(store, undefined, () => client)
+  await sync.connect({ account, password: plain, calendar }, signal())
+  sync.toggle(true)
+  await sync.begin(true)
+  for (const event of goals) store.calendar.mutate('delete', { id: event.id, revision: event.revision, requestId: randomUUID() })
+  await sync.begin(true)
+  assert.equal(entries.size, 3)
+  assert.equal(deletes.length, 0)
+
+  const byTitle = title => sync.status().issues.find(issue => issue.title === title)
+  const choose = (issue, choice) => sync.resolve({ uid: issue.uid, key: issue.key, choice })
+  choose(byTitle('单边保留'), 'keep-icloud')
+  const oldDelete = byTitle('确认删除')
+  choose(oldDelete, 'remove-icloud')
+  const href = calendar + encodeURIComponent(goals[1].uid) + '.ics'
+  put(href, encodeEvent(goals[1].uid, allDay('iCloud 已有更新', nowDay, '新内容'), Date.now()))
+  const manuallyRemoved = calendar + encodeURIComponent(goals[2].uid) + '.ics'
+  entries.delete(manuallyRemoved)
+
+  await sync.begin(true)
+  assert.equal(deletes.length, 0)
+  assert.equal(entries.size, 2)
+  assert.equal(byTitle('单边保留'), undefined)
+  assert.equal(byTitle('手动处理'), undefined)
+  assert.throws(() => choose(oldDelete, 'remove-icloud'), /已变化/)
+  choose(byTitle('iCloud 已有更新'), 'remove-icloud')
+  await sync.begin(true)
+  assert.deepEqual(deletes, [href])
+  assert.equal(sync.status().last.removed, 1)
+  assert.equal(sync.status().issues.length, 0)
+  assert.ok(store.calendar.get(goals[1].id).deletedAt)
+  await sync.begin(true)
+  assert.equal(entries.size, 1)
+  assert.deepEqual(deletes, [href])
+})
+
+test('CalDAV uses conditional DELETE and accepts a resource that is already absent', async () => {
+  let requests = 0
+  const client = new AppleCalendarClient(account, plain, async (url, init) => {
+    requests++
+    assert.equal(init.method, 'DELETE')
+    assert.equal(init.headers['if-match'], '"old"')
+    return new Response(null, { status: requests === 1 ? 412 : 404 })
+  })
+  await assert.rejects(client.remove(calendar + 'goal.ics', null, signal()), /缺少版本/)
+  assert.equal(requests, 0)
+  await assert.rejects(client.remove(calendar + 'goal.ics', '"old"', signal()), e => e.status === 409)
+  await client.remove(calendar + 'goal.ics', '"old"', signal())
+})

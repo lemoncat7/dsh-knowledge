@@ -64,6 +64,7 @@ export function CalendarSettings({ close, supported }) {
 export function CalendarAccounts({ close, zone, supported, onCalendarChanged }) {
   const { value, error, busy, pendingToggle, action } = useCalendarSettings(supported)
   const [selected, setSelected] = useState('icloud')
+  const [confirmDelete, setConfirmDelete] = useState(null)
   const [account, setAccount] = useState(''), [password, setPassword] = useState('')
   const [connecting, setConnecting] = useState(false), [calendars, setCalendars] = useState(null), [calendar, setCalendar] = useState('')
   function resetConnection() {
@@ -116,7 +117,7 @@ export function CalendarAccounts({ close, zone, supported, onCalendarChanged }) 
           <button type="button" disabled={busy || !icloud.enabled || icloud.running} onClick={() => update('/calendar-icloud-sync', {})}>{icloud.running ? '同步中…' : '立即同步'}</button>
         </div>}
         {icloud.last && <p role="status" className="wl-muted">{icloud.last.state === 'ok'
-          ? `最近同步 ${localParts(icloud.last.time, zone).time} · 从 iCloud 更新 ${icloud.last.pulled} 项 · 上传 ${icloud.last.pushed} 项`
+          ? `最近同步 ${localParts(icloud.last.time, zone).time} · 从 iCloud 更新 ${icloud.last.pulled} 项 · 上传 ${icloud.last.pushed} 项${icloud.last.removed ? ` · 删除 ${icloud.last.removed} 项` : ''}`
           : icloud.last.message}</p>}
         {connecting ? <div className="wc-settings-connect">
           <label>Apple 账户<input type="email" autoComplete="off" spellCheck={false} value={account} disabled={busy}
@@ -153,6 +154,27 @@ export function CalendarAccounts({ close, zone, supported, onCalendarChanged }) 
                 <button type="button" disabled={busy || !icloud.enabled || icloud.running} onClick={() => update('/calendar-icloud-resolve', { uid: issue.uid, key: issue.key, choice: 'icloud' })}>采用 iCloud</button>
               </div>
             </>}
+            {issue.type === 'local-missing' && <>
+              <p>{summary(issue.icloud, zone)}</p>
+              {issue.icloud?.description && <p className="wc-sync-note">备注 · {issue.icloud.description}</p>}
+              <div className="wl-actions">
+                {confirmDelete === issue.key ? <>
+                  <button type="button" onClick={() => setConfirmDelete(null)}>取消</button>
+                  <button type="button" className="wc-delete" disabled={busy || !icloud.enabled || icloud.running} onClick={async () => {
+                    await update('/calendar-icloud-resolve', { uid: issue.uid, key: issue.key, choice: 'remove-icloud' })
+                    setConfirmDelete(null)
+                  }}>确认从 iCloud 删除</button>
+                </> : <>
+                  <button type="button" disabled={busy || !icloud.enabled || icloud.running} onClick={() =>
+                    update('/calendar-icloud-resolve', { uid: issue.uid, key: issue.key, choice: 'keep-icloud' })}>仅保留 iCloud</button>
+                  <button type="button" disabled={busy || !icloud.enabled || icloud.running} onClick={() => setConfirmDelete(issue.key)}>从 iCloud 删除</button>
+                </>}
+              </div>
+            </>}
+            {issue.type === 'remote-missing' && <div className="wl-actions">
+              <button type="button" disabled={busy || !icloud.enabled || icloud.running} onClick={() =>
+                update('/calendar-icloud-resolve', { uid: issue.uid, key: issue.key, choice: 'keep-knowledge' })}>仅保留知识库</button>
+            </div>}
           </details>)}
         </div>}
         </>}

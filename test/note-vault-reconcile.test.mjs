@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {mkdtemp, rm, rename, writeFile, readFile, mkdir, readdir, symlink} from 'node:fs/promises'
+import {mkdtemp, rm, rename, writeFile, readFile, mkdir, readdir, symlink, stat} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {NoteStore} from '../lib/notes/store.js'
@@ -21,6 +21,30 @@ async function fixture(t) {
  restart:async()=>{await vault.close();vault=new NoteVault(path,adapters,manifest,false,timing)},
  file:(name)=>join(path,name)}
 }
+test('idle scans keep the durable manifest untouched while application edits persist',async t=>{
+ const f=await fixture(t),n=await f.store.createDocument('a',null,'base'),index=join(f.root,'index.json')
+ await f.settle();await f.settle()
+ const before=await stat(index,{bigint:true})
+ for(let i=0;i<5;i++)await f.scan()
+ const after=await stat(index,{bigint:true})
+ assert.equal(after.ino,before.ino);assert.equal(after.mtimeNs,before.mtimeNs)
+ await f.store.updateContent(n.id,b('updated'));await f.settle();await f.settle()
+ assert.equal(await readFile(f.file('a.md'),'utf8'),'updated')
+ const saved=JSON.parse(await readFile(index,'utf8')).mappings.find(m=>m.id===n.id)
+ assert.equal(saved.hash,f.store.get(n.id).sha256);assert.equal(saved.version,f.store.get(n.id).version)
+ await f.restart();await f.settle();assert.equal((await f.store.read(n.id)).content.toString(),'updated')
+})
+test('a failed manifest checkpoint is retried after the destination becomes writable',async t=>{
+ const f=await fixture(t),n=await f.store.createDocument('a',null,'base'),index=join(f.root,'index.json')
+ await f.settle();await f.settle()
+ await rm(index);await mkdir(index)
+ await f.store.updateContent(n.id,b('updated'));await f.scan()
+ assert.ok(f.vault.status().warning)
+ await rm(index,{recursive:true});await f.settle()
+ const saved=JSON.parse(await readFile(index,'utf8')).mappings.find(m=>m.id===n.id)
+ assert.equal(saved.hash,f.store.get(n.id).sha256);assert.equal(saved.version,f.store.get(n.id).version)
+ assert.equal(f.vault.status().warning,'')
+})
 test('external stable edits preserve history; interrupted write waits; restart preserves mapping',async t=>{
  const f=await fixture(t),n=await f.store.createDocument('a',null,'base');await f.scan()
  await writeFile(f.file('a.md'),'half');await f.scan();assert.equal((await f.store.read(n.id)).content.toString(),'base')

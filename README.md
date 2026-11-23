@@ -45,6 +45,8 @@ dsh plugin --profile web add @lemoncat7/dsh-knowledge@latest
 
 笔记工作区增加远程补同步和可供 Obsidian 打开的 Markdown 目录。支持范围、冲突规则和 schema 升级注意事项见 [说明](docs/note-workspace-sync.md)。
 
+本地文件索引仅在持久化状态变化时执行原子写入和落盘同步；空闲扫描保留索引文件的 inode 与修改时间。写入失败仍会在后续扫描中重试，实际笔记变更、冲突和移动检查点继续同步保存。
+
 
 ## 宿主兼容策略
 

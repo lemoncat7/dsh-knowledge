@@ -38,6 +38,7 @@ interface Mapping {
 /** Plain files are an interoperable projection. The journal lives outside the vault. */
 export class NoteVault {
   private mappings: Mapping[] = []
+  private persistedManifest: string | undefined
   private running: Promise<void> | undefined
   private timer: ReturnType<typeof setInterval> | undefined
   private stopped = false
@@ -111,8 +112,11 @@ export class NoteVault {
     }
   }
   private async persist() {
+    const content = JSON.stringify({ format: 2, token: this.token, rootIdentity: this.rootIdentity, markerIdentity: this.markerIdentity, volumeUUID: this.volumeUUID, trashFolder: this.trashFolder, events: this.events, mappings: this.mappings })
+    if (content === this.persistedManifest) return
     await mkdir(dirname(this.manifestPath), { recursive: true, mode: 0o700 })
-    await atomicWriteFile(this.manifestPath, JSON.stringify({ format: 2, token: this.token, rootIdentity: this.rootIdentity, markerIdentity: this.markerIdentity, volumeUUID: this.volumeUUID, trashFolder: this.trashFolder, events: this.events, mappings: this.mappings }), { mode: 0o600 })
+    await atomicWriteFile(this.manifestPath, content, { mode: 0o600 })
+    this.persistedManifest = content
   }
   scan(): Promise<void> {
     if (this.stopped) return Promise.resolve()

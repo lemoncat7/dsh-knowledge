@@ -213,6 +213,14 @@ export class AppleCalendarClient {
     if ([409, 412].includes(response.status)) throw fail('iCloud 事件已变化，将在下次同步重新核对', 409)
     if (!response.ok) throw fail(`iCloud 未保存事件（HTTP ${response.status}）`, 502)
   }
+  async remove(href, etag, signal) {
+    if (!etag) throw fail('iCloud 条目缺少版本，未删除', 409)
+    const { response } = await this.send('DELETE', href, signal, { headers: { 'if-match': etag } })
+    await response.body?.cancel()
+    if ([409, 412].includes(response.status)) throw fail('iCloud 条目已变化，未删除', 409)
+    if (!response.ok && response.status !== 404) throw fail(`iCloud 未删除条目（HTTP ${response.status}）`, 502)
+  }
+
 }
 
 export function projection(event) {

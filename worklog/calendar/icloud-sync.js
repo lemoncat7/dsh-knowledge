@@ -116,9 +116,15 @@ export class ICloudSync {
     const config = this.config()
     if (!config.enabled) throw fail('请先开启 iCloud 同步', 409)
     const binding = this.bindings(config.connection).get(string(data.uid, 512, true))
-    if (!binding || binding.issue?.type !== 'conflict' || binding.issue.key !== data.key ||
-        !['knowledge','icloud'].includes(data.choice)) throw fail('冲突已变化，请刷新后重新选择', 409)
-    this.saveBinding(config.connection, { ...binding, resolution: { key: data.key, choice: data.choice } })
+    const allowed = binding?.issue?.type === 'local-missing' ? ['keep-icloud', 'remove-icloud'] :
+      binding?.issue?.type === 'remote-missing' ? ['keep-knowledge'] :
+      binding?.issue?.type === 'conflict' ? ['knowledge', 'icloud'] : []
+    if (!allowed.includes(data.choice) || binding.issue.key !== data.key) throw fail('待处理事项已变化，请刷新后重新选择', 409)
+    if (data.choice === 'keep-icloud' || data.choice === 'keep-knowledge') {
+      this.saveBinding(config.connection, { ...binding, detached: data.choice, issue: undefined, resolution: undefined })
+    } else {
+      this.saveBinding(config.connection, { ...binding, resolution: { key: data.key, choice: data.choice } })
+    }
     this.next = 0
     return this.status()
   }
@@ -180,12 +186,15 @@ export class ICloudSync {
       return key
     }
     const fieldsInRange = fields => (fields.allDay ? fields.endDay > config.since : localParts(fields.endAt - 1, timezone).day >= config.since)
-    let pulled = 0, pushed = 0
+    let pulled = 0, pushed = 0, removed = 0
     for (const [uid, ext] of remote) {
       assertActive()
       const mapped = bindings.get(uid)
+      const local = mapped && this.localEvent(mapped.localId)
+      const localMissing = !local || local.deletedAt !== null || local.kind !== 'goal'
+      if (localMissing && mapped?.detached === 'keep-icloud') continue
       if (duplicate.has(uid) || !ext.fields) {
-        if (mapped) issue(mapped, 'unsupported', mapped.localId && this.localEvent(mapped.localId) ? projection(this.localEvent(mapped.localId)) : null, ext)
+        if (mapped) issue(mapped, 'unsupported', local ? projection(local) : null, ext)
         continue
       }
       if (!mapped) {
@@ -208,8 +217,21 @@ export class ICloudSync {
         }
         continue
       }
-      const local = this.localEvent(mapped.localId)
-      if (!local || local.deletedAt !== null || local.kind !== 'goal') { issue(mapped, 'local-missing', null, ext); continue }
+      if (localMissing) {
+        const key = digest(['local-missing', null, ext.etag])
+        if (mapped.resolution?.choice === 'remove-icloud' && mapped.resolution.key === key) {
+          try {
+            await client.remove(ext.href, ext.etag, signal)
+            assertActive()
+            write({ ...mapped, issue: undefined, resolution: undefined })
+            removed++
+          } catch (e) {
+            if (e.status !== 409) throw e
+            issue({ ...mapped, resolution: undefined }, 'local-missing', null, ext)
+          }
+        } else issue(mapped, 'local-missing', null, ext)
+        continue
+      }
       const fields = projection(local)
       // Older bindings never shared a description. Empty is the common starting point
       // so independent non-empty notes on both sides surface as a conflict.
@@ -217,7 +239,7 @@ export class ICloudSync {
       const base = legacy ? projection(mapped.base) : mapped.base
       const localChanged = !equal(fields, base), remoteChanged = !equal(ext.fields, base)
       let direction = localChanged ? 'knowledge' : remoteChanged ? 'icloud' : null
-      if (equal(fields, ext.fields)) { if (mapped.etag !== ext.etag || mapped.issue || localChanged || legacy) clean(mapped, ext, fields); continue }
+      if (equal(fields, ext.fields)) { if (mapped.etag !== ext.etag || mapped.issue || mapped.detached || localChanged || legacy) clean(mapped, ext, fields); continue }
       if (localChanged && remoteChanged) {
         const conflictKey = digest(['conflict', fields, ext.etag])
         if (mapped.resolution?.key !== conflictKey) { issue(mapped, 'conflict', fields, ext); continue }
@@ -240,7 +262,11 @@ export class ICloudSync {
     for (const [uid, binding] of bindings) {
       if (remote.has(uid)) continue
       const local = this.localEvent(binding.localId)
-      if (local?.deletedAt === null) issue(binding, 'remote-missing', projection(local), null)
+      if (local?.deletedAt === null && local.kind === 'goal') {
+        if (binding.detached !== 'keep-knowledge') issue(binding, 'remote-missing', projection(local), null)
+      } else if (binding.issue || binding.resolution) {
+        write({ ...binding, issue: undefined, resolution: undefined })
+      }
     }
     const pending = this.db.prepare(`SELECT body FROM calendar_events e WHERE deleted_at IS NULL AND end_day>?
       AND json_extract(body,'$.kind')='goal' AND NOT EXISTS
@@ -264,6 +290,6 @@ export class ICloudSync {
       write({ uid, localId: local.id, href, base: fields, etag: null })
       pushed++
     }
-    return { pulled, pushed }
+    return { pulled, pushed, removed }
   }
 }
