@@ -93,7 +93,7 @@ export class ReportProgress {
     if (!this.enabled() || !route?.provider || !route.model) return
     return this.db.prepare(`INSERT INTO calendar_report_jobs(day,revision,body,due,status) VALUES (?,?,?,?,'queued')
       ON CONFLICT(day) DO UPDATE SET revision=excluded.revision,body=excluded.body,due=excluded.due,attempts=0,status='queued',message=''
-      WHERE excluded.revision > calendar_report_jobs.revision OR (?=1 AND calendar_report_jobs.status NOT IN ('queued','running'))`).run(day, revision, JSON.stringify(route), Date.now(), +force).changes
+      WHERE excluded.revision > calendar_report_jobs.revision OR (?=1 AND calendar_report_jobs.status NOT IN ('queued','running'))`).run(day, revision, JSON.stringify({ ...route, onlyMissing: force }), Date.now(), +force).changes
   }
   async tick(llm, signal, active = () => true) {
     if (!this.enabled()) return
@@ -104,9 +104,14 @@ export class ReportProgress {
     try {
       const report = this.store.report(day), calendar = this.store.calendar
       if (report.revision !== revision) { finish('skipped', '日报已更新'); return }
-      const goals = calendar.dayGoals(day, calendar.timezone()).filter(event => ['planned', 'in_progress'].includes(event.status)).map(event => {
+      const { onlyMissing = false, ...route } = JSON.parse(job.body)
+      const goals = calendar.dayGoals(day, calendar.timezone()).filter(event => ['planned', 'in_progress'].includes(event.status)).flatMap(event => {
         const { progress } = calendar.goalProgress(event.id, day)
-        return { id: event.id, title: event.title, description: event.description.slice(0, 300), project: event.project, revision: event.revision, progressRevision: progress.revision }
+        const automated = this.db.prepare('SELECT revision FROM calendar_report_notes WHERE goal_id=? AND day=?').get(progress.goalId, day)
+        // Manual edits (including an explicitly cleared entry) are already protected.
+        // An explicit recheck fills holes; it need not analyze existing daily notes again.
+        if (progress.revision > 0 && (automated?.revision !== progress.revision || onlyMissing && progress.text)) return []
+        return [{ id: event.id, title: event.title, description: event.description.slice(0, 300), project: event.project, revision: event.revision, progressRevision: progress.revision }]
       })
       if (!goals.length) { finish('done', '当天没有待核对的目标'); return }
       const relevant = new Set(report.covered)
@@ -116,7 +121,7 @@ export class ReportProgress {
       for (let i = 0; i < goals.length; i += 40) {
         signal.throwIfAborted()
         const batch = goals.slice(i, i + 40)
-        const result = await complete(llm, { route: JSON.parse(job.body) }, signal, instructions,
+        const result = await complete(llm, { route }, signal, instructions,
           { day, goals: batch.map(({ revision, progressRevision, ...goal }) => goal), report: report.markdown.slice(0, 6000), sources }, 3600)
         const accepted = reportDecisions(result, batch, sources)
         const returned = JSON.parse(result.replace(/^\s*```(?:json)?\s*|\s*```\s*$/g, '')).items

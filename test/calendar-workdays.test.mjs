@@ -128,7 +128,7 @@ test('workday choices survive reopening and historical recheck can recover the s
   reopened.save(friday, '此前已生成日报', 0, ['route-evidence'], false)
   reopened.reportProgress.configure(true)
   assert.equal(reopened.reportProgress.recheck({ from: friday, to: friday }).queued, 1)
-  assert.deepEqual(JSON.parse(reopened.db.prepare('SELECT body FROM calendar_report_jobs').get().body), { provider: 'source-provider', model: 'source-model' })
+  assert.deepEqual(JSON.parse(reopened.db.prepare('SELECT body FROM calendar_report_jobs').get().body), { provider: 'source-provider', model: 'source-model', onlyMissing: true })
 })
 
 
@@ -137,4 +137,24 @@ test('report matching rejects a claimed progress entry that explicitly lacks evi
   const quote = '已根据构建脚本梳理安装包的组件来源，并整理了构建交接笔记。'
   const sources = [{ answer: quote }]
   assert.deepEqual(reportDecisions(JSON.stringify({ items: [{ id: 'site', state: 'progress', text: '已梳理安装包组件来源；尚未证实跟进现场问题或完成现场排查。', source: 1, field: 'answer', quote }] }), goals, sources), [])
+})
+
+
+test('explicit recheck preserves existing automated notes without a model request, while a new report revision can update them', async t => {
+  const store = fixture(t), c = store.calendar
+  const goal = create(c, '梳理构建流程', friday)
+  const quote = '已核对构建入口并完成产物清单的整理。'
+  store.insert({ id: 'auto-source', day: friday, user: '整理已确认的构建入口', answer: quote, project: '', sessionId: 's', route: { provider: 'p', model: 'm' } })
+  store.reportProgress.configure(true)
+  store.save(friday, '日报', 0, ['auto-source'], false, { provider: 'p', model: 'm' })
+  let calls = 0
+  const llm = { async *stream() { calls++; yield { type: 'text-delta', text: JSON.stringify({ items: [{ id: goal.id, state: 'progress', text: quote, source: 1, field: 'answer', quote }] }) } } }
+  await store.reportProgress.tick(llm, new AbortController().signal)
+  assert.equal(calls, 1)
+  assert.equal(store.reportProgress.recheck({ from: friday, to: friday }).queued, 1)
+  await store.reportProgress.tick(llm, new AbortController().signal)
+  assert.equal(calls, 1)
+  store.save(friday, '更新后的日报', 1, ['auto-source'], false, { provider: 'p', model: 'm' })
+  await store.reportProgress.tick(llm, new AbortController().signal)
+  assert.equal(calls, 2)
 })
