@@ -5,7 +5,6 @@ export const KNOWLEDGE_PALETTE: Record<KnowledgeColorScheme, Readonly<Record<str
   light: {
     '--bg': '#ebebeb', '--surface': '#f4f4f4', '--surface-raised': '#fafafa',
     '--surface-soft': '#eeeeef', '--surface-hover': 'rgb(118 118 128 / 9%)', '--dialog-surface': '#f4f4f4',
-    '--knowledge-dialog-material': 'rgb(244 244 246 / 86%)',
     '--menu-surface': 'rgb(232 234 236 / 98%)', '--menu-surface-solid': '#e8eaec',
     '--document-surface': 'rgb(255 255 255 / 12%)',
     '--document-backdrop-filter': 'blur(24px)',
@@ -20,7 +19,6 @@ export const KNOWLEDGE_PALETTE: Record<KnowledgeColorScheme, Readonly<Record<str
   dark: {
     '--bg': '#101719', '--surface': '#182022', '--surface-raised': '#20292b',
     '--surface-soft': 'rgb(184 204 205 / 6%)', '--surface-hover': 'rgb(105 182 186 / 9%)', '--dialog-surface': '#20292b',
-    '--knowledge-dialog-material': 'rgb(32 41 43 / 86%)',
     '--menu-surface': 'rgb(29 38 40 / 98%)', '--menu-surface-solid': '#1d2628',
     '--document-surface': 'rgb(0 0 0 / 8%)',
     '--document-backdrop-filter': 'blur(24px)',
