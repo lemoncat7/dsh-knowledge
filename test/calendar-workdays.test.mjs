@@ -130,3 +130,11 @@ test('workday choices survive reopening and historical recheck can recover the s
   assert.equal(reopened.reportProgress.recheck({ from: friday, to: friday }).queued, 1)
   assert.deepEqual(JSON.parse(reopened.db.prepare('SELECT body FROM calendar_report_jobs').get().body), { provider: 'source-provider', model: 'source-model' })
 })
+
+
+test('report matching rejects a claimed progress entry that explicitly lacks evidence of work on that goal', () => {
+  const goals = [{ id: 'site', title: '查看并跟进现场问题' }]
+  const quote = '已根据构建脚本梳理安装包的组件来源，并整理了构建交接笔记。'
+  const sources = [{ answer: quote }]
+  assert.deepEqual(reportDecisions(JSON.stringify({ items: [{ id: 'site', state: 'progress', text: '已梳理安装包组件来源；尚未证实跟进现场问题或完成现场排查。', source: 1, field: 'answer', quote }] }), goals, sources), [])
+})
