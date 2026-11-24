@@ -29,6 +29,7 @@
 .dsh-worklog button:active:not(:disabled){transform:scale(.97)}
 .dsh-worklog button[aria-pressed="true"],.dsh-worklog .wl-days button[aria-current]{background:var(--interaction-tile,var(--wl-solid));border-color:var(--wl-line);box-shadow:var(--interaction-rim),0 2px 5px #0000000d}
 .dsh-worklog.wl-dialog{height:fit-content;padding:7px;border-radius:var(--knowledge-radius-dialog,24px);animation:knowledge-worklog-dialog-in var(--knowledge-motion-dialog,220ms) var(--knowledge-motion-ease,cubic-bezier(.22,1,.36,1))}
+.dsh-worklog.wl-dialog{background:var(--knowledge-dialog-material,var(--wl-solid));background-image:none;backdrop-filter:blur(28px) saturate(.8);-webkit-backdrop-filter:blur(28px) saturate(.8);border-color:var(--border-strong,var(--wl-line))}
 .dsh-worklog.wl-dialog>header{padding:18px;border:0;background:transparent}
 .dsh-worklog.wl-dialog>header button{display:grid;place-items:center;min-height:34px;height:34px;width:34px;padding:0;border:0;border-radius:50%;background:var(--interaction-well,var(--wl-hover));box-shadow:none}
 .dsh-worklog .wl-dialog-content{padding:20px;border:1px solid var(--wl-line);border-radius:17px;background:var(--interaction-well)}
@@ -48,5 +49,6 @@
 .dsh-worklog.wl-dialog::backdrop{background:rgb(12 18 24 / 14%);backdrop-filter:none}
 @keyframes knowledge-worklog-dialog-in{from{opacity:0;transform:translateY(10px) scale(.985)}to{opacity:1;transform:none}}
 @keyframes knowledge-worklog-menu-in{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}
-@media(max-width:680px){.dsh-worklog.wl-dialog{width:calc(100vw - 16px);max-height:calc(100dvh - 16px);padding:6px;border-radius:22px}.dsh-worklog .wl-dialog-content{padding:16px}.dsh-worklog.wl-dialog>.wl-dialog-actions{flex-wrap:wrap;padding:12px 6px 6px}.dsh-worklog .wl-dialog-actions>button{min-height:44px;flex:1}.dsh-worklog.wl-dialog>header{padding:12px}}
+@media(max-width:680px){.dsh-worklog.wl-dialog{width:calc(100vw - 16px);max-height:calc(100dvh - 16px);padding:6px;border-radius:22px}.dsh-worklog .wl-dialog-content{padding:16px}.dsh-worklog.wl-dialog>.wl-dialog-actions{flex-wrap:wrap;padding:12px 6px 6px}.dsh-worklog .wl-dialog-actions>button{min-height:44px;flex:1}.dsh-worklog.wl-dialog>header{padding:12px}.dsh-worklog.wl-dialog>header button{min-height:44px;height:44px;width:44px}}
 @media(prefers-reduced-motion:reduce){.dsh-worklog button,.dsh-worklog input,.dsh-worklog select,.dsh-worklog textarea{transition:none}.dsh-worklog button:active:not(:disabled){transform:none}.dsh-worklog.wl-dialog,.dsh-worklog .wl-more>div{animation:none}}
+@media(prefers-reduced-transparency:reduce){.dsh-worklog.wl-dialog{background:var(--wl-solid);backdrop-filter:none;-webkit-backdrop-filter:none}}

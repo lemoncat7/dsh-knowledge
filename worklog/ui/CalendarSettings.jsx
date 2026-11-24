@@ -1,7 +1,8 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { api } from './api.js'
 import { Dialog } from './Dialog.jsx'
-import { localParts } from '../calendar/time.js'
+import { localParts, addDays } from '../calendar/time.js'
+import { WorkdayPreferences } from './WorkdayPreferences.jsx'
 
 const issues = {
   conflict: '两端都有改动', 'remote-missing': 'iCloud 条目已移除，知识库条目已保留',
@@ -26,7 +27,7 @@ function useCalendarSettings(supported) {
         const result = await api('/calendar-settings', undefined, controller.signal)
         if (!controller.signal.aborted) setValue(result)
       } catch (e) { if (!controller.signal.aborted) setError(e.message) }
-      if (!controller.signal.aborted) timer = setTimeout(read, 3500)
+      if (!controller.signal.aborted) timer = setTimeout(read, document.hidden ? 30000 : 15000)
     }
     void read()
     return () => { clearTimeout(timer); controller.abort() }
@@ -44,11 +45,12 @@ function useCalendarSettings(supported) {
   return { value, error, busy, pendingToggle, action }
 }
 
-export function CalendarSettings({ close, supported }) {
+export function CalendarSettings({ close, supported, today, recheckSupported }) {
   const descriptionId = useId()
   const { value, error, busy, pendingToggle, action } = useCalendarSettings(supported)
   const report = value?.report
-  return <Dialog title="日历设置" className="wc-report-settings" close={close} busy={busy}>
+  const [dirty, setDirty] = useState(false), [recheckMessage, setRecheckMessage] = useState('')
+  return <Dialog title="日历设置" className="wc-report-settings" close={close} busy={busy} protectChanges dirty={dirty}>
     {!supported && <p>更新日历服务后可配置日报联动。</p>}
     {error && <p className="wl-error" role="alert">{error}</p>}
     {supported && !report && !error && <p role="status">正在读取日历设置…</p>}
@@ -57,7 +59,13 @@ export function CalendarSettings({ close, supported }) {
         onChange={e => action('/calendar-report-settings', { enabled: e.target.checked })} /><strong>日报生成后自动更新当天目标</strong></label>
       <p className="wl-muted" id={descriptionId}>按日报所属日期自动核对目标。有明确完成证据时勾选完成，有部分进展时补写「每日进度」。缺少证据时保留原状，手工填写的进度优先。</p>
       {report.last && <p className="wl-muted" role="status">{report.last.day} · {report.last.message || '等待核对'}</p>}
+      {recheckSupported && <button type="button" disabled={busy || !report.enabled} onClick={async () => {
+        const result = await action('/calendar-report-recheck', { from: addDays(today, -6), to: today })
+        if (result?.recheck) setRecheckMessage(result.recheck.queued ? `已安排核对 ${result.recheck.queued} 天的已有日报，人工进度会保留。` : '没有需要重新核对的日报，或已在核对队列中。')
+      }}>核对最近 7 天的已有日报</button>}
+      {recheckMessage && <p className="wl-muted" role="status">{recheckMessage}</p>}
     </div>}
+    {value?.workdays && <WorkdayPreferences value={value.workdays} busy={busy} action={action} onDirty={setDirty} />}
   </Dialog>
 }
 

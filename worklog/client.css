@@ -172,7 +172,27 @@ body[data-ds-dark-theme] .dsh-worklog{--wl-text:#e4e7eb;--wl-muted:#b1b8c0;--wl-
 .dsh-worklog .wc-toolbar-end summary{display:flex;align-items:center;cursor:pointer}
 .wc-toolbar-end summary::-webkit-details-marker{display:none}
 .wc-toolbar-end summary::marker{content:""}
-.dsh-worklog.wl-dialog.wc-report-settings{width:min(440px,calc(100vw - 16px))}
+.dsh-worklog.wl-dialog.wc-report-settings{width:min(620px,calc(100vw - 16px))}
+.wc-progress-preview{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:1.5;color:var(--wl-muted);margin-top:5px}
+.wc-progress-preview time{font-variant-numeric:tabular-nums}
+.dsh-worklog .wc-entry-progress{flex-shrink:0;display:flex;align-items:center;gap:5px;min-height:32px;padding:4px 7px;border:0;background:var(--wl-hover);color:var(--wl-text);font-size:12px;white-space:nowrap}
+.wc-entry-progress small{font-variant-numeric:tabular-nums}
+.wc-progress-goal-title{margin:0 0 16px;font-weight:600;overflow-wrap:anywhere}
+.wc-workday-settings{border-top:1px solid var(--wl-line);padding-top:18px;margin-top:18px}
+.wc-workday-settings fieldset{border:0;margin:0;padding:0;min-width:0}
+.wc-workday-settings legend,.wc-workday-settings h3{font-size:14px;font-weight:600;padding:0;margin:0 0 8px}
+.wc-workday-settings h3{margin-top:22px}
+.wc-workday-settings p{font-size:13px}
+.wc-workday-presets{display:flex;gap:8px;margin:12px 0}
+.wc-workday-week{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+.dsh-worklog .wc-workday-week>.wl-check{margin:0;padding:8px;gap:7px;min-height:38px;box-sizing:border-box;font-size:13px}
+.wc-workday-date{display:flex;align-items:end;gap:8px}
+.dsh-worklog.wl-dialog .wc-workday-date>label{flex:1;min-width:0;margin:8px 0}
+.wc-workday-date>button{margin-block:8px;flex-shrink:0}
+.wc-workday-overrides{list-style:none;padding:0;margin:8px 0;max-height:180px;overflow:auto}
+.wc-workday-overrides li{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--wl-line);font-size:13px}
+.wc-workday-overrides li>button{margin-left:auto}
+@media(max-width:680px){.dsh-worklog .wc-entry-progress{min-height:44px}.wc-workday-week{grid-template-columns:repeat(3,minmax(0,1fr))}.dsh-worklog .wc-workday-week>.wl-check{min-height:44px}.wc-workday-date{flex-wrap:wrap}.dsh-worklog.wl-dialog .wc-workday-date>label:first-child{flex:1 1 100%}.wc-entry-progress span{font-size:12px}}
 .wc-preference .wl-check,.wc-account-content .wl-check{display:flex;align-items:center;gap:8px}
 .wc-preference p,.wc-account-content p{font-size:12px;margin:7px 0 12px}
 .wc-preference .wl-check strong{font-weight:600}

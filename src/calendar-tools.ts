@@ -2,6 +2,7 @@ import type { ToolDefinitionLike } from './runtime.js'
 import type { JournalRuntime } from './worklog-runtime.js'
 const date = {type:'string',pattern:'^\\d{4}-\\d{2}-\\d{2}$'}
 const eventProperties = {
+  carryMode:{type:'string',enum:['daily','workdays'],description:'未完成目标的结转方式：daily 为每天，workdays 遵循日历设置的工作日和日期例外。'},
   title:{type:'string',minLength:1,maxLength:160}, description:{type:'string',maxLength:8000},
   kind:{type:'string',enum:['goal','work'],description:'goal = 每日目标（默认）；work = 实际工作记录。'},
   status:{type:'string',enum:['planned','in_progress','done','cancelled']}, priority:{type:'string',enum:['low','normal','high']},

@@ -1,7 +1,7 @@
 import { fail } from '../domain.js'
 import { addDays, validDate, localParts, zoneName } from './time.js'
 export const statuses = ['planned', 'in_progress', 'done', 'cancelled']
-export const eventKeys = ['title', 'description', 'kind', 'status', 'priority', 'day', 'endDay', 'allDay', 'startAt', 'endAt', 'timeZone', 'tags', 'project']
+export const eventKeys = ['title', 'description', 'kind', 'status', 'priority', 'day', 'endDay', 'allDay', 'startAt', 'endAt', 'timeZone', 'tags', 'project', 'carryMode']
 export function object(value, allowed) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(k => !allowed.includes(k))) throw fail('日历参数无效或包含未知字段')
   return value
@@ -30,6 +30,8 @@ export function normalizeEvent(input, defaultZone, previous) {
     const title = string(v.title, 160, true), description = string(v.description, 8000), project = string(v.project, 500)
     const timeZone = zoneName(v.timeZone)
     if (!['goal', 'work'].includes(v.kind) || !statuses.includes(v.status) || !['low', 'normal', 'high'].includes(v.priority) || typeof v.allDay !== 'boolean') throw fail('目标类型、状态或优先级无效')
+    const carryMode = v.carryMode ?? 'daily'
+    if (!['daily', 'workdays'].includes(carryMode)) throw fail('目标结转方式无效')
     if (!Array.isArray(v.tags) || v.tags.length > 12) throw fail('标签最多 12 个')
     const tags = [...new Set(v.tags.map(t => string(t, 32, true)))]
     let day, endDay, startAt = null, endAt = null
@@ -44,6 +46,6 @@ export function normalizeEvent(input, defaultZone, previous) {
       if (endAt <= startAt || endAt - startAt > 366 * 86400000) throw fail('结束时间须晚于开始时间，单项不超过 366 天')
       day = validDate(localParts(startAt, timeZone).day); endDay = validDate(addDays(localParts(endAt - 1, timeZone).day, 1))
     }
-    return { title, description, kind: v.kind, status: v.status, priority: v.priority, allDay: v.allDay, timeZone, day, endDay, startAt, endAt, tags, project }
+    return { title, description, kind: v.kind, status: v.status, priority: v.priority, allDay: v.allDay, timeZone, day, endDay, startAt, endAt, tags, project, carryMode }
   } catch (e) { if (e.status) throw e; throw fail(e.message) }
 }

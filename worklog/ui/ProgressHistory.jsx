@@ -2,7 +2,7 @@ import { useEffect, useId, useState } from 'react'
 import { api } from './api.js'
 import { Dialog, DialogActions } from './Dialog.jsx'
 
-export function ProgressHistory({ event, calendarId, historyAvailable, busy, save, close }) {
+export function ProgressHistory({ event, calendarId, historyAvailable, progressCursor, busy, save, close }) {
   const formId = useId()
   const [items, setItems] = useState([]), [before, setBefore] = useState(null)
   const [loading, setLoading] = useState(true), [refresh, setRefresh] = useState(0)
@@ -10,7 +10,7 @@ export function ProgressHistory({ event, calendarId, historyAvailable, busy, sav
   const [pending, setPending] = useState(false), [removing, setRemoving] = useState(null)
   const locked = busy || pending || loading
   const readOnly = event.deletedAt !== null
-  const [selectedDay, setSelectedDay] = useState(event.carriedFrom?.day ?? event.day)
+  const [selectedDay, setSelectedDay] = useState(event.day)
   const dirty = editor !== null && editor.text !== editor.original
   async function read(path, params, signal) {
     const result = await api(path + '?' + new URLSearchParams({ id: event.id, ...params }), undefined, signal)
@@ -18,6 +18,7 @@ export function ProgressHistory({ event, calendarId, historyAvailable, busy, sav
     return result
   }
   useEffect(() => {
+    if (editor) return
     const controller = new AbortController()
     setLoading(true); setError('')
     const request = historyAvailable
@@ -31,7 +32,7 @@ export function ProgressHistory({ event, calendarId, historyAvailable, busy, sav
     }).catch(e => { if (!controller.signal.aborted) setError(e.message) })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
-  }, [event.id, calendarId, historyAvailable, selectedDay, refresh])
+  }, [event.id, calendarId, historyAvailable, selectedDay, refresh, progressCursor, editor !== null])
   async function loadMore() {
     setLoading(true); setError('')
     try {
@@ -72,6 +73,7 @@ export function ProgressHistory({ event, calendarId, historyAvailable, busy, sav
     finally { setPending(false) }
   }
   return <Dialog title="每日进度" close={close} busy={busy || pending} protectChanges dirty={dirty}>
+    <p className="wc-progress-goal-title">{event.title}</p>
     {error && <p className="wl-error" role="alert">{error}
       <button type="button" disabled={locked} onClick={() => setRefresh(n => n + 1)}>刷新列表</button>
     </p>}
@@ -105,7 +107,7 @@ export function ProgressHistory({ event, calendarId, historyAvailable, busy, sav
         <button type="button" disabled={locked} onClick={() => { setEditor(null); setError('') }}>取消编辑</button>
         <button type="submit" form={formId} className="wl-primary" disabled={locked || !editor.text.trim() || !dirty}>保存进度</button>
       </> : <>
-        <button type="button" disabled={busy || pending} onClick={close}>返回目标</button>
+        <button type="button" disabled={busy || pending} onClick={close}>关闭</button>
         {!readOnly && <button type="button" disabled={locked} className="wl-primary" onClick={() => begin()}>添加进度</button>}
       </>}
     </DialogActions>

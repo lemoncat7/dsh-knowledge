@@ -38,6 +38,7 @@ export function Calendar() {
   const [events, setEvents] = useState([]), [loading, setLoading] = useState(true), [version, setVersion] = useState(0)
   const [error, setError] = useState(''), [message, setMessage] = useState(''), [busy, setBusy] = useState(false)
   const [editor, setEditor] = useState(null), [trash, setTrash] = useState(false), [undo, setUndo] = useState(null), [quick, setQuick] = useState('')
+  const [progressEvent, setProgressEvent] = useState(null)
   const requests = useRef(new Map()), locked = useRef(false), dayRefs = useRef(new Map()), gridFocus = useRef(false)
   const [lifted, setLifted] = useState(null), [dropGoal, setDropGoal] = useState(null)
   const pickedGoal = lifted?.id
@@ -54,7 +55,7 @@ export function Calendar() {
         if (document.hidden) return
         const next = await api('/calendar-info', undefined, controller.signal)
         if (controller.signal.aborted) return
-        const key = `${next.calendarId}:${next.cursor}:${next.orderCursor}:${next.timeZone}:${next.today}:${next.externalSync?.connected}:${next.externalSync?.enabled}`
+        const key = `${next.calendarId}:${next.cursor}:${next.orderCursor}:${next.progressCursor}:${next.workdaysRevision}:${next.timeZone}:${next.today}:${next.externalSync?.connected}:${next.externalSync?.enabled}`
         if (key === lastKey) return
         const query = new URLSearchParams({ from, to, timeZone: next.timeZone, deleted: trash ? 'only' : 'exclude', limit: '500' })
         let all = [], page
@@ -100,7 +101,7 @@ export function Calendar() {
           return index < 0 ? [...previous, result.event] : previous.map((e, i) => i === index ? result.event : e)
         })
       }
-      if (!result.progress) setVersion(v => v + 1)
+      setVersion(v => v + 1)
       setMessage(action === 'delete' ? '已移入回收站' : action === 'restore' ? '已恢复' : action === 'reorder' ? '顺序已保存' : '已保存')
       if (action === 'delete') setUndo(result.event)
       return result
@@ -147,7 +148,7 @@ export function Calendar() {
     if (target) reorderRef.current(active.id, target)
   }
   function pointerStart(e) {
-    if (!canSort || e.button !== 0 || !e.isPrimary || e.pointerType === 'touch' || e.target.closest('input')) return
+    if (!canSort || e.button !== 0 || !e.isPrimary || e.pointerType === 'touch' || e.target.closest('input, button:not(.wc-entry-main)')) return
     const row = e.target.closest('[data-goal-sort-id]')
     if (!row) return
     suppressClick.current = null
@@ -176,7 +177,7 @@ export function Calendar() {
         if (gesture.current?.touchId !== undefined) finishDrag(gesture.current, null)
         return
       }
-      if (e.target.closest('input')) return
+      if (e.target.closest('input, button:not(.wc-entry-main)')) return
       const row = e.target.closest('[data-goal-sort-id]')
       if (!row) return
       const point = e.changedTouches[0]
@@ -288,7 +289,12 @@ export function Calendar() {
               setEditor(event)
             }}>
             <GoalSummary event={event} zone={zone} />
+            {event.progressSummary?.text && <span className="wc-progress-preview"><time>{event.progressSummary.day}</time> {event.progressSummary.text}</span>}
           </button>
+          {event.kind === 'goal' && info?.dailyProgress && <button type="button" className="wc-entry-progress" disabled={busy || loading}
+            aria-label={`查看 ${event.title} 的每日进度`} onClick={() => setProgressEvent(event)}>
+            <span>每日进度</span>{event.progressSummary?.count > 0 && <small>{event.progressSummary.count}</small>}
+          </button>}
           {trash && <button disabled={busy} onClick={() => rowAction(event, 'restore')}>恢复</button>}
         </article>)}</div>
       </aside>
@@ -302,9 +308,10 @@ export function Calendar() {
         <div className="wc-entry-main"><GoalSummary event={liftedEvent} zone={zone} /></div>
       </div>, document.body,
     )}
-    {settingsPanel === 'report' && <CalendarSettings close={() => setSettingsPanel(null)} supported={info?.calendarSettings === true} />}
+    {settingsPanel === 'report' && <CalendarSettings close={() => { setSettingsPanel(null); setVersion(n => n + 1) }} supported={info?.calendarSettings === true} today={today} recheckSupported={info?.reportRecheck === true} />}
     {settingsPanel === 'account' && <CalendarAccounts close={() => { setSettingsPanel(null); setVersion(n => n + 1) }} onCalendarChanged={() => setVersion(n => n + 1)} zone={zone} supported={info?.calendarSettings === true} />}
-    {editor && <EventEditor key={editor.id || editor.day} event={editor} zone={zone} today={today} calendarId={info?.calendarId} progressEnabled={info?.dailyProgress === true} progressHistory={info?.progressHistory === true} busy={busy} close={() => setEditor(null)} save={mutate} />}
+    {editor && <EventEditor key={editor.id || editor.day} event={editor} zone={zone} today={today} calendarId={info?.calendarId} progressEnabled={info?.dailyProgress === true} progressHistory={info?.progressHistory === true} progressCursor={info?.progressCursor} workdayScheduling={info?.workdayScheduling === true} busy={busy} close={() => setEditor(null)} save={mutate} />}
+    {progressEvent && <ProgressHistory event={progressEvent} calendarId={info?.calendarId} historyAvailable={info?.progressHistory === true} progressCursor={info?.progressCursor} busy={busy} save={mutate} close={() => setProgressEvent(null)} />}
   </section>
 }
 
@@ -327,12 +334,12 @@ function Week({ days, byDay, selected, today, zone, select, open }) {
   </div>
 }
 
-function EventEditor({ event, zone, today, calendarId, progressEnabled, progressHistory, busy, close, save }) {
+function EventEditor({ event, zone, today, calendarId, progressEnabled, progressHistory, progressCursor, workdayScheduling, busy, close, save }) {
   const formId = useId(), existing = !!event.id, eventZone = event.timeZone || zone
   const initial = useMemo(() => {
     const start = existing && !event.allDay ? localParts(event.startAt, eventZone) : { day: event.day, time: '09:00' }
     const end = existing && !event.allDay ? localParts(event.endAt, eventZone) : { day: existing ? addDays(event.endDay, -1) : event.day, time: '10:00' }
-    return { title: event.title || '', description: event.description || '', kind: event.kind || 'goal', status: event.status || 'planned', priority: event.priority || 'normal', allDay: event.allDay ?? true, day: start.day, endDay: end.day, startTime: start.time, endTime: end.time, tags: (event.tags || []).join('，'), project: event.project || '' }
+    return { title: event.title || '', description: event.description || '', kind: event.kind || 'goal', status: event.status || 'planned', priority: event.priority || 'normal', carryMode: event.carryMode || 'daily', allDay: event.allDay ?? true, day: start.day, endDay: end.day, startTime: start.time, endTime: end.time, tags: (event.tags || []).join('，'), project: event.project || '' }
   }, [event])
   const [draft, setDraft] = useState(initial), [error, setError] = useState('')
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -360,6 +367,7 @@ function EventEditor({ event, zone, today, calendarId, progressEnabled, progress
     e.preventDefault(); setError('')
     try {
       const value = { title: draft.title, description: draft.description, kind: draft.kind, status: draft.status, priority: draft.priority, allDay: draft.allDay, timeZone: eventZone, tags: draft.tags.split(/[,，]/).map(t => t.trim()).filter(Boolean), project: draft.project }
+      if (workdayScheduling) value.carryMode = draft.carryMode
       if (draft.allDay) {
         value.day = initial.day
         value.endDay = existing ? event.endDay : addDays(initial.day, 1)
@@ -389,12 +397,13 @@ function EventEditor({ event, zone, today, calendarId, progressEnabled, progress
         <p className="wl-muted wc-small">按 {eventZone} 安排，允许跨天。</p>
       </>}
       <div className="wc-form-row"><label>状态<select value={draft.status} onChange={e => change('status', e.target.value)}>{Object.entries(labels).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label><label>优先级<select value={draft.priority} onChange={e => change('priority', e.target.value)}><option value="low">不急</option><option value="normal">普通</option><option value="high">优先</option></select></label></div>
+      {draft.kind === 'goal' && workdayScheduling && <label>未完成时结转到<select value={draft.carryMode} onChange={e => change('carryMode', e.target.value)}><option value="daily">下一天</option><option value="workdays">下一个工作日</option></select><small className="wl-muted">工作日及休息日例外可在「日历设置」中调整。</small></label>}
       <label>备注<textarea rows={3} maxLength={8000} placeholder="需要记住的细节（选填）" value={draft.description} onChange={e => change('description', e.target.value)} /></label>
       <details open={!!draft.tags || !!draft.project || draft.kind === 'work'}><summary>标签与关联</summary><label>标签（用逗号分隔）<input maxLength={395} value={draft.tags} onChange={e => change('tags', e.target.value)} /></label><label>关联项目<input maxLength={500} value={draft.project} onChange={e => change('project', e.target.value)} /></label><label>记录类型<select value={draft.kind} onChange={e => change('kind', e.target.value)}><option value="goal">计划目标</option><option value="work">实际工作</option></select></label></details>
     </fieldset>
     {showProgress && <button className="wc-progress-open" type="button" disabled={busy} onClick={() => setHistoryOpen(true)}>每日进度</button>}
     <DialogActions>{existing && !event.deletedAt && <button type="button" className="wc-delete" disabled={busy} onClick={remove}>移入回收站</button>}<button type="button" disabled={busy} onClick={close}>{event.deletedAt ? '关闭' : '取消'}</button>{!event.deletedAt && <button type="submit" form={formId} className="wl-primary" disabled={busy || !draft.title.trim()}>{busy ? '保存中…' : '保存目标'}</button>}</DialogActions></form>
   </Dialog>
-    {historyOpen && <ProgressHistory event={event} calendarId={calendarId} historyAvailable={progressHistory} busy={busy} save={save} close={() => setHistoryOpen(false)} />}
+    {historyOpen && <ProgressHistory event={event} calendarId={calendarId} historyAvailable={progressHistory} progressCursor={progressCursor} busy={busy} save={save} close={() => setHistoryOpen(false)} />}
   </>
 }

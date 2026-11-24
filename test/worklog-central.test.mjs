@@ -318,6 +318,11 @@ test('calendar automation settings require central admin and never change the co
   const writer = { ...c.connection, remoteToken: c.tokens.write }
   await assert.rejects(requestCentral(writer, 'GET', '/calendar-settings'), e => e.status === 403)
   await assert.rejects(requestCentral(writer, 'POST', '/calendar-report-settings', { enabled: true }), e => e.status === 403)
+  await assert.rejects(requestCentral(writer, 'POST', '/calendar-workdays-settings', { revision: 0, weekdays: [1, 2, 3, 4, 5], overrides: [] }), e => e.status === 403)
+  await assert.rejects(requestCentral(writer, 'POST', '/calendar-report-recheck', { from: '2026-11-20', to: '2026-11-23' }), e => e.status === 403)
+  const custom = await a.service.browser('POST', '/calendar-workdays-settings', { revision: 0, weekdays: [1, 3, 5], overrides: [] })
+  assert.deepEqual(custom.workdays.weekdays, [1, 3, 5])
+  assert.deepEqual(a.store.calendar.workdaySettings().weekdays, [1, 2, 3, 4, 5])
   assert.equal((await a.service.browser('GET', '/calendar-settings')).report.enabled, false)
   assert.equal((await a.service.browser('POST', '/calendar-report-settings', { enabled: true })).report.enabled, true)
   assert.equal(c.store.reportProgress.enabled(), true)

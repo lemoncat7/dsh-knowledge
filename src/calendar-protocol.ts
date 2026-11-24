@@ -5,6 +5,8 @@ export interface WorkCalendarEvent {
   kind:'goal'|'work'; status:'planned'|'in_progress'|'done'|'cancelled'; priority:'low'|'normal'|'high'
   allDay:boolean; day:string; endDay:string; startAt:number|null; endAt:number|null; timeZone:string
   carriedFrom?: { id:string; day:string }
+  carryMode?:'daily'|'workdays'
+  progressSummary?: { count:number; day:string|null; text:string }
   tags:string[]; project:string; createdAt:number; updatedAt:number; completedAt:number|null; deletedAt:number|null
 }
 export interface CalendarGoalProgress {
