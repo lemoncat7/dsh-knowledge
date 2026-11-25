@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { Store } from '../worklog/store.js'
 import { defaultWorkdays, normalizeWorkdays, nextWorkday } from '../worklog/calendar/workdays.js'
-import { progressSources, reportDecisions } from '../worklog/calendar/report-progress.js'
+import { progressSources, progressEvidence, reportDecisions } from '../worklog/calendar/report-progress.js'
 
 const friday = '2026-11-20', monday = '2026-11-23'
 const at = day => Date.parse(day + 'T10:00:00+08:00')
@@ -179,7 +179,7 @@ test('empty and partially invalid model reviews retry instead of silently comple
   const review=items=>({async *stream(){yield {type:'text-delta',text:JSON.stringify({items})}}})
   await store.reportProgress.tick(review([]),new AbortController().signal)
   assert.equal(store.reportProgress.status().last.status,'queued')
-  assert.match(store.reportProgress.status().last.message,/漏项/)
+  assert.match(store.reportProgress.status().last.message,/核对不完整/)
   assert.equal(c.goalProgress(first.id,friday).progress.revision,0)
   const valid={id:first.id,state:'progress',text:'已核对实际构建参数。',source:1,field:'answer',quote}
   store.db.prepare('UPDATE calendar_report_jobs SET due=0').run()
@@ -205,4 +205,22 @@ test('a concurrent manual edit is preserved and makes the in-flight review retry
   assert.equal(c.goalProgress(second.id,friday).progress.revision,0)
   assert.equal(store.reportProgress.status().last.status,'queued')
   assert.match(store.reportProgress.status().last.message,/发生变化/)
+})
+
+test('numbered evidence preserves original substrings without asking the model to copy quotes', () => {
+  const answer='已整理实际 Jenkins 构建与归档讨论稿，方案尚未实施。\n\n'+ '已核对真实构建日志和版本。'.repeat(60)
+  const sources=progressSources([{id:'original',user:'请核对构建口径',answer,sessionId:'s'}],[{title:'熟悉自动化构建',project:''}])
+  const evidence=progressEvidence(sources)
+  assert.ok(evidence.length>1)
+  for(const proof of evidence){assert.ok(proof.quote.length>=8&&proof.quote.length<=400);assert.ok(sources[proof.source-1].original[proof.field].includes(proof.quote))}
+  const proof=evidence.find(x=>x.field==='answer'&&x.quote.includes('讨论稿'))
+  const output=id=>JSON.stringify({items:[{id:'goal',state:'progress',text:'已形成构建与归档讨论稿，尚未落地。',evidence:id}]})
+  assert.equal(reportDecisions(output(proof.id),[{id:'goal'}],sources,{requireAll:true,evidence}).length,1)
+  assert.throws(()=>reportDecisions(output('invented'),[{id:'goal'}],sources,{requireAll:true,evidence}),{code:'CALENDAR_PROGRESS_EVIDENCE'})
+  assert.throws(()=>reportDecisions(output(proof.id),[{id:'goal'}],[{source:1,user:'被替换的用户原文',answer:'原始材料已发生变化'}],{requireAll:true,evidence}),{code:'CALENDAR_PROGRESS_EVIDENCE'})
+})
+
+test('numbered evidence cannot promote an assistant claim or a partial user result to whole-goal completion', () => {
+  const sources=progressSources([{id:'one',user:'今天只完成了一部分构建检查，剩余下周继续。',answer:'已完成构建脚本与归档方案全部工作。',sessionId:'s'}],[{title:'完成构建与归档',project:''}]),evidence=progressEvidence(sources)
+  for(const proof of evidence){const result=JSON.stringify({items:[{id:'goal',state:'done',text:'全部完成。',evidence:proof.id}]});assert.throws(()=>reportDecisions(result,[{id:'goal'}],sources,{requireAll:true,evidence}),{code:'CALENDAR_PROGRESS_EVIDENCE'})}
 })
