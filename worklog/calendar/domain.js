@@ -1,7 +1,8 @@
 import { fail } from '../domain.js'
 import { addDays, validDate, localParts, zoneName } from './time.js'
+export const kinds = ['goal', 'event', 'reminder', 'work']
 export const statuses = ['planned', 'in_progress', 'done', 'cancelled']
-export const eventKeys = ['title', 'description', 'kind', 'status', 'priority', 'day', 'endDay', 'allDay', 'startAt', 'endAt', 'timeZone', 'tags', 'project', 'carryMode']
+export const eventKeys = ['title', 'description', 'kind', 'status', 'priority', 'day', 'endDay', 'allDay', 'startAt', 'endAt', 'timeZone', 'tags', 'project', 'carryMode', 'groupId', 'remindAt']
 export function object(value, allowed) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(k => !allowed.includes(k))) throw fail('日历参数无效或包含未知字段')
   return value
@@ -24,12 +25,12 @@ function instant(value) {
 export function normalizeEvent(input, defaultZone, previous) {
   object(input, eventKeys)
   if (previous && !Object.keys(input).length) throw fail('修改目标至少需要一个字段')
-  const base = previous ? { ...previous, startAt: previous.startAt === null ? null : new Date(previous.startAt).toISOString(), endAt: previous.endAt === null ? null : new Date(previous.endAt).toISOString() } : { description: '', kind: 'goal', status: 'planned', priority: 'normal', allDay: true, timeZone: defaultZone, tags: [], project: '' }
+  const base = previous ? { ...previous, startAt: previous.startAt === null ? null : new Date(previous.startAt).toISOString(), endAt: previous.endAt === null ? null : new Date(previous.endAt).toISOString() } : { description: '', kind: 'goal', groupId: 'default', remindAt: null, status: 'planned', priority: 'normal', allDay: true, timeZone: defaultZone, tags: [], project: '' }
   const v = { ...base, ...input }
   try {
     const title = string(v.title, 160, true), description = string(v.description, 8000), project = string(v.project, 500)
     const timeZone = zoneName(v.timeZone)
-    if (!['goal', 'work'].includes(v.kind) || !statuses.includes(v.status) || !['low', 'normal', 'high'].includes(v.priority) || typeof v.allDay !== 'boolean') throw fail('目标类型、状态或优先级无效')
+    if (!kinds.includes(v.kind) || !statuses.includes(v.status) || !['low', 'normal', 'high'].includes(v.priority) || typeof v.allDay !== 'boolean') throw fail('目标类型、状态或优先级无效')
     const carryMode = v.carryMode ?? 'daily'
     if (!['daily', 'workdays'].includes(carryMode)) throw fail('目标结转方式无效')
     if (!Array.isArray(v.tags) || v.tags.length > 12) throw fail('标签最多 12 个')
@@ -46,6 +47,9 @@ export function normalizeEvent(input, defaultZone, previous) {
       if (endAt <= startAt || endAt - startAt > 366 * 86400000) throw fail('结束时间须晚于开始时间，单项不超过 366 天')
       day = validDate(localParts(startAt, timeZone).day); endDay = validDate(addDays(localParts(endAt - 1, timeZone).day, 1))
     }
-    return { title, description, kind: v.kind, status: v.status, priority: v.priority, allDay: v.allDay, timeZone, day, endDay, startAt, endAt, tags, project, carryMode }
+    const groupId = string(v.groupId ?? 'default', 100, true)
+    const remindAt = v.remindAt == null ? null : (previous && input.remindAt === undefined && typeof previous.remindAt === 'number' ? previous.remindAt : instant(v.remindAt))
+    if (remindAt !== null && (remindAt < Date.parse('1900-01-01') || remindAt >= Date.parse('2201-01-01'))) throw fail('提醒时间超出支持范围')
+    return { groupId, remindAt, title, description, kind: v.kind, status: v.status, priority: v.priority, allDay: v.allDay, timeZone, day, endDay, startAt, endAt, tags, project, carryMode }
   } catch (e) { if (e.status) throw e; throw fail(e.message) }
 }

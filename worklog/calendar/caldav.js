@@ -172,7 +172,9 @@ export class AppleCalendarClient {
       const types = child(entry.prop, cal, 'supported-calendar-component-set')
       if (types && !children(types, cal, 'comp').some(item => item.attributes.name?.value === 'VEVENT')) continue
       const permissions = child(entry.prop, dav, 'current-user-privilege-set')
-      if (permissions && !children(permissions, dav, 'privilege').some(p => ['all', 'write', 'write-content'].some(name => child(p, dav, name)))) continue
+      const writable = !permissions || children(permissions, dav, 'privilege').some(p => ['all', 'write', 'write-content'].some(name => child(p, dav, name)))
+      const readable = writable || children(permissions, dav, 'privilege').some(p => child(p, dav, 'read'))
+      if (!readable) continue
       let url
       try { url = appleURL(entry.href, set.url) }
       catch (e) {
@@ -182,7 +184,7 @@ export class AppleCalendarClient {
         continue
       }
       if (!url.pathname.endsWith('/')) url.pathname += '/'
-      calendars.set(url.href, { id: url.href, name: (value(entry.prop, dav, 'displayname')?.trim() || 'iCloud 日历').slice(0, 160) })
+      calendars.set(url.href, { id: url.href, name: (value(entry.prop, dav, 'displayname')?.trim() || 'iCloud 日历').slice(0, 160), ...(!writable ? { writable: false } : {}) })
     }
     if (!calendars.size && skipped) throw fail('iCloud 已认证，但返回的可写日历里没有可验证的地址（已跳过订阅或旧地址）', 502)
     return [...calendars.values()]
@@ -225,14 +227,17 @@ export class AppleCalendarClient {
 
 export function projection(event) {
   const description = event.description ?? ''
-  return event.allDay ? { title: event.title, allDay: true, day: event.day, endDay: event.endDay, description }
-    : { title: event.title, allDay: false, startAt: event.startAt, endAt: event.endAt, description }
+  const alarm = event.remindAt != null ? { remindAt: event.remindAt } : {}
+  return event.allDay ? { title: event.title, allDay: true, day: event.day, endDay: event.endDay, description, ...alarm }
+    : { title: event.title, allDay: false, startAt: event.startAt, endAt: event.endAt, description, ...alarm }
 }
 export function calendarPatch(fields, timezone) {
-  if (fields.allDay) return { ...fields, timeZone: timezone }
-  return { ...fields, startAt: new Date(fields.startAt).toISOString(), endAt: new Date(fields.endAt).toISOString(), timeZone: timezone }
+  const remindAt = fields.remindAt == null ? null : new Date(fields.remindAt).toISOString()
+  if (fields.allDay) return { ...fields, remindAt, timeZone: timezone }
+  return { ...fields, remindAt, startAt: new Date(fields.startAt).toISOString(), endAt: new Date(fields.endAt).toISOString(), timeZone: timezone }
 }
 function instant(time, property, timezone) {
+  if (time.isDate) return wallTime(time.toString(), '00:00', timezone, 'earlier')
   const tzid = property?.getParameter('tzid')
   if (tzid) {
     try {
@@ -261,11 +266,24 @@ export function decodeEvent(entry, timezone) {
     const fields = start.isDate
       ? { title, allDay: true, day: start.toString(), endDay: part.hasProperty('dtend') || part.hasProperty('duration') ? end.toString() : addDays(start.toString(), 1) }
       : { title, allDay: false, startAt: instant(start, part.getFirstProperty('dtstart'), timezone), endAt: instant(end, part.getFirstProperty('dtend') ?? part.getFirstProperty('dtstart'), timezone) }
-    return { ...entry, uid, fields: projection(normalizeEvent(calendarPatch({ ...fields, description }, timezone), timezone)) }
+    const alarms = part.getAllSubcomponents('valarm').map(alarm => {
+      if (alarm.getFirstPropertyValue('action') !== 'DISPLAY') return null
+      const property = alarm.getFirstProperty('trigger'), trigger = property?.getFirstValue()
+      if (trigger instanceof ICAL.Time) return instant(trigger, property, timezone)
+      if (trigger instanceof ICAL.Duration) {
+        const base = property.getParameter('related') === 'END' ? end : start
+        return instant(base, part.getFirstProperty(base === end ? 'dtend' : 'dtstart'), timezone) + trigger.toSeconds() * 1000
+      }
+      return null
+    }).filter(value => Number.isFinite(value)).sort((a, b) => a - b)
+    const remindAt = alarms[0] ?? null
+    const kind = part.getFirstPropertyValue('x-dsh-kind')
+    return { ...entry, uid, kind: ['goal', 'event', 'reminder', 'work'].includes(kind) ? kind : remindAt !== null ? 'reminder' : 'event',
+      fields: projection(normalizeEvent(calendarPatch({ ...fields, description, remindAt }, timezone), timezone)) }
   } catch { return { ...entry, uid, fields: null } }
 }
 
-export function encodeEvent(uid, fields, now, original) {
+export function encodeEvent(uid, fields, now, original, kind) {
   const component = original ? new ICAL.Component(ICAL.parse(original)) : new ICAL.Component('vcalendar')
   const part = original ? component.getFirstSubcomponent('vevent') : new ICAL.Component('vevent')
   if (!original) {
@@ -279,6 +297,20 @@ export function encodeEvent(uid, fields, now, original) {
   part.updatePropertyWithValue('last-modified', utc(now))
   part.updatePropertyWithValue('sequence', Number(part.getFirstPropertyValue('sequence') ?? -1) + 1)
   part.updatePropertyWithValue('summary', fields.title)
+  if (kind) part.updatePropertyWithValue('x-dsh-kind', kind)
+  // Preserve foreign alarms on a title/time edit; replace only when the represented
+  // reminder actually changed. In particular, clearing a reminder must remove it.
+  const previousAlarm = original ? decodeEvent({ data: original }, 'UTC').fields?.remindAt : null
+  if ((fields.remindAt ?? null) !== (previousAlarm ?? null)) {
+    part.removeAllSubcomponents('valarm')
+    if (fields.remindAt != null) {
+      const alarm = new ICAL.Component('valarm')
+      alarm.addPropertyWithValue('action', 'DISPLAY')
+      alarm.addPropertyWithValue('description', fields.title)
+      alarm.addPropertyWithValue('trigger', utc(fields.remindAt))
+      part.addSubcomponent(alarm)
+    }
+  }
   if (fields.description !== undefined && fields.description !== (part.getFirstPropertyValue('description') ?? '')) {
     part.removeAllProperties('description')
     part.removeAllProperties('x-alt-desc')

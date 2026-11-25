@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { CalendarReminders } from './calendar-reminders.js'
 import { createConnectionClient, ConnectionRequestError, type KnowledgeConnectionView } from './connection-client.js'
 import { WritebackStatusClient } from './writeback/status-client.js'
 import { createNoteMentionSource } from './note-mention-source.js'
@@ -62,6 +63,7 @@ export type KnowledgeDocumentTarget =
   | { view: 'notes'; noteId?: string }
   | { view: 'writeback'; sessionId: string }
   | { view: 'citation'; citation: string }
+  | { view: 'calendar'; day?: string }
 
 
 const connectionClient = createConnectionClient()
@@ -406,6 +408,7 @@ function KnowledgeLauncher({ wide, useSessions, workspace, activity, docked }: S
     >
       <IconPanelLeftOutline16 size={16} className="dsh-knowledge-panel-right-icon" />
     </button>
+    <CalendarReminders openCalendar={day => workspace.openDocument({ view: 'calendar', day })} />
     </div>
   )
 }
@@ -563,6 +566,9 @@ function knowledgePanelUrl(managementPath: string, sessionId?: string, projectId
     } else if (target.view === 'notes') {
       params.set('view', 'notes')
       if (target.noteId !== undefined) params.set('noteId', target.noteId)
+    } else if (target.view === 'calendar') {
+      params.set('view', 'calendar')
+      if (target.day !== undefined) params.set('calendarDay', target.day)
     } else {
       params.set('knowledgeBaseId', target.knowledgeBaseId)
       params.set('documentId', target.documentId)

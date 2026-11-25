@@ -2,7 +2,7 @@
 export const WORK_CALENDAR_PROTOCOL = 1 as const
 export interface WorkCalendarEvent {
   id:string; uid:string; revision:number; title:string; description:string
-  kind:'goal'|'work'; status:'planned'|'in_progress'|'done'|'cancelled'; priority:'low'|'normal'|'high'
+  kind:'goal'|'event'|'reminder'|'work'; groupId?:string; remindAt?:number|null; status:'planned'|'in_progress'|'done'|'cancelled'; priority:'low'|'normal'|'high'
   allDay:boolean; day:string; endDay:string; startAt:number|null; endAt:number|null; timeZone:string
   carriedFrom?: { id:string; day:string }
   carryMode?:'daily'|'workdays'

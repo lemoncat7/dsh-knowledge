@@ -19,6 +19,7 @@ export function calendarIcs(events) {
     else lines.push('DTSTART:' + stamp(e.startAt), 'DTEND:' + stamp(e.endAt))
     lines.push('SUMMARY:' + escape(e.title), 'DESCRIPTION:' + escape([e.description, e.project && '项目：' + e.project].filter(Boolean).join('\n')), 'STATUS:' + (e.status === 'cancelled' ? 'CANCELLED' : 'CONFIRMED'), 'TRANSP:TRANSPARENT', 'X-DSH-STATUS:' + e.status, 'X-DSH-KIND:' + e.kind, 'X-DSH-TIMEZONE:' + escape(e.timeZone), 'PRIORITY:' + ({ high: 1, normal: 5, low: 9 }[e.priority]))
     if (e.tags.length) lines.push('CATEGORIES:' + e.tags.map(escape).join(','))
+    if (e.remindAt != null) lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:' + escape(e.title), 'TRIGGER;VALUE=DATE-TIME:' + stamp(e.remindAt), 'END:VALARM')
     lines.push('END:VEVENT')
   }
   return lines.map(fold).join('\r\n') + '\r\n'

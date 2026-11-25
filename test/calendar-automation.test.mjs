@@ -153,9 +153,10 @@ test('iCloud synchronization is opt-in, preserves non-synced fields, avoids dupl
   sync.toggle(true)
   await sync.begin(true);await sync.begin(true)
   assert.equal(entries.size,2)
-  const r=store.calendar.dayGoals(nowDay,'Asia/Shanghai').find(e=>e.title==='远程目标')
+  const r=store.calendar.list(q({from:nowDay,to:addDays(nowDay,1)})).items.find(e=>e.title==='远程目标')
   assert.ok(r)
-  assert.equal(store.calendar.dayGoals(nowDay,'Asia/Shanghai').length,2)
+  assert.equal(store.calendar.dayGoals(nowDay,'Asia/Shanghai').length,1)
+  assert.equal(r.kind,'event')
   const localHref=[...entries.keys()].find(href=>href!==remoteHref)
   const outbound=entries.get(localHref).data
   assert.match(outbound,/DESCRIPTION:已有备注/)
@@ -179,8 +180,8 @@ test('iCloud synchronization is opt-in, preserves non-synced fields, avoids dupl
   assert.equal(decodeEvent(entries.get(localHref),'Asia/Shanghai').fields.title,'知识库改名')
   entries.delete(remoteHref)
   await sync.begin(true)
-  assert.equal(store.calendar.get(r.id).deletedAt,null)
-  assert.ok(sync.status().issues.some(issue=>issue.type==='remote-missing'))
+  assert.ok(store.calendar.get(r.id).deletedAt)
+  assert.equal(sync.status().issues.length,0)
   sync.disconnect()
   assert.equal(sync.status().connected,false)
   assert.equal(sync.status().enabled,false)
@@ -332,7 +333,7 @@ test('legacy iCloud bindings migrate existing notes without overwriting either s
   assert.equal(store.calendar.get(goals[2].id).description, '保留右边')
 })
 
-test('iCloud deletion requires an explicit decision and the exact revision that was reviewed', async t => {
+test('iCloud delete-versus-edit conflicts require an explicit decision and the exact revision reviewed', async t => {
   const store = new Store(':memory:'); t.after(() => store.close())
   const nowDay = store.calendar.info().today
   const goals = ['单边保留', '确认删除', '手动处理'].map(title => make(store, title, nowDay))
@@ -353,6 +354,10 @@ test('iCloud deletion requires an explicit decision and the exact revision that 
   await sync.connect({ account, password: plain, calendar }, signal())
   sync.toggle(true)
   await sync.begin(true)
+  for (const event of goals) {
+    const href = calendar + encodeURIComponent(event.uid) + '.ics'
+    put(href, encodeEvent(event.uid, allDay(event.title, nowDay, '同步后 iCloud 有独立修改'), Date.now()))
+  }
   for (const event of goals) store.calendar.mutate('delete', { id: event.id, revision: event.revision, requestId: randomUUID() })
   await sync.begin(true)
   assert.equal(entries.size, 3)
