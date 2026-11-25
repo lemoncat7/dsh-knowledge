@@ -1,3 +1,4 @@
+import { Select } from './Select.jsx'
 import { useEffect, useId, useState } from 'react'
 import { DialogActions } from './Dialog.jsx'
 
@@ -26,7 +27,7 @@ export function WorkdayPreferences({ value, busy, action, onDirty }) {
       {!draft.weekdays.length && <p className="wl-error">请至少选择一个工作日。</p>}
       <h3>自定义工作日</h3>
       <p className="wl-muted">为调休或假期指定例外日期；指定日期优先于每周规则。</p>
-      <div className="wc-workday-date"><label>指定日期<input type="date" min="1900-01-01" max="2200-12-31" value={day} onChange={event => setDay(event.target.value)} /></label><label>这一天是<select value={String(workday)} onChange={event => setWorkday(event.target.value === 'true')}><option value="true">工作日</option><option value="false">休息日</option></select></label><button type="button" disabled={!day || draft.overrides.length >= 366 && !draft.overrides.some(item => item.day === day)} onClick={() => { change({ overrides: [...draft.overrides.filter(item => item.day !== day), { day, workday }].sort((a, b) => a.day.localeCompare(b.day)) }); setDay('') }}>设置</button></div>
+      <div className="wc-workday-date"><label>指定日期<input type="date" min="1900-01-01" max="2200-12-31" value={day} onChange={event => setDay(event.target.value)} /></label><label>这一天是<Select value={String(workday)} onChange={event => setWorkday(event.target.value === 'true')}><option value="true">工作日</option><option value="false">休息日</option></Select></label><button type="button" disabled={!day || draft.overrides.length >= 366 && !draft.overrides.some(item => item.day === day)} onClick={() => { change({ overrides: [...draft.overrides.filter(item => item.day !== day), { day, workday }].sort((a, b) => a.day.localeCompare(b.day)) }); setDay('') }}>设置</button></div>
       <ul className="wc-workday-overrides">{draft.overrides.map(item => <li key={item.day}><time>{item.day}</time><span>{item.workday ? '工作日' : '休息日'}</span><button type="button" aria-label={`移除 ${item.day} 的例外`} onClick={() => change({ overrides: draft.overrides.filter(row => row.day !== item.day) })}>移除</button></li>)}</ul>
       {dirty && draft.revision !== value.revision && <p className="wl-error">设置已在其他位置更新。<button type="button" onClick={() => setDraft(value)}>重新载入设置</button></p>}
     </fieldset>

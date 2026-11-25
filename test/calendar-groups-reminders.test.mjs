@@ -236,3 +236,31 @@ test('active synced events cannot silently cross groups or reuse a populated rem
   await assert.rejects(sync.configureMappings({revision:sync.status().revision,mappings:[{groupId:'personal',calendar:urls[0],direction:'both'}]},signal()),/已有分组关联/)
   assert.equal(c.get(e.id).groupId,'default')
 })
+
+test('multiple account calendars can atomically create distinct local groups without replacing existing groups',async t=>{
+  const {c,sync}=await syncFixture(t);groups(c)
+  const revision=c.groups().revision, before=c.groups().items
+  await sync.configureMappings({revision:sync.status().revision,groupsRevision:revision,
+    createGroups:[{id:'cloud-a',name:'旅行',color:'blue'},{id:'cloud-b',name:'共享',color:'purple'}],
+    mappings:[{groupId:'default',calendar:urls[0],direction:'both'},{groupId:'cloud-a',calendar:urls[1],direction:'both'},{groupId:'cloud-b',calendar:urls[2],direction:'pull'}]},signal())
+  assert.equal(c.groups().revision,revision+1);assert.deepEqual(c.groups().items.slice(0,2),before)
+  assert.equal(c.groups().items.length,4);assert.equal(sync.status().mappings.length,3)
+})
+
+test('failed combined account/group save rolls back both configurations and stale groups cannot overwrite',async t=>{
+  const {store,c,sync}=await syncFixture(t),beforeGroups=c.groups(),beforeSync=sync.config(),set=store.setMeta.bind(store)
+  const data={revision:sync.status().revision,groupsRevision:beforeGroups.revision,createGroups:[{id:'cloud-a',name:'旅行',color:'blue'}],mappings:[{groupId:'cloud-a',calendar:urls[1],direction:'both'}]}
+  store.setMeta=(key,value)=>{if(key==='calendarICloud')throw Error('simulated storage failure');set(key,value)}
+  await assert.rejects(sync.configureMappings(data,signal()),/storage failure/)
+  assert.deepEqual(c.groups(),beforeGroups);assert.deepEqual(sync.config(),beforeSync)
+  store.setMeta=set;groups(c)
+  await assert.rejects(sync.configureMappings(data,signal()),/本地分组已变化/)
+  assert.equal(c.groups().items.some(group=>group.id==='cloud-a'),false)
+})
+
+test('manual account refresh bypasses the discovery cache while ordinary opens reuse it',async t=>{
+  const {sync,calls}=await syncFixture(t)
+  await sync.calendars(signal());const count=calls.filter(call=>call==='discover').length
+  await sync.calendars(signal());assert.equal(calls.filter(call=>call==='discover').length,count)
+  await sync.calendars(signal(),true);assert.equal(calls.filter(call=>call==='discover').length,count+1)
+})

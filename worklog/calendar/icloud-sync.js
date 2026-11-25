@@ -4,6 +4,7 @@ import { fail } from '../domain.js'
 import { object, normalizeEvent, string } from './domain.js'
 import { localParts } from './time.js'
 import { AppleCalendarClient, appleURL, calendarPatch, decodeEvent, encodeEvent, projection } from './caldav.js'
+import { normalizeGroups } from './groups.js'
 
 const interval = 5 * 60_000
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -67,10 +68,10 @@ export class ICloudSync {
       mappings: mappings.map(({ groupId, url, name, direction, since }) => ({ groupId, calendar: url, name, direction, since })),
       running: !!this.running, last: config.secret ? this.meta('calendarICloudLast') : null, issues }
   }
-  async calendars(signal) {
+  async calendars(signal, refresh = false) {
     const config = this.config()
     if (!config.secret) throw fail('请先登录 iCloud', 409)
-    if (this.discovery?.generation === config.generation && this.discovery.expires > Date.now()) return { calendars: this.discovery.calendars }
+    if (!refresh && this.discovery?.generation === config.generation && this.discovery.expires > Date.now()) return { calendars: this.discovery.calendars }
     const { account, password } = this.decrypt(config.secret)
     const calendars = await this.client(account, password).discover(signal)
     if (this.config().generation !== config.generation) throw fail('账号连接已变化，请重新读取', 409)
@@ -78,12 +79,18 @@ export class ICloudSync {
     return { calendars }
   }
   async configureMappings(data, signal) {
-    object(data, ['revision', 'mappings'])
+    object(data, ['revision', 'mappings', 'groupsRevision', 'createGroups'])
     const config = this.config()
     if (!config.secret) throw fail('请先登录 iCloud', 409)
     if (data.revision !== (config.revision ?? 0)) throw fail('账号同步设置已变化，请重新读取', 409)
     if (!Array.isArray(data.mappings) || data.mappings.length > 100) throw fail('同步关联最多 100 组')
-    const groups = this.store.calendar.groups(), { calendars } = await this.calendars(signal)
+    const previousGroups = this.store.calendar.groups()
+    if (data.createGroups !== undefined && (!Array.isArray(data.createGroups) || data.createGroups.length > 100)) throw fail('待创建分组无效')
+    const additions = data.createGroups ?? []
+    if (additions.length && data.groupsRevision !== previousGroups.revision) throw fail('本地分组已变化，请重新读取后再保存', 409)
+    const groups = additions.length ? normalizeGroups({ revision: previousGroups.revision, items: [...previousGroups.items, ...additions] }) : previousGroups
+    if (additions.some(group => !data.mappings.some(mapping => mapping.groupId === group.id))) throw fail('新分组必须有关联的账号日历')
+    const { calendars } = await this.calendars(signal)
     const { account } = this.decrypt(config.secret)
     const old = this.mappings(config)
     const mappings = data.mappings.map(item => {
@@ -103,9 +110,13 @@ export class ICloudSync {
     if (new Set(mappings.map(mapping => mapping.groupId)).size !== mappings.length || new Set(mappings.map(mapping => mapping.url)).size !== mappings.length) throw fail('每个分组和账号日历只能关联一次')
     signal?.throwIfAborted()
     if (this.config().generation !== config.generation || this.store.calendar.groups().revision !== groups.revision) throw fail('分组或账号设置已变化，请重新读取', 409)
-    if (equal(mappings, old)) return this.status()
+    if (equal(mappings, old) && !additions.length) return this.status()
     this.controller?.abort()
-    this.store.setMeta('calendarICloud', { ...config, mappings, revision: (config.revision ?? 0) + 1, generation: randomUUID() })
+    this.transaction(() => {
+      if (this.store.calendar.groups().revision !== previousGroups.revision || this.config().generation !== config.generation) throw fail('分组或账号设置已变化，请重新读取', 409)
+      if (additions.length) this.store.setMeta('calendarGroups', { ...groups, revision: groups.revision + 1 })
+      this.store.setMeta('calendarICloud', { ...config, mappings, revision: (config.revision ?? 0) + 1, generation: randomUUID() })
+    })
     this.next = 0
     return this.status()
   }

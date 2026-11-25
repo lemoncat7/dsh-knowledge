@@ -265,12 +265,63 @@ body[data-ds-dark-theme] .dsh-worklog{--wl-text:#e4e7eb;--wl-muted:#b1b8c0;--wl-
 @media(max-width:720px){.wc-filters{padding:0 12px 12px;gap:8px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.wc-filters label{min-width:0}.wc-filters .wc-filter-search{grid-column:1/-1;min-width:0;max-width:none}.wc-filters select,.wc-filters input{min-height:44px}.wc-list-day{grid-template-columns:1fr;gap:8px;padding:12px 0}.wc-list-view{padding:0 12px 12px}.wc-list-item{min-height:56px}.wc-group-editor>div{grid-template-columns:minmax(0,1fr) 76px auto}.wc-group-editor button,.wc-group-editor select,.wc-group-editor input{min-height:44px}.dsh-worklog .wc-switch>button{padding-inline:8px}.wc-toolbar button{min-height:44px}.wc-list-state{max-width:60px}}
 .wc-mappings{padding:16px 0;border-top:1px solid var(--wl-line);margin-top:16px;min-width:0}
 .wc-mappings-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
-.wc-mapping-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;padding:10px 0}
-.wc-mapping-row label{display:grid;gap:6px;font-size:12px;min-width:0}
-.wc-mapping-row select{width:100%;min-width:0}
-@media(max-width:720px){.wc-mapping-row{grid-template-columns:1fr}.wc-mappings button,.wc-mapping-row select{min-height:44px}}
-.wc-mapping-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;align-items:end;gap:10px}
-.wc-mapping-row>button{margin-bottom:12px;font-size:12px;min-height:34px}
-.wc-add-mapping{display:grid;gap:6px;margin:8px 0 14px;font-size:12px}
-.wc-add-mapping select{width:100%;min-width:0}
-@media(max-width:720px){.wc-mapping-row{grid-template-columns:1fr}.wc-mapping-row>button{justify-self:start;margin-bottom:0;min-height:44px}.wc-add-mapping select{min-height:44px}}
+
+/* Shared React select: the popup stays inside its owning dialog in the top layer. */
+.wl-select{position:relative;display:block;width:100%;min-width:0}
+.dsh-worklog select.wl-select-native{position:absolute!important;inset:0 auto auto 0!important;width:1px!important;height:1px!important;min-height:0!important;padding:0!important;opacity:0!important;pointer-events:none;overflow:hidden}
+.dsh-worklog .wl-select-trigger{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;min-width:0;max-width:100%;text-align:left;background:var(--interaction-well,var(--wl-control));font-weight:400}
+.wl-select-trigger>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wl-select-trigger>svg{flex-shrink:0;color:var(--wl-muted)}
+.dsh-worklog .wl-select-menu{position:fixed;inset:auto;margin:0;padding:5px;border:1px solid var(--wl-line);border-radius:13px;overflow:auto;background:color-mix(in srgb,var(--wl-solid) 93%,transparent);color:var(--wl-text);backdrop-filter:blur(24px) saturate(1.12);-webkit-backdrop-filter:blur(24px) saturate(1.12);box-shadow:0 8px 30px #0002;z-index:10000;font:13px/1.5 system-ui;scrollbar-width:thin;overscroll-behavior:contain}
+.wl-select-menu::backdrop{background:transparent;pointer-events:none}
+.dsh-worklog .wl-select-menu [role=option]{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;text-align:left;white-space:normal;overflow-wrap:anywhere;border:0;border-radius:9px;background:transparent;box-shadow:none;padding:8px 10px;min-height:34px;font-weight:400}
+.dsh-worklog .wl-select-menu [role=option][aria-selected=true],.dsh-worklog .wl-select-menu [role=option]:focus{background:var(--wl-hover)}
+.dsh-worklog .wl-select-menu [role=option]:disabled{opacity:.45}
+.wl-select-group{padding:7px 10px 3px;font-size:11px;color:var(--wl-muted)}
+.wl-model-control>.wl-select{flex:1;width:0}.wl-model-control .wl-select-trigger{border:0;border-radius:10px 0 0 10px}
+
+/* Calendar dialogs use common columns instead of independently stretched fields. */
+.dsh-worklog.wl-dialog.wc-account-dialog{width:min(860px,calc(100vw - 32px))}
+.wc-account-layout{grid-template-columns:112px minmax(0,1fr)}
+.wc-account-content{padding:18px 22px}
+.wc-mappings{margin-top:16px;padding:16px 0 0}
+.wc-mappings-heading>div{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}.wc-mappings-heading>div>span{font-size:12px}
+.wc-cloud-table{border-block:1px solid var(--wl-line);margin:14px 0 12px}
+.wc-cloud-table-head,.wc-cloud-row{display:grid;grid-template-columns:minmax(110px,1fr) minmax(140px,220px) 104px;align-items:center;column-gap:14px}
+.wc-cloud-table-head{padding:8px 0;font-size:11px;color:var(--wl-muted)}
+.wc-cloud-row{padding:10px 0;border-top:1px solid var(--wl-line)}
+.dsh-worklog.wl-dialog .wc-cloud-row>label{margin:0;min-width:0;gap:6px}
+.dsh-worklog.wl-dialog label.wc-cloud-check{display:flex;align-items:center;gap:9px;min-height:36px;font-size:13px}
+.wc-cloud-check>input{height:17px;width:17px;flex-shrink:0}.wc-cloud-check>span{min-width:0;overflow-wrap:anywhere}
+.wc-cloud-check strong{font-size:13px;font-weight:500}.wc-cloud-check small{display:block;font-size:11px;color:var(--wl-muted)}
+.wc-cloud-row .wl-select-trigger{min-height:36px;font-size:12px;padding:7px 10px}
+.wc-mobile-field-name{display:none}
+.wc-local-group-summary{display:grid;grid-template-columns:90px minmax(0,1fr);gap:10px;padding:8px 0;font-size:12px;color:var(--wl-muted)}
+.wc-local-group-summary>div{display:flex;flex-wrap:wrap;gap:6px 16px}
+.wc-local-group-summary>div>span{color:var(--wl-text);display:flex;gap:6px;align-items:baseline}.wc-local-group-summary small{font-size:11px;color:var(--wl-muted)}
+.wc-mapping-save{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-top:12px}.wc-mapping-save>span{font-size:11px}
+.dsh-worklog.wl-dialog.wc-group-dialog{width:min(600px,calc(100vw - 32px))}
+.dsh-worklog.wc-group-dialog .wc-group-editor{display:grid;gap:12px;margin:16px 0}
+.dsh-worklog.wc-group-dialog .wc-group-editor>div{display:grid;grid-template-columns:minmax(0,1fr) 112px 56px;align-items:end;gap:12px;margin:0}
+.dsh-worklog.wc-group-dialog .wc-group-editor label{margin:0;gap:6px}
+.wc-group-editor input,.wc-group-editor .wl-select-trigger,.wc-group-editor>div>button{height:38px;min-height:38px}
+.dsh-worklog.wl-dialog.wc-event-dialog{width:min(680px,calc(100vw - 32px))}
+.wc-event-dialog .wc-editor fieldset{display:grid;gap:14px}
+.dsh-worklog.wc-event-dialog .wc-editor label:not(.wl-check){margin:0}
+.wc-event-dialog .wc-created-date{margin:0}.wc-event-dialog .wc-form-row{gap:16px}
+.dsh-worklog.wc-event-dialog .wc-editor label.wl-check{justify-self:start;margin:0;min-height:34px;padding:5px 0;border:0;background:transparent;box-shadow:none}
+.wc-event-dialog .wc-editor label:has(>input[aria-label="提醒时间"]){max-width:340px}
+@media(max-width:680px){
+ .dsh-worklog.wl-dialog.wc-account-dialog{width:calc(100vw - 16px)}
+ .wc-account-layout{grid-template-columns:1fr}.wc-account-nav{flex-direction:row;border-right:0;border-bottom:1px solid var(--wl-line);padding:5px 12px}
+ .dsh-worklog .wc-account-nav>button{width:auto;min-width:96px;min-height:44px}.wc-account-content{padding:16px}
+ .wc-mappings button{min-height:44px}
+ .wc-cloud-table-head{display:none}.wc-cloud-row{grid-template-columns:minmax(0,1fr) 106px;gap:8px 12px;padding:14px 0}
+ .wc-cloud-row>.wc-cloud-check{grid-column:1/-1}.wc-mobile-field-name{display:block;font-size:11px;color:var(--wl-muted)}
+ .wc-cloud-row .wl-select-trigger,.dsh-worklog .wl-select-trigger,.dsh-worklog .wl-select-menu [role=option]{min-height:44px}
+ .wc-local-group-summary{grid-template-columns:1fr;gap:5px}.wc-mapping-save{align-items:stretch;flex-direction:column}.wc-mapping-save>button{align-self:flex-end;min-height:44px}
+ .dsh-worklog.wc-group-dialog .wc-group-editor>div{grid-template-columns:minmax(0,1fr) 80px 44px;gap:8px}.wc-group-editor input,.wc-group-editor .wl-select-trigger,.wc-group-editor>div>button{height:44px}
+ .wc-group-editor>div>button{padding:4px;font-size:12px}.wc-event-dialog .wc-editor label:has(>input[aria-label="提醒时间"]){max-width:none}
+}
+@media(prefers-reduced-transparency:reduce){.dsh-worklog .wl-select-menu{background:var(--wl-solid);backdrop-filter:none}}
+.wc-local-group-summary strong{font-size:12px;font-weight:500}

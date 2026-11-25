@@ -1,4 +1,5 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { Select } from './Select.jsx'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from './api.js'
 import { Dialog, DialogActions } from './Dialog.jsx'
@@ -39,6 +40,7 @@ export function weekLayout(events, day, zone) {
 export function Calendar() {
   const [settingsPanel, setSettingsPanel] = useState(null)
   const [info, setInfo] = useState(null), [day, setDay] = useState(() => { try { return validDate(new URLSearchParams(location.search).get('calendarDay')) } catch { return '' } }), [mode, setMode] = useState('month')
+  const publishInfo = useCallback(next => setInfo(current => current?.calendarId === next.calendarId && (current.groups?.revision ?? 0) > (next.groups?.revision ?? 0) ? { ...next, groups: current.groups } : next), [])
   const [goalOrders, setGoalOrders] = useState({})
   const [events, setEvents] = useState([]), [loading, setLoading] = useState(true), [version, setVersion] = useState(0)
   const [error, setError] = useState(''), [message, setMessage] = useState(''), [busy, setBusy] = useState(false)
@@ -64,20 +66,20 @@ export function Calendar() {
         const next = await api('/calendar-info', undefined, controller.signal)
         if (controller.signal.aborted) return
         const key = `${next.calendarId}:${next.cursor}:${next.orderCursor}:${next.progressCursor}:${next.workdaysRevision}:${next.timeZone}:${next.today}:${next.externalSync?.connected}:${next.externalSync?.enabled}`
-        if (key === lastKey) { setInfo(next); return }
+        if (key === lastKey) { publishInfo(next); return }
         const query = new URLSearchParams({ from, to, timeZone: next.timeZone, deleted: trash ? 'only' : 'exclude', limit: '500' })
         let all = [], page
         do { page = await api('/calendar?' + query, undefined, controller.signal); if (page.calendarId !== next.calendarId || page.cursor !== next.cursor || page.orderCursor !== next.orderCursor) throw new Error('日历已更新，正在重新读取，请稍后刷新'); all.push(...page.items); if (page.nextOffset !== null) query.set('offset', page.nextOffset) } while (page.nextOffset !== null && all.length < 5000)
         if (controller.signal.aborted) return
         if (page.nextOffset !== null) throw new Error('当前范围超过 5000 项，请切换周视图查看')
-        setInfo(next); setEvents(all); setGoalOrders(page.goalOrders || {}); setLoading(false); setError(''); lastKey = key
+        publishInfo(next); setEvents(all); setGoalOrders(page.goalOrders || {}); setLoading(false); setError(''); lastKey = key
         if (!day) setDay(next.today)
       } catch (e) { if (!controller.signal.aborted) { setError(e.message); setLoading(false) } }
       finally { if (!controller.signal.aborted) timer = setTimeout(load, 15000) }
     }
     setLoading(true); load()
     return () => { controller.abort(); clearTimeout(timer) }
-  }, [from, to, trash, version])
+  }, [from, to, trash, version, publishInfo])
   useEffect(() => { if (gridFocus.current) { dayRefs.current.get(selected)?.focus(); gridFocus.current = false } }, [selected])
   const visibleEvents = useMemo(() => events.filter(e => (e.deletedAt !== null) === trash && (!filterGroup || (e.groupId ?? 'default') === filterGroup) && (!filterKind || e.kind === filterKind) && (!filterText.trim() || [e.title, e.description, e.project, ...(e.tags ?? [])].join(' ').toLocaleLowerCase().includes(filterText.trim().toLocaleLowerCase()))), [events, trash, filterGroup, filterKind, filterText])
   const byDay = useMemo(() => new Map(days.map(d => {
@@ -273,7 +275,7 @@ export function Calendar() {
         <ActionMenu label="日历更多操作"><button type="button" disabled={!info} onClick={() => setSettingsPanel('report')}>日历设置</button><button type="button" disabled={!info?.groups} onClick={() => setSettingsPanel('groups')}>管理分组</button><button type="button" onClick={() => { setLoading(true); setTrash(!trash); setUndo(null) }}>{trash ? '返回日历' : '回收站'}</button><button type="button" disabled={!info} onClick={exportRange}>导出当前范围 .ics</button><button type="button" onClick={() => setVersion(v => v + 1)}>刷新日历</button></ActionMenu>
       </div>
     </header>
-    <div className="wc-filters" role="search" aria-label="筛选日历"><label>分组<select aria-label="分组筛选" value={filterGroup} onChange={e => setFilterGroup(e.target.value)}><option value="">全部分组</option>{groups.items.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label><label>类型<select aria-label="类型筛选" value={filterKind} onChange={e => setFilterKind(e.target.value)}><option value="">全部类型</option>{Object.entries(kindLabels).map(([key, name]) => <option key={key} value={key}>{name}</option>)}</select></label><label className="wc-filter-search">搜索<input type="search" placeholder="标题、标签或项目" value={filterText} onChange={e => setFilterText(e.target.value)} /></label>{(filterGroup || filterKind || filterText) && <button type="button" onClick={() => { setFilterGroup(''); setFilterKind(''); setFilterText('') }}>清除筛选</button>}</div>
+    <div className="wc-filters" role="search" aria-label="筛选日历"><label>分组<Select aria-label="分组筛选" value={filterGroup} onChange={e => setFilterGroup(e.target.value)}><option value="">全部分组</option>{groups.items.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</Select></label><label>类型<Select aria-label="类型筛选" value={filterKind} onChange={e => setFilterKind(e.target.value)}><option value="">全部类型</option>{Object.entries(kindLabels).map(([key, name]) => <option key={key} value={key}>{name}</option>)}</Select></label><label className="wc-filter-search">搜索<input type="search" placeholder="标题、标签或项目" value={filterText} onChange={e => setFilterText(e.target.value)} /></label>{(filterGroup || filterKind || filterText) && <button type="button" onClick={() => { setFilterGroup(''); setFilterKind(''); setFilterText('') }}>清除筛选</button>}</div>
     {error && <div className="wl-error" role="alert">{error}<button onClick={() => setVersion(v => v + 1)}>刷新</button></div>}
     <div className="wc-layout" aria-busy={loading}>
       <div className="wc-board">
@@ -413,10 +415,10 @@ function EventEditor({ event, groups, zone, today, calendarId, progressEnabled, 
     } catch (e) { setError(e.message) }
   }
   async function remove() { setError(''); try { await save('delete', { id: event.id, revision: event.revision }); close() } catch (e) { setError(e.message) } }
-  return <><Dialog title={event.deletedAt ? '已删除的条目' : existing ? '编辑安排' : '新建安排'} close={close} busy={busy} protectChanges dirty={dirty}>
+  return <><Dialog title={event.deletedAt ? '已删除的条目' : existing ? '编辑安排' : '新建安排'} className="wc-event-dialog" close={close} busy={busy} protectChanges dirty={dirty}>
     {error && <p className="wl-error" role="alert">{error}</p>}
     <form id={formId} className="wc-editor" onSubmit={submit}><fieldset disabled={busy || !!event.deletedAt}>
-      <div className="wc-form-row"><label>类型<select aria-label="类型" value={draft.kind} onChange={e => setDraft(d => ({ ...d, kind: e.target.value, reminderEnabled: e.target.value === 'reminder' ? true : d.reminderEnabled }))}>{Object.entries(kindLabels).map(([key, name]) => <option key={key} value={key}>{name}</option>)}</select></label><label>分组<select aria-label="分组" value={draft.groupId} onChange={e => change('groupId', e.target.value)}>{groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label></div>
+      <div className="wc-form-row"><label>类型<Select aria-label="类型" value={draft.kind} onChange={e => setDraft(d => ({ ...d, kind: e.target.value, reminderEnabled: e.target.value === 'reminder' ? true : d.reminderEnabled }))}>{Object.entries(kindLabels).map(([key, name]) => <option key={key} value={key}>{name}</option>)}</Select></label><label>分组<Select aria-label="分组" value={draft.groupId} onChange={e => change('groupId', e.target.value)}>{groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</Select></label></div>
       <label>标题<input autoFocus required maxLength={160} placeholder="例如：完成文章初稿" value={draft.title} onChange={e => change('title', e.target.value)} /></label>
       <label className="wl-check"><input type="checkbox" checked={!draft.allDay} onChange={e => change('allDay', !e.target.checked)} />安排具体时段</label>
       <div className="wc-created-date"><span>创建日期</span><time dateTime={creationDay}>{creationDay}</time></div>
@@ -428,10 +430,10 @@ function EventEditor({ event, groups, zone, today, calendarId, progressEnabled, 
         </div>
         <p className="wl-muted wc-small">按 {eventZone} 安排，允许跨天。</p>
       </>}
-      <div className="wc-form-row"><label>状态<select value={draft.status} onChange={e => change('status', e.target.value)}>{Object.entries(labels).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label><label>优先级<select value={draft.priority} onChange={e => change('priority', e.target.value)}><option value="low">不急</option><option value="normal">普通</option><option value="high">优先</option></select></label></div>
-      {draft.kind === 'goal' && workdayScheduling && <label>未完成时结转到<select value={draft.carryMode} onChange={e => change('carryMode', e.target.value)}><option value="daily">下一天</option><option value="workdays">下一个工作日</option></select><small className="wl-muted">工作日及休息日例外可在「日历设置」中调整。</small></label>}
+      <div className="wc-form-row"><label>状态<Select value={draft.status} onChange={e => change('status', e.target.value)}>{Object.entries(labels).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</Select></label><label>优先级<Select value={draft.priority} onChange={e => change('priority', e.target.value)}><option value="low">不急</option><option value="normal">普通</option><option value="high">优先</option></Select></label></div>
+      {draft.kind === 'goal' && workdayScheduling && <label>未完成时结转到<Select value={draft.carryMode} onChange={e => change('carryMode', e.target.value)}><option value="daily">下一天</option><option value="workdays">下一个工作日</option></Select><small className="wl-muted">工作日及休息日例外可在「日历设置」中调整。</small></label>}
       <label className="wl-check"><input type="checkbox" checked={draft.reminderEnabled} onChange={e => change('reminderEnabled', e.target.checked)} />到时间提醒</label>
-      {draft.reminderEnabled && <label>提醒时间<input type="datetime-local" aria-label="提醒时间" required value={draft.remindTime} onChange={e => change('remindTime', e.target.value)} /><small className="wl-muted">按 {eventZone} 提醒。DSH 显示到期提示；关联 iCloud 并启用上传后，也会写入 Apple 日历通知。</small></label>}
+      {draft.reminderEnabled && <label>提醒时间<input type="datetime-local" aria-label="提醒时间" required value={draft.remindTime} onChange={e => change('remindTime', e.target.value)} /><small className="wl-muted">按 {eventZone} 提醒，支持 DSH 提示与已关联的 iCloud 通知。</small></label>}
       <label>备注<textarea rows={3} maxLength={8000} placeholder="需要记住的细节（选填）" value={draft.description} onChange={e => change('description', e.target.value)} /></label>
       <details open={!!draft.tags || !!draft.project || draft.kind === 'work'}><summary>标签与关联</summary><label>标签（用逗号分隔）<input maxLength={395} value={draft.tags} onChange={e => change('tags', e.target.value)} /></label><label>关联项目<input maxLength={500} value={draft.project} onChange={e => change('project', e.target.value)} /></label></details>
     </fieldset>

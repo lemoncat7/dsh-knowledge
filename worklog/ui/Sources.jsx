@@ -1,3 +1,4 @@
+import { Select } from './Select.jsx'
 import { useEffect, useState } from 'react'
 import { api } from './api.js'
 import { Dialog } from './Dialog.jsx'
@@ -41,9 +42,9 @@ export function Sources({ day, version, summary, busy, act, time, onEvidence }) 
     {summary.chars > 180000 && <p className="wl-muted">内容较多，将分批整理并保存进度，最后合并；会增加模型调用次数。</p>}
     <div className="wl-source-filters">
       <label>搜索内容<input type="search" value={search} onChange={e => setSearch(e.target.value)} placeholder="搜索请求或结论" /></label>
-      <label>项目<select value={project} onChange={e => setProject(e.target.value)}><option value="">全部项目</option>{summary.projects.map(p => <option key={p}>{p}</option>)}</select></label>
-      <label>状态<select value={state} onChange={e => setState(e.target.value)}><option value="all">全部来源</option><option value="included">已纳入</option><option value="excluded">已排除</option><option value="unknown">旧版来源待核对</option></select></label>
-      <label>排序<select value={sort} onChange={e => setSort(e.target.value)}><option value="time">最新记录</option><option value="size">内容最长</option></select></label>
+      <label>项目<Select value={project} onChange={e => setProject(e.target.value)}><option value="">全部项目</option>{summary.projects.map(p => <option key={p}>{p}</option>)}</Select></label>
+      <label>状态<Select value={state} onChange={e => setState(e.target.value)}><option value="all">全部来源</option><option value="included">已纳入</option><option value="excluded">已排除</option><option value="unknown">旧版来源待核对</option></Select></label>
+      <label>排序<Select value={sort} onChange={e => setSort(e.target.value)}><option value="time">最新记录</option><option value="size">内容最长</option></Select></label>
     </div>
     <div className="wl-actions wl-source-bulk">
       <label className="wl-check"><input type="checkbox" aria-label="选择本页来源" disabled={loading || busy || !rows.length} checked={!!rows.length && rows.every(r => selected.includes(r.id))} onChange={e => setSelected(e.target.checked ? rows.map(r => r.id) : [])} />选择本页</label>

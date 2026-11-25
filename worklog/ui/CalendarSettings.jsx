@@ -1,3 +1,4 @@
+import { Select } from './Select.jsx'
 import { useEffect, useId, useRef, useState } from 'react'
 import { api } from './api.js'
 import { Dialog } from './Dialog.jsx'
@@ -133,17 +134,17 @@ export function CalendarAccounts({ close, zone, supported, onCalendarChanged }) 
         {icloud.last && <p role="status" className="wl-muted">{icloud.last.state === 'ok'
           ? `最近同步 ${localParts(icloud.last.time, zone).time} · 从 iCloud 更新 ${icloud.last.pulled} 项 · 上传 ${icloud.last.pushed} 项${icloud.last.removed ? ` · 删除 ${icloud.last.removed} 项` : ''}`
           : icloud.last.message}</p>}
-        {icloud.connected && value.groups && <ICloudMappings icloud={icloud} groups={value.groups.items} busy={busy} action={action} dirtyChanged={setMappingDirty} />}
+        {icloud.connected && value.groups && <ICloudMappings icloud={icloud} groups={value.groups.items} groupsRevision={value.groups.revision} busy={busy} action={action} dirtyChanged={setMappingDirty} />}
         {connecting ? <div className="wc-settings-connect">
           <label>Apple 账户<input type="email" autoComplete="off" spellCheck={false} value={account} disabled={busy}
             onChange={e => { setAccount(e.target.value); setCalendars(null); setCalendar('') }} /></label>
           <label>应用专用密码<input type="password" autoComplete="new-password" value={password} disabled={busy}
             onChange={e => { setPassword(e.target.value); setCalendars(null); setCalendar('') }} /></label>
           <a href="https://account.apple.com/" target="_blank" rel="noreferrer">在 Apple 账户生成应用专用密码</a>
-          {calendars && <label>同步日历<select value={calendar} onChange={e => setCalendar(e.target.value)} disabled={busy}>
+          {calendars && <label>同步日历<Select value={calendar} onChange={e => setCalendar(e.target.value)} disabled={busy}>
             <option value="">{calendars.length ? '选择一个可写日历' : '没有可写日历'}</option>
             {calendars.map(item => <option key={item.id} value={item.id} disabled={item.writable === false}>{item.name}{item.writable === false ? '（只读）' : ''}</option>)}
-          </select></label>}
+          </Select></label>}
           <div className="wl-actions">
             <button type="button" disabled={busy} onClick={resetConnection}>取消连接</button>
             <button type="button" disabled={busy || !account.trim() || !password}

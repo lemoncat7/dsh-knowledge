@@ -9,7 +9,11 @@ export function calendarRoutes(store, method, path, data, query, signal) {
   if (method === 'GET' && path === '/calendar-settings') return config()
   if (method === 'POST') {
     if (path === '/calendar-groups-settings') { calendar.configureGroups(data); return config() }
-    if (path === '/calendar-icloud-calendars') { object(data, []); return store.icloud.calendars(signal) }
+    if (path === '/calendar-icloud-calendars') {
+      object(data, ['refresh'])
+      if (data.refresh !== undefined && typeof data.refresh !== 'boolean') throw fail('日历目录刷新参数无效')
+      return store.icloud.calendars(signal, data.refresh === true)
+    }
     if (path === '/calendar-icloud-mappings') { return store.icloud.configureMappings(data, signal).then(() => config()) }
     if (path === '/calendar-workdays-settings') { calendar.configureWorkdays(data); return config() }
     if (path === '/calendar-report-recheck') { const recheck = store.reportProgress.recheck(object(data, ['from', 'to'])); return { ...config(), recheck } }
