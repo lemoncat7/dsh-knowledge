@@ -128,3 +128,10 @@ test('a delayed Friday review is shared by workday carries after a multi-day res
   assert.equal(s.calendar.progressHistory(latest.id).items.length,1);assert.equal(s.calendar.progressHistory(latest.id).items[0].day,friday)
  }finally{s.close()}
 })
+
+test('a missing-only retry reports its own scope without implying that the whole day had no progress',async t=>{
+ const {s,goals}=setup();t.after(()=>s.close());await tick(s)
+ s.calendar.mutate('progress-write',{requestId:randomUUID(),id:goals[1].id,day,revision:1,text:''})
+ const original=progress(s,goals[0]).text;assert.equal(s.reportProgress.recheck({from:day,to:day}).queued,1);await tick(s)
+ assert.equal(progress(s,goals[0]).text,original);assert.match(s.reportProgress.status().last.message,/已有记录保留/);assert.doesNotMatch(s.reportProgress.status().last.message,/当天没有直接进展依据/)
+})

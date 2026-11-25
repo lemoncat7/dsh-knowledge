@@ -157,7 +157,7 @@ export class ReportProgress {
         if (progress.revision > 0 && (automated?.revision !== progress.revision || onlyMissing && progress.text)) return []
         return [{ id: event.id, title: event.title, description: event.description.slice(0, 300), project: event.project, revision: event.revision, progressRevision: progress.revision }]
       })
-      if (!goals.length) { finish('done', '当天没有待核对的目标'); return }
+      if (!goals.length) { finish('done', onlyMissing ? '当天没有待补的自动进度，已有记录保留' : '当天没有待核对的目标'); return }
       const relevant = new Set(report.covered)
       const sources = progressSources(this.store.records(day).filter(record => relevant.has(record.id)), goals)
       if (!sources.length) { finish('done', '当天材料没有可用依据'); return }
@@ -185,7 +185,9 @@ export class ReportProgress {
               }
             }
             const count = this.apply(day, decisions)
-            finish('done', count ? `已核对 ${goals.length} 个目标，更新 ${count} 个目标` : decisions.length ? `已核对 ${goals.length} 个目标，进度与现有记录一致` : `已核对 ${goals.length} 个目标，当天没有直接进展依据`)
+            finish('done', onlyMissing
+              ? `已核对 ${goals.length} 个缺失项，${count ? `补充 ${count} 条进度` : '没有新增进展依据'}；已有记录保留`
+              : count ? `已核对 ${goals.length} 个目标，更新 ${count} 个目标` : decisions.length ? `已核对 ${goals.length} 个目标，进度与现有记录一致` : `已核对 ${goals.length} 个目标，当天没有直接进展依据`)
           }
         }
         this.db.exec('COMMIT')
