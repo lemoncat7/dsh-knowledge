@@ -30,7 +30,7 @@ function reportFixture(t) {
       {id:partial.id,state:'progress',text:'目标 B 前两节已完成，剩第三节和校对。',source:1,field:'answer',quote:answer},
     ],
   }
-  const llm = { async *stream() { yield { type:'text-delta',text:JSON.stringify(expected) } } }
+  const llm = { async *stream(request) { const { goals } = JSON.parse(request.messages[0].content[0].text); yield { type:'text-delta',text:JSON.stringify({ items: expected.items.filter(item => goals.some(goal => goal.id === item.id)) }) } } }
   return {store,complete,partial,llm,expected}
 }
 

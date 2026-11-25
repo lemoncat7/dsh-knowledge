@@ -104,7 +104,7 @@ test('explicit history recheck queues existing reports once and never replaces m
   store.insert({ id: 'evidence', day: friday, user: '核对并整理构建步骤', answer: quote, project: '', sessionId: 'session', route: { provider: 'p', model: 'm' } })
   store.reportProgress.configure(true)
   store.save(friday, '已有日报', 0, ['evidence'], false, { provider: 'p', model: 'm' })
-  await store.reportProgress.tick({ async *stream() { yield { type: 'text-delta', text: '{"items":[]}' } } }, new AbortController().signal)
+  await store.reportProgress.tick({ async *stream() { yield { type: 'text-delta', text: JSON.stringify({ items: [{ id: goal.id, state: 'none', reason: '当前材料没有该目标的直接进展依据。' }] }) } } }, new AbortController().signal)
   assert.equal(store.reportProgress.recheck({ from: friday, to: friday }).queued, 1)
   assert.equal(store.reportProgress.recheck({ from: friday, to: friday }).queued, 0)
   c.mutate('progress-write', { id: goal.id, day: friday, requestId: randomUUID(), revision: 0, text: '人工核对，保留原文。' })
@@ -157,4 +157,52 @@ test('explicit recheck preserves existing automated notes without a model reques
   store.save(friday, '更新后的日报', 1, ['auto-source'], false, { provider: 'p', model: 'm' })
   await store.reportProgress.tick(llm, new AbortController().signal)
   assert.equal(calls, 2)
+})
+
+test('a complete report review distinguishes no evidence from silently missing or invalid goals', () => {
+  const goals = [{id:'build'},{id:'site'}], quote = '已阅读实际构建脚本，核对参数并讨论产物归档规则。'
+  const progress = {id:'build',state:'progress',text:'已梳理构建参数和归档规则，流水线尚未落地。',source:1,field:'answer',quote}
+  const none = {id:'site',state:'none',reason:'当天材料没有现场问题的日志或排查记录。'}
+  const parse = items => reportDecisions(JSON.stringify({items}),goals,[{answer:quote}],{requireAll:true})
+  assert.equal(parse([progress,none]).length,1)
+  for(const items of [[],[progress],[none],[progress,{...none,id:'unknown'}],[progress,{...none,reason:''}],[{...progress,quote:'这段内容没有出现在原始材料里'},none],[progress,progress]]) {
+    assert.throws(()=>parse(items),{code:'CALENDAR_PROGRESS_EVIDENCE'})
+  }
+  assert.deepEqual(parse([{id:'build',state:'none',reason:'未提供构建脚本、日志或讨论记录。'},none]),[])
+})
+
+test('empty and partially invalid model reviews retry instead of silently completing or writing partial notes', async t => {
+  const store=fixture(t),c=store.calendar,first=create(c,'学习构建参数',friday),second=create(c,'梳理产物归档',friday)
+  const quote='已核对实际构建参数，并整理当前产物归档口径。'
+  store.insert({id:'review-source',day:friday,user:'核对当前构建流程',answer:quote,project:'',sessionId:'s',route:{provider:'p',model:'m'}})
+  store.reportProgress.configure(true);store.save(friday,'已经核对了参数和归档',0,['review-source'],false,{provider:'p',model:'m'})
+  const review=items=>({async *stream(){yield {type:'text-delta',text:JSON.stringify({items})}}})
+  await store.reportProgress.tick(review([]),new AbortController().signal)
+  assert.equal(store.reportProgress.status().last.status,'queued')
+  assert.match(store.reportProgress.status().last.message,/漏项/)
+  assert.equal(c.goalProgress(first.id,friday).progress.revision,0)
+  const valid={id:first.id,state:'progress',text:'已核对实际构建参数。',source:1,field:'answer',quote}
+  store.db.prepare('UPDATE calendar_report_jobs SET due=0').run()
+  await store.reportProgress.tick(review([valid,{...valid,id:second.id,quote:'没有出现在材料中的引文'}]),new AbortController().signal)
+  assert.equal(store.reportProgress.status().last.status,'queued')
+  assert.equal(c.goalProgress(first.id,friday).progress.revision,0,'invalid batches must not partly commit')
+  store.db.prepare('UPDATE calendar_report_jobs SET due=0').run()
+  await store.reportProgress.tick(review([valid,{...valid,id:second.id,text:'已整理当前归档规则。'}]),new AbortController().signal)
+  assert.equal(store.reportProgress.status().last.status,'done')
+  assert.match(store.reportProgress.status().last.message,/核对 2.*更新 2/)
+  assert.equal(c.goalProgress(first.id,friday).progress.revision,1)
+  assert.equal(c.goalProgress(second.id,friday).progress.revision,1)
+})
+
+test('a concurrent manual edit is preserved and makes the in-flight review retry before committing other notes', async t => {
+  const store=fixture(t),c=store.calendar,first=create(c,'学习构建',friday),second=create(c,'核对产物',friday)
+  const quote='已阅读构建脚本并核对了当前产物版本。'
+  store.insert({id:'concurrent-source',day:friday,user:'核对实际构建',answer:quote,project:'',sessionId:'s',route:{provider:'p',model:'m'}})
+  store.reportProgress.configure(true);store.save(friday,'已阅读和核对',0,['concurrent-source'],false,{provider:'p',model:'m'})
+  const llm={async *stream(){c.mutate('progress-write',{id:first.id,day:friday,revision:0,text:'用户自己的补记',requestId:randomUUID()});yield {type:'text-delta',text:JSON.stringify({items:[first,second].map(goal=>({id:goal.id,state:'progress',text:'已阅读构建脚本并核对版本。',source:1,field:'answer',quote}))})}}}
+  await store.reportProgress.tick(llm,new AbortController().signal)
+  assert.equal(c.goalProgress(first.id,friday).progress.text,'用户自己的补记')
+  assert.equal(c.goalProgress(second.id,friday).progress.revision,0)
+  assert.equal(store.reportProgress.status().last.status,'queued')
+  assert.match(store.reportProgress.status().last.message,/发生变化/)
 })
