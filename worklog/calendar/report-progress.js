@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { complete } from '../generator.js'
 import { validDate } from './time.js'
 import { fail } from '../domain.js'
@@ -125,18 +126,29 @@ export class ReportProgress {
     if (!this.enabled() || !route?.provider || !route.model) return
     return this.db.prepare(`INSERT INTO calendar_report_jobs(day,revision,body,due,status) VALUES (?,?,?,?,'queued')
       ON CONFLICT(day) DO UPDATE SET revision=excluded.revision,body=excluded.body,due=excluded.due,attempts=0,status='queued',message=''
-      WHERE excluded.revision > calendar_report_jobs.revision OR (?=1 AND calendar_report_jobs.status NOT IN ('queued','running'))`).run(day, revision, JSON.stringify({ ...route, onlyMissing: force }), Date.now(), +force).changes
+      WHERE excluded.revision > calendar_report_jobs.revision OR (?=1 AND calendar_report_jobs.status NOT IN ('queued','running'))`).run(day, revision, JSON.stringify({ ...route, onlyMissing: force, reviewId: randomUUID() }), Date.now(), +force).changes
   }
   async tick(llm, signal, active = () => true) {
+    if (this.processing) return
+    this.processing = true
+    try { return await this.runReview(llm, signal, active) }
+    finally { this.processing = false }
+  }
+  async runReview(llm, signal, active) {
     if (!this.enabled()) return
     const job = this.db.prepare("SELECT * FROM calendar_report_jobs WHERE status='queued' AND due<=? ORDER BY due,day LIMIT 1").get(Date.now())
     if (!job) return
     const { day, revision } = job
-    const finish = (status, message) => this.db.prepare('UPDATE calendar_report_jobs SET status=?,message=? WHERE day=? AND revision=?').run(status, message, day, revision)
+    const currentJob = () => this.db.prepare(`SELECT 1 AS current FROM calendar_report_jobs
+      WHERE day=? AND revision=? AND status='queued' AND due=? AND attempts=? AND body=?`)
+      .get(day, revision, job.due, job.attempts, job.body)
+    const finish = (status, message) => this.db.prepare(`UPDATE calendar_report_jobs SET status=?,message=?
+      WHERE day=? AND revision=? AND status='queued' AND due=? AND attempts=? AND body=?`)
+      .run(status, message, day, revision, job.due, job.attempts, job.body)
     try {
       const report = this.store.report(day), calendar = this.store.calendar
       if (report.revision !== revision) { finish('skipped', '日报已更新'); return }
-      const { onlyMissing = false, ...route } = JSON.parse(job.body)
+      const { onlyMissing = false, reviewId, ...route } = JSON.parse(job.body)
       const goals = calendar.dayGoals(day, calendar.timezone()).filter(event => ['planned', 'in_progress'].includes(event.status)).flatMap(event => {
         const { progress } = calendar.goalProgress(event.id, day)
         const automated = this.db.prepare('SELECT revision FROM calendar_report_notes WHERE goal_id=? AND day=?').get(progress.goalId, day)
@@ -161,7 +173,7 @@ export class ReportProgress {
       if (!active() || signal.aborted) return
       this.db.exec('BEGIN IMMEDIATE')
       try {
-        if (this.enabled() && this.store.report(day).revision === revision) {
+        if (this.enabled() && this.store.report(day).revision === revision && currentJob()) {
           const current = new Set(this.store.records(day).map(record => record.id))
           // A changed source set invalidates the analysis, even when the report revision stayed the same.
           if (!report.covered.every(id => current.has(id))) finish('skipped', '日报素材发生变化')
@@ -179,10 +191,10 @@ export class ReportProgress {
         this.db.exec('COMMIT')
       } catch (e) { this.db.exec('ROLLBACK'); throw e }
     } catch (error) {
-      if (!active() || (signal.aborted && signal.reason?.name !== 'TimeoutError') || !this.enabled()) return
+      if (!active() || (signal.aborted && signal.reason?.name !== 'TimeoutError') || !this.enabled() || !currentJob()) return
       const tries = job.attempts + 1
-      this.db.prepare('UPDATE calendar_report_jobs SET attempts=?,due=?,status=?,message=? WHERE day=? AND revision=?')
-        .run(tries, Date.now() + 30_000 * tries, tries < 3 ? 'queued' : 'failed', error.code === 'CALENDAR_PROGRESS_EVIDENCE' ? `${error.message}，等待重试或重新核对` : error.code === 'CALENDAR_PROGRESS_CONFLICT' ? '目标或进度在核对期间发生变化，等待重试' : '目标进度核对暂未完成', day, revision)
+      this.db.prepare(`UPDATE calendar_report_jobs SET attempts=?,due=?,status=?,message=? WHERE day=? AND revision=? AND status='queued' AND due=? AND attempts=? AND body=?`)
+        .run(tries, Date.now() + 30_000 * tries, tries < 3 ? 'queued' : 'failed', error.code === 'CALENDAR_PROGRESS_EVIDENCE' ? `${error.message}，等待重试或重新核对` : error.code === 'CALENDAR_PROGRESS_CONFLICT' ? '目标或进度在核对期间发生变化，等待重试' : '目标进度核对暂未完成', day, revision, job.due, job.attempts, job.body)
     }
   }
   apply(day, decisions, now = Date.now()) {

@@ -37,7 +37,7 @@ export function calendarRoutes(store, method, path, data, query, signal) {
   if (method === 'GET') {
     if (path === '/calendar-info') {
       const info = calendar.info(), sync = store.icloud.config()
-      return { ...info, externalSync: { ...info.externalSync, connected: !!sync.secret, enabled: sync.enabled,
+      return { ...info, reportReview: store.reportProgress.status(), externalSync: { ...info.externalSync, connected: !!sync.secret, enabled: sync.enabled,
         name: sync.name ?? null, note: sync.secret ? '支持所选 iCloud 日历的双向同步' : '可在日历设置连接 iCloud' } }
     }
     if (path === '/calendar') return calendar.list(query)

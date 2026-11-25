@@ -233,3 +233,8 @@ body[data-ds-dark-theme] .dsh-worklog{--wl-text:#e4e7eb;--wl-muted:#b1b8c0;--wl-
   .wc-account-content{padding:13px 10px}
   .wc-account-content .wl-error{overflow-wrap:anywhere}
 }
+
+.wc-report-review{display:grid;gap:7px;margin:14px 0;padding:12px 0;border-block:1px solid var(--wl-line);min-width:0}
+.wc-report-review>strong{font-size:12px;font-weight:600}.wc-report-review>p{margin:0;font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+.wc-report-review>small{font-size:11px;line-height:1.5;color:var(--wl-muted)}.wc-report-review>button{justify-self:start;max-width:100%;white-space:normal;text-align:start}
+@media(max-width:720px){.wc-report-review>button{min-height:44px}}

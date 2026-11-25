@@ -128,7 +128,9 @@ test('workday choices survive reopening and historical recheck can recover the s
   reopened.save(friday, '此前已生成日报', 0, ['route-evidence'], false)
   reopened.reportProgress.configure(true)
   assert.equal(reopened.reportProgress.recheck({ from: friday, to: friday }).queued, 1)
-  assert.deepEqual(JSON.parse(reopened.db.prepare('SELECT body FROM calendar_report_jobs').get().body), { provider: 'source-provider', model: 'source-model', onlyMissing: true })
+  const { reviewId, ...route } = JSON.parse(reopened.db.prepare('SELECT body FROM calendar_report_jobs').get().body)
+  assert.match(reviewId, /^[0-9a-f-]{36}$/)
+  assert.deepEqual(route, { provider: 'source-provider', model: 'source-model', onlyMissing: true })
 })
 
 

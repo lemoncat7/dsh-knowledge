@@ -5,6 +5,7 @@ import { Dialog, DialogActions } from './Dialog.jsx'
 import { ActionMenu } from './ActionMenu.jsx'
 import { CalendarAccounts, CalendarSettings } from './CalendarSettings.jsx'
 import { ProgressHistory } from './ProgressHistory.jsx'
+import { ReportProgressReview } from './ReportProgressReview.jsx'
 import { applyGoalOrder, moveGoal } from '../calendar/goal-order.js'
 import { addDays, eventOnDay, localParts, monthDays, weekDays, wallTime } from '../calendar/time.js'
 
@@ -56,7 +57,7 @@ export function Calendar() {
         const next = await api('/calendar-info', undefined, controller.signal)
         if (controller.signal.aborted) return
         const key = `${next.calendarId}:${next.cursor}:${next.orderCursor}:${next.progressCursor}:${next.workdaysRevision}:${next.timeZone}:${next.today}:${next.externalSync?.connected}:${next.externalSync?.enabled}`
-        if (key === lastKey) return
+        if (key === lastKey) { setInfo(next); return }
         const query = new URLSearchParams({ from, to, timeZone: next.timeZone, deleted: trash ? 'only' : 'exclude', limit: '500' })
         let all = [], page
         do { page = await api('/calendar?' + query, undefined, controller.signal); if (page.calendarId !== next.calendarId || page.cursor !== next.cursor || page.orderCursor !== next.orderCursor) throw new Error('日历已更新，正在重新读取，请稍后刷新'); all.push(...page.items); if (page.nextOffset !== null) query.set('offset', page.nextOffset) } while (page.nextOffset !== null && all.length < 5000)
@@ -275,6 +276,9 @@ export function Calendar() {
       </div>
       <aside className="wc-agenda" aria-label="当日目标"><div className="wc-agenda-heading"><span className="wl-eyebrow">{selected === today ? '今天' : '选中日期'}</span><h3>{dateLabel(selected)}</h3><input type="date" aria-label="跳转日期" min="1901-01-01" max="2199-12-31" value={selected} onChange={e => e.target.value && selectDay(e.target.value)} /></div>
         {!trash && <><div className="wc-progress-label"><span>完成进度</span><strong>{done} / {goals.length}</strong></div><progress aria-label="当日完成进度" max={goals.length || 1} value={done} /><form className="wc-quick" onSubmit={async e => { e.preventDefault(); if (!quick.trim()) return; try { await mutate('create', { event: { title: quick.trim(), day: selected, timeZone: zone } }); setQuick('') } catch {} }}><input aria-label="快速添加目标" placeholder="今天想完成什么？" value={quick} onChange={e => setQuick(e.target.value)} maxLength={160} disabled={busy || loading || !info} /><button aria-label="添加目标" disabled={busy || loading || !quick.trim()}>＋</button></form></>}
+        {!trash && info?.reportReview && <ReportProgressReview key={`${info.calendarId}:${selected}`} selected={selected} today={today}
+          review={info.reportReview} onChange={reportReview => setInfo(current => current && ({ ...current, reportReview }))}
+          settings={() => setSettingsPanel('report')} />}
         <div className="wc-agenda-list" ref={agenda} onPointerDown={pointerStart} onPointerMove={pointerMove}
           onPointerUp={pointerEnd} onPointerCancel={e => pointerEnd(e, true)} onLostPointerCapture={e => pointerEnd(e, true)}
           onPointerLeave={e => { if (!gesture.current?.moved) pointerEnd(e, true) }}>{!loading && !selectedItems.length && <div className="wc-empty"><strong>{trash ? '这一天没有已删除的目标' : '留一点空间给今天'}</strong><p>{trash ? '先选择目标所在的日期，再打开回收站查看。' : '先记下一个小目标，时间可以稍后再安排。也可以直接让 AI 帮你记录。'}</p></div>}{selectedItems.map(event => <article key={event.id} data-goal-sort-id={canSort && event.kind === 'goal' ? event.id : undefined}
