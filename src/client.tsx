@@ -397,6 +397,7 @@ function KnowledgeLauncher({ wide, useSessions, workspace, activity, docked }: S
       <IconDataOutline16 size={wide ? 16 : 18} />
       {wide && <span>知识库</span>}
     </button>}
+    <CalendarReminders openCalendar={day => workspace.openDocument({ view: 'calendar', day })} />
     <button
       type="button"
       className={`dsh-knowledge-trigger dsh-knowledge-panel-trigger${activityOpen ? ' is-active' : ''}`}
@@ -408,7 +409,6 @@ function KnowledgeLauncher({ wide, useSessions, workspace, activity, docked }: S
     >
       <IconPanelLeftOutline16 size={16} className="dsh-knowledge-panel-right-icon" />
     </button>
-    <CalendarReminders openCalendar={day => workspace.openDocument({ view: 'calendar', day })} />
     </div>
   )
 }

@@ -65,7 +65,10 @@ export function CalendarReminders({ openCalendar }: { openCalendar(day:string):v
   const count=value?.total ?? 0
   return <>
     <button type="button" className="dsh-knowledge-trigger dsh-calendar-reminder-trigger" aria-label={`到期提醒${count?'，'+count+' 项':''}`} aria-expanded={open} title={error||'到期提醒'} onClick={()=>setOpen(current=>!current)}>
-      <span aria-hidden="true">◷</span>{count>0 && <small>{count>99?'99+':count}</small>}
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M3.5 6a4.5 4.5 0 0 1 9 0v3l1 2v.5h-11V11l1-2V6Z" />
+        <path d="M6.5 13a1.5 1.5 0 0 0 3 0" />
+      </svg>{count>0 && <small>{count>99?'99+':count}</small>}
     </button>
     {open && <div ref={popover} className="dsh-calendar-reminders" role="region" aria-label="到期提醒">
       <header><strong>到期提醒{count>0?' · '+count:''}</strong><button type="button" aria-label="收起到期提醒" onClick={()=>setOpen(false)}>收起</button></header>
