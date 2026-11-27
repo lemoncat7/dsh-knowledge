@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import { isEditableNoteNode, isNoteId, type NoteNode, type NoteNodeKind, type NoteVersion } from './domain.js'
+import type { NoteManifest } from './sync-protocol.js'
 
 export type SqlRow = Record<string, unknown>
 
@@ -22,6 +23,8 @@ export interface NoteStoreHost {
   readonly objectsPath: string
   readonly versionsPath: string
   readonly contentMutationTails: Map<string, Promise<void>>
+  /** Mutable holder so cached manifest reads survive across submodule calls. */
+  readonly manifestCache: { value: { revision: string; manifest: NoteManifest } | undefined }
   assertOpen(): void
 }
 

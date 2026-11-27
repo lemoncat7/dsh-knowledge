@@ -750,3 +750,17 @@ body[data-ds-dark-theme] :is(
 /* The floating menu must be opaque: the composer surface is translucent glass. */
 :is(body, body[data-ds-dark-theme]) .dsh-knowledge-mount-menu { background: #23262b; }
 :is(body:not([data-ds-dark-theme])) .dsh-knowledge-mount-menu { background: #ffffff; }
+
+.dsh-calendar-reminder-trigger{flex:0 0 36px;width:36px;min-width:36px;padding:0;justify-content:center;gap:0}
+.dsh-calendar-reminder-trigger>small{position:absolute;top:0;right:0;font-size:10px;line-height:12px;border-radius:8px;padding:1px 3px;background:var(--accent,#38606b);color:var(--on-accent,white)}
+.dsh-calendar-reminders{position:fixed;inset:auto 20px 24px auto;margin:0;box-sizing:border-box;width:min(390px,calc(100vw - 32px));max-height:min(520px,calc(100dvh - 48px));padding:16px;border:1px solid color-mix(in srgb,var(--text,#27313a) 14%,transparent);border-radius:18px;color:var(--text,#27313a);background:color-mix(in srgb,var(--dialog-surface,#eff2f5) 86%,transparent);backdrop-filter:blur(24px) saturate(1.15);box-shadow:0 12px 50px rgb(0 0 0 / 15%);font:13px/1.6 system-ui;overflow:auto;z-index:1000}
+.dsh-calendar-reminders::backdrop{background:transparent;pointer-events:none}
+.dsh-calendar-reminders header{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.dsh-calendar-reminders button{font:inherit;color:inherit;border:1px solid color-mix(in srgb,currentColor 16%,transparent);border-radius:9px;background:transparent;padding:5px 9px;cursor:pointer;min-height:32px}
+.dsh-calendar-reminders button:focus-visible{outline:2px solid var(--accent,#38606b);outline-offset:2px}
+.dsh-calendar-reminder-list article{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid color-mix(in srgb,currentColor 12%,transparent)}
+.dsh-calendar-reminders .dsh-calendar-reminder-open{display:grid;flex:1;min-width:0;border:0;text-align:left;padding:0;gap:4px;overflow-wrap:anywhere}
+.dsh-calendar-reminder-open time,.dsh-calendar-reminder-help{font-size:12px;color:var(--text-secondary,#69757c)}
+.dsh-calendar-reminders .dsh-calendar-reminder-help{margin-bottom:0}
+@media(max-width:720px){.dsh-calendar-reminders{inset:auto 16px 16px auto}.dsh-calendar-reminders button{min-height:44px}}
+@media(prefers-reduced-transparency:reduce){.dsh-calendar-reminders{background:var(--dialog-surface,#eff2f5);backdrop-filter:none}}

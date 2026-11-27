@@ -1,7 +1,9 @@
 import { randomUUID, createHash } from 'node:crypto'
 import { fail } from '../domain.js'
-import { normalizeEvent, object, string, integer, statuses } from './domain.js'
+import { normalizeEvent, object, string, integer, statuses, kinds } from './domain.js'
+import { defaultGroups, normalizeGroups } from './groups.js'
 import { addDays, validDate, zoneName, startOfDay, localParts } from './time.js'
+import { defaultWorkdays, normalizeWorkdays, nextWorkday } from './workdays.js'
 const canonical = value => JSON.stringify(value, (_, v) => v && !Array.isArray(v) && typeof v === 'object' ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v)
 export class CalendarStore {
   constructor(db, timezone) {
@@ -17,17 +19,89 @@ export class CalendarStore {
       CREATE TABLE IF NOT EXISTS calendar_requests (id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,result TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS calendar_goal_orders (day TEXT PRIMARY KEY, revision INTEGER NOT NULL, ids TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS calendar_goal_carry (day TEXT NOT NULL, source_id TEXT NOT NULL, PRIMARY KEY(day,source_id));
+      CREATE INDEX IF NOT EXISTS calendar_goal_carry_source ON calendar_goal_carry(source_id);
       CREATE TABLE IF NOT EXISTS calendar_report_notes (
         goal_id TEXT NOT NULL, day TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(goal_id,day));
       CREATE TABLE IF NOT EXISTS calendar_goal_progress (
         goal_id TEXT NOT NULL, day TEXT NOT NULL, text TEXT NOT NULL, revision INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-        PRIMARY KEY(goal_id,day));`)
+        PRIMARY KEY(goal_id,day));
+      CREATE INDEX IF NOT EXISTS calendar_progress_updated ON calendar_goal_progress(updated_at);
+      CREATE TABLE IF NOT EXISTS calendar_reminder_receipts (
+        event_id TEXT NOT NULL, remind_at INTEGER NOT NULL, acknowledged_at INTEGER NOT NULL, PRIMARY KEY(event_id,remind_at));
+      CREATE INDEX IF NOT EXISTS calendar_reminder_due ON calendar_events(json_extract(body,'$.remindAt')) WHERE deleted_at IS NULL;`)
     this.calendarId = db.prepare('SELECT id FROM calendar_identity LIMIT 1').get()?.id
     if (!this.calendarId) { this.calendarId = randomUUID(); db.prepare('INSERT OR IGNORE INTO calendar_identity VALUES (1,?)').run(this.calendarId); this.calendarId = db.prepare('SELECT id FROM calendar_identity WHERE singleton=1').get().id }
+    const workdays = db.prepare("SELECT value FROM meta WHERE key='calendarWorkdays'").get()
+    this.workdays = workdays ? normalizeWorkdays(JSON.parse(workdays.value)) : defaultWorkdays()
   }
-  info() { return { calendarId: this.calendarId, protocol: 1, dailyProgress: true, progressHistory: true, calendarSettings: true, timeZone: this.timezone(), today: localParts(Date.now(), this.timezone()).day, orderCursor: this.orderCursor(), cursor: this.db.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM calendar_changes').get().n, externalSync: { connected: false, export: 'icalendar', adapters: ['google-calendar', 'caldav'], note: '本版提供日历文件导出与增量接口，尚未连接外部账号' } } }
+  info() { return { calendarId: this.calendarId, protocol: 1, eventKinds: kinds, groups: this.groups(), reminders: true, dailyProgress: true, progressHistory: true, calendarSettings: true, workdayScheduling: true, reportRecheck: true, progressCursor: this.progressCursor(), workdaysRevision: this.workdays.revision, timeZone: this.timezone(), today: localParts(Date.now(), this.timezone()).day, orderCursor: this.orderCursor(), cursor: this.db.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM calendar_changes').get().n, externalSync: { connected: false, export: 'icalendar', adapters: ['google-calendar', 'caldav'], note: '可连接 iCloud 或导出日历文件' } } }
+  groups() {
+    const row = this.db.prepare("SELECT value FROM meta WHERE key='calendarGroups'").get()
+    return row ? normalizeGroups(JSON.parse(row.value)) : defaultGroups()
+  }
+  configureGroups(input) {
+    const value = normalizeGroups(input)
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const previous = this.groups()
+      if (previous.revision !== value.revision) throw fail('日历分组已更新，请重新打开后保存', 409)
+      for (const removed of previous.items.filter(group => !value.items.some(item => item.id === group.id))) {
+        if (this.db.prepare("SELECT 1 FROM calendar_events WHERE COALESCE(json_extract(body,'$.groupId'),'default')=? LIMIT 1").get(removed.id)) throw fail('分组仍有条目（含回收站），请先移动条目', 409)
+        const row = this.db.prepare("SELECT value FROM meta WHERE key='calendarICloud'").get()
+        if (row && JSON.parse(row.value).mappings?.some(mapping => mapping.groupId === removed.id)) throw fail('请先解除该分组的账号同步关联', 409)
+      }
+      if (JSON.stringify(previous.items) !== JSON.stringify(value.items)) {
+        value.revision++
+        this.db.prepare("INSERT INTO meta(key,value) VALUES ('calendarGroups',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(value))
+      }
+      this.db.exec('COMMIT'); return value
+    } catch (e) { this.db.exec('ROLLBACK'); throw e }
+  }
+  reminders(now = Date.now()) {
+    const filter = `deleted_at IS NULL AND status NOT IN ('done','cancelled') AND json_extract(body,'$.remindAt') IS NOT NULL
+      AND NOT EXISTS(SELECT 1 FROM calendar_reminder_receipts r WHERE r.event_id=calendar_events.id AND r.remind_at=json_extract(body,'$.remindAt'))`
+    const items = this.db.prepare(`SELECT body FROM calendar_events WHERE ${filter} AND json_extract(body,'$.remindAt')<=? ORDER BY json_extract(body,'$.remindAt'),id LIMIT 100`).all(now).map(row => {
+      const event = JSON.parse(row.body)
+      return { id: event.id, title: event.title, day: event.day, kind: event.kind, groupId: event.groupId ?? 'default', remindAt: event.remindAt }
+    })
+    return { calendarId: this.calendarId, timeZone: this.timezone(), items,
+      total: this.db.prepare(`SELECT COUNT(*) AS n FROM calendar_events WHERE ${filter} AND json_extract(body,'$.remindAt')<=?`).get(now).n,
+      nextAt: this.db.prepare(`SELECT MIN(json_extract(body,'$.remindAt')) AS n FROM calendar_events WHERE ${filter} AND json_extract(body,'$.remindAt')>?`).get(now).n }
+  }
+  workdaySettings() { return structuredClone(this.workdays) }
+  configureWorkdays(input) {
+    const value = normalizeWorkdays(input)
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const row = this.db.prepare("SELECT value FROM meta WHERE key='calendarWorkdays'").get()
+      const previous = row ? normalizeWorkdays(JSON.parse(row.value)) : defaultWorkdays()
+      if (previous.revision !== value.revision) throw fail('工作日设置已更新，请重新打开后再保存', 409)
+      if (JSON.stringify(previous) !== JSON.stringify(value)) {
+        value.revision++
+        this.db.prepare("INSERT INTO meta(key,value) VALUES ('calendarWorkdays',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(value))
+      }
+      this.db.exec('COMMIT'); this.workdays = value
+      return this.workdaySettings()
+    } catch (e) { this.db.exec('ROLLBACK'); throw e }
+  }
   orderCursor() {
     return this.db.prepare('SELECT COALESCE(MAX(revision),0) AS n FROM calendar_goal_orders').get().n
+  }
+  progressCursor() { return this.db.prepare('SELECT COALESCE(MAX(updated_at),0) AS n FROM calendar_goal_progress').get().n }
+  progressSummaries(events) {
+    const ids = events.filter(event => event.kind === 'goal').map(event => event.id)
+    if (!ids.length) return new Map()
+    const rows = this.db.prepare(`WITH RECURSIVE lineage(event_id,id,parent,depth) AS (
+      SELECT id,id,json_extract(body,'$.carriedFrom.id'),0 FROM calendar_events WHERE id IN (${ids.map(() => '?').join(',')})
+      UNION ALL SELECT l.event_id,e.id,json_extract(e.body,'$.carriedFrom.id'),l.depth+1
+        FROM lineage l JOIN calendar_events e ON e.id=l.parent WHERE l.depth<4096
+      ), roots AS (SELECT event_id,id FROM lineage WHERE parent IS NULL), summaries AS (
+        SELECT goal_id,day,substr(text,1,120) AS text,COUNT(*) OVER(PARTITION BY goal_id) AS count,
+          ROW_NUMBER() OVER(PARTITION BY goal_id ORDER BY day DESC) AS position
+        FROM calendar_goal_progress WHERE text<>'' AND goal_id IN (SELECT id FROM roots)
+      ) SELECT roots.event_id,COALESCE(s.count,0) AS count,s.day,COALESCE(s.text,'') AS text
+        FROM roots LEFT JOIN summaries s ON s.goal_id=roots.id AND s.position=1`).all(...ids)
+    return new Map(rows.map(({ event_id, ...summary }) => [event_id, summary]))
   }
   get(id) {
     const row = this.db.prepare('SELECT body FROM calendar_events WHERE id=?').get(string(id, 100, true))
@@ -45,12 +119,16 @@ export class CalendarStore {
     if (status) { where.push('status=?'); args.push(status) }
     if (text) { where.push("instr(lower(json_extract(body,'$.title') || ' ' || json_extract(body,'$.description') || ' ' || json_extract(body,'$.project')),lower(?))>0"); args.push(text) }
     if (tag) { where.push("EXISTS(SELECT 1 FROM json_each(calendar_events.body,'$.tags') WHERE value=?)"); args.push(tag) }
+    const kind = query.get('kind'), group = query.get('groupId')
+    if (kind) { if (!kinds.includes(kind)) throw fail('日历类型无效'); where.push("json_extract(body,'$.kind')=?"); args.push(kind) }
+    if (group) { where.push("COALESCE(json_extract(body,'$.groupId'),'default')=?"); args.push(string(group, 100, true)) }
     const filter = where.join(' AND '), total = this.db.prepare(`SELECT count(*) AS n FROM calendar_events WHERE ${filter}`).get(...args).n
     const items = this.db.prepare(`SELECT body FROM calendar_events WHERE ${filter} ORDER BY day,all_day DESC,start_at,rowid LIMIT ? OFFSET ?`).all(...args, limit, offset).map(r => JSON.parse(r.body))
     const goalOrders = Object.fromEntries(this.db.prepare('SELECT day,revision,ids FROM calendar_goal_orders WHERE day >= ? AND day < ?').all(from, to)
       .map(row => [row.day, { revision: row.revision, ids: JSON.parse(row.ids) }]))
     const { cursor, orderCursor } = this.info()
-    return { items, goalOrders, orderCursor, total, nextOffset: offset + items.length < total ? offset + items.length : null, timeZone, from, to, cursor, calendarId: this.calendarId }
+    const summaries = this.progressSummaries(items)
+    return { items: items.map(event => summaries.has(event.id) ? { ...event, progressSummary: summaries.get(event.id) } : event), goalOrders, orderCursor, progressCursor: this.progressCursor(), total, nextOffset: offset + items.length < total ? offset + items.length : null, timeZone, from, to, cursor, calendarId: this.calendarId }
   }
   changes(query) {
     const after = integer(query.get('after'), 0, Number.MAX_SAFE_INTEGER, 0), limit = integer(query.get('limit'), 1, 500, 100), latest = this.info().cursor
@@ -72,10 +150,10 @@ export class CalendarStore {
     if (yesterday < '1900-01-01' || today >= '2200-12-31') return 0
     const pending = this.db.prepare(`SELECT body FROM calendar_events e
       WHERE deleted_at IS NULL AND status IN ('planned','in_progress') AND json_extract(body,'$.kind')='goal'
-        AND ((all_day=1 AND end_day=?) OR (all_day=0 AND end_at>? AND end_at<=?))
-        AND NOT EXISTS (SELECT 1 FROM calendar_goal_carry WHERE day=? AND source_id=e.id)
+        AND ((all_day=1 AND end_day<=?) OR (all_day=0 AND end_at<=?))
+        AND NOT EXISTS (SELECT 1 FROM calendar_goal_carry WHERE source_id=e.id)
       ORDER BY day,all_day DESC,start_at,rowid`)
-    const args = [today, startOfDay(yesterday, zone), startOfDay(today, zone), today]
+    const args = [today, startOfDay(today, zone)]
     if (!pending.get(...args)) return 0
 
     this.db.exec('BEGIN IMMEDIATE')
@@ -92,12 +170,14 @@ export class CalendarStore {
       let copied = 0
       for (const source of eligible) {
         if (remaining <= 0) break
-        if (!claim.run(today, source.id).changes) continue
+        const sourceDay = source.allDay ? addDays(source.endDay, -1) : localParts(source.endAt - 1, zone).day
+        const targetDay = source.carryMode === 'workdays' ? nextWorkday(yesterday, this.workdays) : today
+        if (!claim.run(targetDay, source.id).changes) continue
         this.saveEvent({
           ...source, id: randomUUID(), uid: randomUUID() + '@dsh-knowledge', revision: 1,
-          day: today, endDay: addDays(today, 1), allDay: true, startAt: null, endAt: null, timeZone: zone,
+          day: targetDay, endDay: addDays(targetDay, 1), allDay: true, startAt: null, endAt: null, timeZone: zone,
           createdAt: now, updatedAt: now, completedAt: null, deletedAt: null,
-          carriedFrom: { id: source.id, day: yesterday },
+          carriedFrom: { id: source.id, day: sourceDay },
         })
         copied++; remaining--
       }
@@ -160,14 +240,14 @@ export class CalendarStore {
     if (progress.revision !== integer(data.revision, 0, Number.MAX_SAFE_INTEGER)) throw fail('该日期进度已更新，请重新读取后再保存', 409)
     const text = string(data.text, 4000)
     if (text === progress.text) return { progress, createdAt }
-    const revision = progress.revision + 1, updatedAt = Math.max(now, (progress.updatedAt ?? 0) + 1)
+    const revision = progress.revision + 1, updatedAt = Math.max(now, this.progressCursor() + 1)
     this.db.prepare(`INSERT INTO calendar_goal_progress VALUES (?,?,?,?,?)
       ON CONFLICT(goal_id,day) DO UPDATE SET text=excluded.text,revision=excluded.revision,updated_at=excluded.updated_at`)
       .run(progress.goalId, progress.day, text, revision, updatedAt)
     return { progress: { ...progress, text, revision, updatedAt }, createdAt }
   }
   mutate(action, data, now = Date.now()) {
-    object(data, action === 'progress-write' ? ['requestId', 'calendarId', 'id', 'day', 'revision', 'text'] : action === 'reorder' ? ['requestId', 'calendarId', 'day', 'revision', 'ids'] : action === 'create' ? ['requestId', 'calendarId', 'event'] : action === 'update' ? ['requestId', 'calendarId', 'id', 'revision', 'patch'] : ['requestId', 'calendarId', 'id', 'revision'])
+    object(data, action === 'reminder-ack' ? ['requestId', 'calendarId', 'id', 'remindAt'] : action === 'progress-write' ? ['requestId', 'calendarId', 'id', 'day', 'revision', 'text'] : action === 'reorder' ? ['requestId', 'calendarId', 'day', 'revision', 'ids'] : action === 'create' ? ['requestId', 'calendarId', 'event'] : action === 'update' ? ['requestId', 'calendarId', 'id', 'revision', 'patch'] : ['requestId', 'calendarId', 'id', 'revision'])
     if (data.calendarId !== undefined && data.calendarId !== this.calendarId) throw fail('日历连接已改变，请重新加载后操作', 409)
     const requestId = string(data.requestId, 128, true), fingerprint = createHash('sha256').update(canonical({ action, data })).digest('hex')
     this.db.exec('BEGIN IMMEDIATE')
@@ -176,6 +256,14 @@ export class CalendarStore {
       if (prior) {
         if (prior.fingerprint !== fingerprint) throw fail('同一 requestId 不能用于不同操作；原操作未被覆盖', 409)
         this.db.exec('COMMIT'); return { ...JSON.parse(prior.result), replayed: true }
+      }
+      if (action === 'reminder-ack') {
+        const event = this.get(data.id), remindAt = integer(data.remindAt, Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER)
+        if (event.remindAt !== remindAt || remindAt > now || event.deletedAt !== null) throw fail('提醒已改期或移除，请重新读取', 409)
+        this.db.prepare('INSERT OR IGNORE INTO calendar_reminder_receipts VALUES (?,?,?)').run(event.id, remindAt, now)
+        const result = { acknowledged: true, calendarId: this.calendarId, replayed: false }
+        this.db.prepare('INSERT INTO calendar_requests VALUES (?,?,?)').run(requestId, fingerprint, JSON.stringify(result))
+        this.db.exec('COMMIT'); return result
       }
       if (action === 'reorder' || action === 'progress-write') {
         const result = action === 'reorder' ? this.reorder(data) : {
@@ -195,8 +283,15 @@ export class CalendarStore {
         if (action !== 'restore' && previous.deletedAt !== null) throw fail('目标已删除，请先恢复', 409)
         if (action === 'restore' && previous.deletedAt === null) throw fail('目标尚未删除，无需恢复', 409)
         if (!['update', 'delete', 'restore'].includes(action)) throw fail('不支持的日历操作')
+        if (action === 'update' && data.patch?.groupId !== undefined && data.patch.groupId !== (previous.groupId ?? 'default')) {
+          const configRow = this.db.prepare("SELECT value FROM meta WHERE key='calendarICloud'").get()
+          const config = configRow && JSON.parse(configRow.value)
+          const connections = config?.secret ? (config.mappings ?? [{ connection: config.connection }]).map(mapping => mapping.connection) : []
+          if (connections.length && this.db.prepare(`SELECT 1 FROM calendar_icloud WHERE local_id=? AND connection IN (${connections.map(() => '?').join(',')}) LIMIT 1`).get(previous.id, ...connections)) throw fail('已同步条目更换分组前，请先在账号设置解除原分组关联；也可直接重命名分组', 409)
+        }
         event = { ...previous, ...(action === 'update' ? normalizeEvent(data.patch, this.timezone(), previous) : {}), revision: revision + 1, updatedAt: Math.max(now, previous.updatedAt + 1), deletedAt: action === 'delete' ? now : null }
       }
+      if (!this.groups().items.some(group => group.id === (event.groupId ?? 'default'))) throw fail('日历分组不存在，请重新选择', 409)
       event.completedAt = event.status === 'done' ? event.completedAt ?? now : null
       const result = { event, calendarId: this.calendarId, cursor: this.saveEvent(event), replayed: false }
       this.db.prepare('INSERT INTO calendar_requests VALUES (?,?,?)').run(requestId, fingerprint, JSON.stringify(result))

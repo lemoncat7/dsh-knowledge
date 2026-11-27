@@ -30,6 +30,8 @@ export class NoteStore {
   private readonly shares: NoteStoreShares
   private readonly versions: NoteStoreVersions
   private readonly sync: NoteStoreSync
+  /** Shared with the sync submodule: manifest reads reuse the last result until SQLite changes. */
+  private readonly manifestCache: { value: { revision: string; manifest: NoteManifest } | undefined } = { value: undefined }
 
   constructor(private readonly rootPath: string, private readonly removeOnClose = false) {
     this.objectsPath = join(rootPath, 'objects')
@@ -54,6 +56,7 @@ export class NoteStore {
       objectsPath: this.objectsPath,
       versionsPath: this.versionsPath,
       contentMutationTails: this.contentMutationTails,
+      manifestCache: this.manifestCache,
       assertOpen: () => this.assertOpen(),
     }
     this.crud = new NoteStoreCrud(host)

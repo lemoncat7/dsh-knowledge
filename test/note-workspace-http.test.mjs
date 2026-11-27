@@ -8,6 +8,7 @@ import { LocalKnowledgeProvider } from '../lib/local-provider.js'
 import { RemoteKnowledgeProvider } from '../lib/remote-provider.js'
 import { registerKnowledgeApi } from '../lib/api.js'
 import { registerRemoteManagementProxy } from '../lib/management-proxy.js'
+import { treeFingerprint } from '../lib/notes/sync-protocol.js'
 
 test('authenticated HTTP, remote agent tools and browser share one durable note workspace', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'notes-http-')),
@@ -124,7 +125,7 @@ test('retiring and replacement providers share one workspace until the last refe
 test('a replacement connection uses its new transport without discarding the shared queue',async t=>{
  const {acquireRemoteWorkspace}=await import('../lib/notes/remote-workspace.js')
  const root=await mkdtemp(join(tmpdir(),'workspace-transport-'));let oldCalls=0,newCalls=0
- const manifest={protocol:1,instance:'same-server',revision:'empty',nodes:[]}
+ const manifest={protocol:1,instance:'same-server',revision:treeFingerprint([]),nodes:[]}
  const a=acquireRemoteWorkspace(root,async()=>{oldCalls++;return manifest});await a.replica.sync()
  const before=oldCalls
  const b=acquireRemoteWorkspace(root,async()=>{newCalls++;return manifest})

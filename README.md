@@ -34,6 +34,7 @@ dsh plugin --profile web add @lemoncat7/dsh-knowledge@latest
 - [使用、权限与部署配置](docs/usage.md)
 - [文档分组](docs/document-groups.md)
 - [笔记 @ 引用](docs/note-mentions.md)
+- [空闲读写与后台处理](docs/idle-performance.md)
 - [版本与发布说明](https://github.com/lemoncat7/dsh-knowledge/releases)
 - [发布维护约定](docs/releases/README.md)
 
@@ -44,6 +45,8 @@ dsh plugin --profile web add @lemoncat7/dsh-knowledge@latest
 ## 2.18.0 笔记离线副本与本地文件
 
 笔记工作区增加远程补同步和可供 Obsidian 打开的 Markdown 目录。支持范围、冲突规则和 schema 升级注意事项见 [说明](docs/note-workspace-sync.md)。
+
+本地文件索引仅在持久化状态变化时执行原子写入和落盘同步；空闲扫描保留索引文件的 inode 与修改时间。写入失败仍会在后续扫描中重试，实际笔记变更、冲突和移动检查点继续同步保存。
 
 
 ## 宿主兼容策略

@@ -56,7 +56,7 @@ export class JournalService {
     let value
     try { value = target ? await this.request(connection, method, path, method === 'POST' ? data : undefined, query, signal) : await this.central(method, path, data, query, signal) }
     catch (e) {
-      if (method === 'POST' && !/^\/calendar-(?:icloud-|report-settings)/.test(path)) throw fail(`${e.message}。如果请求可能已发送，请在原连接用同一 requestId 和相同参数核对或重试，不要改用新编号。`, e.status || 502)
+      if (method === 'POST' && !/^\/calendar-(?:icloud-|groups-settings|report-settings|report-recheck|workdays-settings)/.test(path)) throw fail(`${e.message}。如果请求可能已发送，请在原连接用同一 requestId 和相同参数核对或重试，不要改用新编号。`, e.status || 502)
       signal.throwIfAborted(); throw e
     }
     const current = this.current()

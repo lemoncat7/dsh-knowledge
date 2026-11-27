@@ -1,3 +1,4 @@
+import { sqliteRevision } from '../storage/sqlite-revision.js'
 import { hash, noteFingerprint, treeFingerprint, syncError, type NoteSyncChange, type NoteManifest } from './sync-protocol.js'
 import { isEditableNoteNode, isNoteId, type NoteNode } from './domain.js'
 import {
@@ -20,11 +21,18 @@ export class NoteStoreSync {
   constructor(private readonly deps: NoteStoreSyncDeps) {}
 
   syncManifest(): NoteManifest {
+    this.deps.assertOpen()
+    const revision = sqliteRevision(this.deps.db)
+    const cached = this.deps.manifestCache.value
+    if (!this.deps.db.isTransaction && cached !== undefined && cached.revision === revision) return structuredClone(cached.manifest)
     const nodes = (this.deps.db.prepare(`SELECT ${NOTE_COLUMNS} FROM note_nodes ORDER BY id LIMIT 10001`).all() as SqlRow[]).map(mapNoteNode)
     if(nodes.length>10000) throw syncError(413,'第一版离线工作区最多支持 10000 个笔记节点；未截断或删除任何内容')
-    return {protocol:1,instance:String((this.deps.db.prepare("SELECT value FROM note_sync_meta WHERE key='instance'").get() as SqlRow).value),revision:treeFingerprint(nodes),nodes}
+    const manifest: NoteManifest = {protocol:1,instance:String((this.deps.db.prepare("SELECT value FROM note_sync_meta WHERE key='instance'").get() as SqlRow).value),revision:treeFingerprint(nodes),nodes}
+    // A manifest read inside a transaction may observe changes later rolled
+    // back. total_changes() itself is not rolled back, so never cache that view.
+    this.deps.manifestCache.value = this.deps.db.isTransaction ? undefined : { revision, manifest }
+    return structuredClone(manifest)
   }
-
   /** Content, metadata and deduplication receipt commit in one SQLite transaction. */
   applySyncChange(actor:string, change:NoteSyncChange): NoteNode|null {
     if(!change || typeof change.operationId!=='string' || !/^[a-f0-9-]{36}$/.test(change.operationId) || !isNoteId(change.id)
