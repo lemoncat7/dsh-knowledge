@@ -97,6 +97,8 @@ export interface KnowledgeProvider {
   deleteKnowledgeNoteReference(knowledgeId: string, noteId: string, signal?: AbortSignal): Promise<void>
   propose(proposal: CandidateProposal, sourceKey?: string, signal?: AbortSignal): Promise<KnowledgeCandidate>
   writeDirect(proposal: CandidateProposal, sourceKey?: string, signal?: AbortSignal): Promise<DirectWriteResult>
+  /** Explicit command write into the session-selected library: always creates a new page, never updates one. */
+  saveConversation?(input: import('./domain.js').ConversationSaveInput, signal?: AbortSignal): Promise<import('./domain.js').ConversationSaveResult>
   listCandidates(status: 'pending' | 'approved' | 'rejected', limit: number, signal?: AbortSignal): Promise<KnowledgeCandidate[]>
   review(id: string, decision: ReviewDecision, signal?: AbortSignal): Promise<KnowledgeCandidate>
   approvePendingBatch(limit: number, excludeIds?: string[], signal?: AbortSignal): Promise<CandidateBatchReviewResult>

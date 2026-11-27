@@ -541,19 +541,21 @@ test('direct write approves all non-conflicts and skips unmounted sessions', asy
     },
   })
 
+  const observer = new LocalKnowledgeProvider(databasePath)
+  t.after(() => observer.close())
+
+  // No library selected: nothing is recalled, written or queued for automatic extraction.
   const unmounted = sessionFor('unmounted', 1)
   await listeners.get('agent/turn-stopping')({ agent: { session: unmounted }, turn: 1, signal: new AbortController().signal })
   assert.equal(streamCalls, 0)
   assert.equal(unmounted.events.at(-1).type, 'assistant/message')
+  assert.equal(await observer.extractionJob('unmounted:1'), undefined, 'an unselected session queues no automatic extraction')
 
-  const observer = new LocalKnowledgeProvider(databasePath)
-  t.after(() => observer.close())
   const existing = await observer.create({ group: '测试分组',
     knowledgeBaseId: 'default', title: 'Existing policy', body: 'Keep the existing behavior.',
     type: 'decision', tags: ['policy'], scope: { kind: 'global' }, confidence: 1,
   })
   targetId = existing.id
-  await waitForJob(observer, 'unmounted:1')
   await observer.upsertMount({
     targetKind: 'project', targetId: '/workspace/direct', knowledgeBaseId: 'default',
     enabled: true, recallEnabled: true, writeMode: 'direct', includeTags: [], excludeTags: [], extractionInstructions: '',

@@ -33,7 +33,17 @@
 - 低置信点击「指定分类」。失败可查阶段与错误后重试；进程重启后的旧任务需明确续跑，不自动重放。
 - 仅 full 抽取进入成文，partial 放工作区 _meta/待补抽；只登记不抽取的类型（.mp4/.exe/.rar/.zip/.msi/.7z/.doc）只写来源回执（原位登记），不抽取、不生成 raw、不蒸馏。
 - 模型无文件或 Shell 工具。结果由宿主写入文件并更新索引。
-- 模型建议替换现有页时，在「蒸馏更新审核」看候选全文并批准/拒绝；批准后回任务重试以完成素材回执。
+- 模型建议替换现有页时直接写入（无待审候选）：范围与任务一致且当前字节哈希与清单一致时写入该页（version 递增、保留页面身份），并在 log.md 追加「更新时间/页面/来源 sha」审计行；外部已改导致哈希不符时整项失败（WIKI_EXTERNAL_EDIT_CONFLICT），绝不覆盖。
+- 已知边界：蒸馏更新只替换页面正文与 front matter，不改页面文件名/relPath；若模型给出新标题，index.md 中该页既有条目不会随之刷新（index 只追加新页，不重写既有行），需重建索引或人工修正。
+
+## 写入策略：选择库 + 自动按分类路由，命令只新建
+
+- **自动回写保持开启**：回答结束后的自动提取只使用**当前会话选中的库**（见下条），按分类路由正常写入；未选择库时不召回、不写、不排队自动提取，界面统一提示「未选择知识库」，不出现“未挂载可写知识库”这类像故障的提示。不按“库类型”分支——普通库与已接入 Wiki 库走同一条路径，内部实现区分不出现在界面或错误文案里。
+- **命令写入只新建**：统一 `knowledge` 工具新增操作 `conversation_save`，参数 `sessionId`、`title`、`body`，可选 `projectId`、`sourcePath`。目标库固定为**当前会话选中的知识库**（会话级挂载；不接受任意库 id，未选择时直接拒绝「未选择知识库，未写入」，不回退到项目默认库），且必须满足 `conversationEnabled=true` 与会话对该库有直接写入权限。否则返回明确原因码（`WIKI_CONVERSATION_SAVE_NO_SELECTION` / `_UNSUPPORTED_TARGET` / `_DISABLED` / `_READ_ONLY` / `_AMBIGUOUS` / `_SESSION_MISMATCH`）。
+- **会话内选择库**：对话输入框左侧的「知识库」选择器（`GET/POST /knowledge-control/v1/mount-selection`，同源会话接口，仅本地后端）默认「不使用知识库」；选择会写入一条会话级挂载并把它设为唯一生效（同会话其它库置为 disabled，重复选择保留原有写入授权），切换在下一次回答生效；未选择时不召回、命令写入返回 `WIKI_CONVERSATION_SAVE_NO_SELECTION`。项目级挂载保留，但同一知识库的会话选择优先。选择即授权本会话写入（会话挂载 `writeMode=direct`）；命令写入仍要求该库 `conversationEnabled=true`。
+- 写入固定为**新建**页面 `wiki/notes/<hash>.md`：不提供 `targetPageId`，不覆盖既有页，不生成待审候选。`scope` 取命令给出的项目范围，缺省为 global。`operationId` 由 session+turn+title+body 派生，同一命令重复调用幂等（返回 `duplicate:true` 与同一 pageId/relPath）。成功后返回真实 `knowledgeBaseId`/`entryId`/`pageId`/`relPath` 与首段摘要，供回答里贴回核对；模型不得自行声称“已保存”。
+- `provenance` 落盘记录 `kind=conversation`、`sessionId`、`turn`，以及引用文档时的 `sourcePath`，便于事后追溯。
+- **更新旧页仍走蒸馏写入路径**：只有针对资料蒸馏的自动更新会修改既有页，并保留 hash/scope 冲突保护（外部修改 → 整项失败不覆盖）；命令写入不承担更新语义。
 
 ## 会话与人工编辑
 
@@ -66,7 +76,7 @@
 
 已配置的旧版本不会自动当成已接入，需要完成一次接入检查。部分接入逐文件显示异常；正常页先可用，异常文件保留不覆盖，修复后再次接入可恢复原身份。空库接入后可投递新原件。
 
-日常点击「扫描更新」：先登记新增成文，再处理原件根目录新投递；根层文件夹按一次投递递归收集，保留相对层级。运行任务会复用，不重复入队。结果显示关联页，只读查看；仅登记的文件明确不等同生成知识页。待审核旧页不自动替换。网络轮询失败最多重试3次并提示；离开页面撤销请求。
+日常点击「扫描更新」：先登记新增成文，再处理原件根目录新投递；根层文件夹按一次投递递归收集，保留相对层级。运行任务会复用，不重复入队。结果显示关联页，只读查看；仅登记的文件明确不等同生成知识页。同主题旧页由模型建议更新时直接写入（范围一致 + 字节哈希校验），log.md 留审计行；外部已改则该项失败且不覆盖。网络轮询失败最多重试3次并提示；离开页面撤销请求。
 
 只读检查、重建索引、恢复中断提交及手工编辑保留在高级诊断，不再独立显示「存量接管」。
 
@@ -81,3 +91,5 @@
 大小限制：只登记不抽取的类型（.mp4/.exe/.rar/.zip/.msi/.7z/.doc）不受 256 MB 上限，处理时**原位登记**：只写来源回执（sha、大小、原始绝对路径、发现时间、`registered: true`），不分类、不调用模型、不复制、不移动、不生成 raw 与知识页，任务项显示「已登记（原位，不搬运）」；重复扫描按回执 sha 跳过，原件被移动或改名后变化检测按 missing 报告且不自动改动知识库。其余可抽取类型仍限 256 MB，超过的文件不排队，而是在扫描结果的 `skipped:[{name,size,reason}]` 与界面「因过大未处理」区逐条说明，不静默跳过。
 
 资料变化检测（只读）：`WikiIngest.changes(kbId)` 对比源文件夹与归档记录，返回 `new/changed/missing/skipped + scannedAt`。`new` 是源根文件与投递夹里没有任何回执/清单记录的文件；`changed` 是回执或清单记录的已归档路径仍在但当前 sha 与记录不同；`missing` 是记录的路径已不存在（原位登记的原件被移动或改名也在这里报告）；`skipped` 与扫描预览同一判定（例如可抽取类型超过 256 MB），原样说明未处理项。`new/changed/missing` 都为空但 `skipped` 非空时仍算“有未处理项”，不能当成资料未变化。证据只用回执（`wiki_source_receipts`、`_meta/knowledge/sources`）、`knowledge-archive.csv` 与 `归档清单.csv`，不靠文件名猜测；检查不移动/删除/重命名任何文件、不调用模型、不写 Wiki 页面，也不自动修复，结果写入 `wiki_change_reports` 供界面读取。管理接口：`POST /wiki/:kbId/changes` 立即检查并持久化，`GET /wiki/:kbId/changes` 读取上次结果。插件配置 `wikiChangeCheckMinutes`（默认 15，0 关闭）驱动定时检查，仅针对已接入库；有处理任务在跑时跳过该轮（返回 `skippedRound`），失败只记日志不抛出。为控制开销，已归档文件按 size+mtime 缓存哈希；>8MiB 的已归档文件仅按大小校验（同尺寸内容改动不会报 changed），不反复重读。
+
+任务管理（只改任务记录）：已取消任务会从默认 `jobs()` 列表隐藏（记录保留，`GET /wiki/:kbId/jobs?includeHidden=true` 可审计，返回该库全部任务记录、不受默认列表 50 条限制），且不能被续跑（`WIKI_JOB_CANCELLED`）或重新指定分类；运行中任务不能被隐藏（先取消）。已结束任务可用 `POST /wiki/:kbId/job/:id {action:'dismiss'}` 隐藏，或用 `POST /wiki/:kbId/job {action:'dismiss-finished'}` 批量隐藏并返回数量；隐藏不移动/删除任何文件。

@@ -7,7 +7,17 @@ import { createWikiPage } from './identity.js'
 import { renderWikiPage, parseWikiMarkdown } from './markdown.js'
 import { wikiHash, type WikiTarget } from './commit.js'
 
-/** Structured, tool-free distillation. The host owns all paths, hashes and publication. */
+/** Append-only index/log targets keep the audit trail; an existing file is only extended. */
+async function appendTarget(root:string,name:'index.md'|'log.md',line:string):Promise<WikiTarget>{
+  let old:Buffer|null=null
+  try{old=await readFile(join(root,name))}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e}
+  return {relPath:name,expectedHash:old?wikiHash(old):null,bytes:Buffer.concat([old??Buffer.alloc(0),Buffer.from(line)])}
+}
+/**
+ * Structured, tool-free distillation. The host owns all paths, hashes and publication.
+ * A suggested update to an existing page is written directly: scope and hash checks are the guards,
+ * there is no manual review gate, and log.md keeps the audit trail.
+ */
 export function createWikiDistiller(bridge: WikiProviderBridge, model: WikiModel): WikiDistiller {
   return async (kbId,item,settings,operationId,signal) => {
     const store=bridge.store(kbId)
@@ -16,11 +26,7 @@ export function createWikiDistiller(bridge: WikiProviderBridge, model: WikiModel
     await store.committer.assertSettled()
     const manifest=await store.manifest()
     const prior=manifest.pages.find(p=>p.relPath===relPath)
-    if(prior){await bridge.rebuild(kbId);return[prior.relPath]}
-    const priorUpdate=bridge.proposals.list(kbId).find(p=>p.id===slug)
-    if(priorUpdate?.state==='approved')return[(await store.page(priorUpdate.pageId)).page.relPath]
-    if(priorUpdate?.state==='rejected')throw new Error('WIKI_DISTILL_PROPOSAL_REJECTED')
-    if(priorUpdate)throw new Error('WIKI_DISTILL_UPDATE_REQUIRES_REVIEW:'+priorUpdate.id)
+    if(prior){await bridge.rebuild(kbId);return{pages:[prior.relPath],updated:[]}}
     const schema=await readFile(join(store.layout.workspaceRoot,'schema.md'),'utf8')
     const raw=await readFile(item.raw!,'utf8')
     const related=[]
@@ -50,34 +56,31 @@ export function createWikiDistiller(bridge: WikiProviderBridge, model: WikiModel
     const provenance={kind:'distill' as const,sourceId:item.id,sourceSha256:item.sha}
     const target=typeof result.targetPageId==='string'?manifest.pages.find(p=>p.pageId===result.targetPageId&&p.status==='active'):undefined
     if(result.targetPageId&&!target)throw new Error('WIKI_DISTILL_TARGET_UNKNOWN')
-    let page=target,values:Record<string,unknown>={},expectedHash:string|null=null
+    const now=new Date().toISOString(),values:Record<string,unknown>={}
     if(target){
+      // Only the same page, same scope may be replaced; a cross-scope update is never written.
       if(JSON.stringify(target.scope)!==JSON.stringify(settings.scope))throw new Error('WIKI_DISTILL_SCOPE_MISMATCH')
-      const existing=await store.page(target.pageId)
-      expectedHash=wikiHash(existing.bytes)
-      if(target.fileSha256!==expectedHash)throw new Error('WIKI_EXTERNAL_EDIT_REQUIRES_REINDEX')
-      values=parseWikiMarkdown(existing.bytes).frontMatter.values
+      // A replay that already landed must not rewrite the page with a fresh timestamp.
+      if(target.lastOperation===operationId)return{pages:[target.relPath],updated:[target.relPath]}
+      const existing=await store.page(target.pageId),expectedHash=wikiHash(existing.bytes)
+      // Conflict guard: the bytes on disk must still be exactly what the manifest recorded.
+      if(target.fileSha256!==expectedHash)throw new Error('WIKI_EXTERNAL_EDIT_CONFLICT: '+target.relPath)
+      const existingValues=parseWikiMarkdown(existing.bytes).frontMatter.values
+      Object.assign(values,existingValues)
       const existingSources=Array.isArray(values.sources)?values.sources.filter(v=>typeof v==='string'):[]
-      const bytes=renderWikiPage({title:result.title,body:result.body,frontMatter:{...values,tags,keywords,updated:new Date().toISOString(),sources:[...new Set([...existingSources,item.archived])]}})
-      const id=wikiHash(Buffer.from(operationId))
-      const priorProposal=bridge.proposals.list(kbId).find(p=>p.id===id)
-      if(priorProposal?.state==='approved')return[target.relPath]
-      if(priorProposal?.state==='rejected')throw new Error('WIKI_DISTILL_PROPOSAL_REJECTED')
-      bridge.proposals.put({id,kbId,pageId:target.pageId,expectedHash,bytes:Buffer.from(bytes).toString('base64'),provenance,state:'pending',sourceSha:item.sha,createdAt:new Date().toISOString()})
-      throw new Error('WIKI_DISTILL_UPDATE_REQUIRES_REVIEW:'+id)
+      const bytes=renderWikiPage({title:result.title,body:result.body,frontMatter:{...values,tags,keywords,updated:now,sources:[...new Set([...existingSources,item.archived])]}})
+      // Accepted update: the store's compare-and-set on the observed hash is the only gate.
+      const log=await appendTarget(store.layout.workspaceRoot,'log.md',`\n- ${now} 更新 ${target.relPath} ← 来源 sha256 ${item.sha}（原件 ${item.archived}）(${operationId})\n`)
+      signal.throwIfAborted()
+      await store.save(target.pageId,bytes,expectedHash,provenance,operationId,[log])
+      return{pages:[target.relPath],updated:[target.relPath]}
     }
-    page=createWikiPage(kbId,relPath,settings.scope,provenance)
-    const now=new Date().toISOString()
+    const page=createWikiPage(kbId,relPath,settings.scope,provenance)
     const bytes=renderWikiPage({title:result.title,body:result.body,frontMatter:{...values,tags,keywords,author:'Knowledge',created:now,updated:now,sources:[item.archived],scope:settings.scope,provenance:'distill'}})
     page.fileSha256=wikiHash(bytes);manifest.pages.push(page)
-    const extra:WikiTarget[]=[]
-    for(const name of ['index.md','log.md']){
-      let old:Buffer|null=null
-      try{old=await readFile(join(store.layout.workspaceRoot,name))}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e}
-      const line=name==='index.md'?`\n- [${result.title.replace(/[\[\]\r\n]/g,' ')}](${page.relPath})\n`:`\n- ${now} Knowledge 新增 ${page.relPath} ← ${item.archived} (${operationId})\n`
-      extra.push({relPath:name,expectedHash:old?wikiHash(old):null,bytes:Buffer.concat([old??Buffer.alloc(0),Buffer.from(line)])})
-    }
-    await store.committer.commit({operationId,targets:[{relPath:page.relPath,expectedHash,bytes},await store.manifestTarget(manifest),...extra]},()=>signal.throwIfAborted())
-    return[page.relPath]
+    const extra:WikiTarget[]=[await appendTarget(store.layout.workspaceRoot,'index.md',`\n- [${result.title.replace(/[\[\]\r\n]/g,' ')}](${page.relPath})\n`),
+      await appendTarget(store.layout.workspaceRoot,'log.md',`\n- ${now} Knowledge 新增 ${page.relPath} ← ${item.archived} (${operationId})\n`)]
+    await store.committer.commit({operationId,targets:[{relPath:page.relPath,expectedHash:null,bytes},await store.manifestTarget(manifest),...extra]},()=>signal.throwIfAborted())
+    return{pages:[page.relPath],updated:[]}
   }
 }

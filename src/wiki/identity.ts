@@ -5,7 +5,7 @@ import type { FrontMatterSalvage } from './markdown.js'
 export type WikiProvenance =
   | { kind: 'import'; originalPath: string }
   | { kind: 'manual'; actor: string }
-  | { kind: 'conversation'; sessionId: string; turn: number; messageId?: string }
+  | { kind: 'conversation'; sessionId: string; turn: number; messageId?: string; /** Document referenced by the saved conversation piece, kept for traceability. */ sourcePath?: string }
   | { kind: 'distill'; sourceId: string; sourceSha256: string }
 
 export interface WikiPage {
@@ -65,7 +65,8 @@ function provenanceOf(value: unknown): WikiProvenance {
     case 'conversation': {
       if (!Number.isSafeInteger(p.turn) || Number(p.turn) < 0) throw new Error('WIKI_PROVENANCE_INVALID')
       return { kind: 'conversation', sessionId: text(p.sessionId), turn: Number(p.turn),
-        ...(p.messageId === undefined ? {} : { messageId: text(p.messageId) }) }
+        ...(p.messageId === undefined ? {} : { messageId: text(p.messageId) }),
+        ...(p.sourcePath === undefined ? {} : { sourcePath: text(p.sourcePath) }) }
     }
     default: throw new Error('WIKI_PROVENANCE_UNKNOWN')
   }

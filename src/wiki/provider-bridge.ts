@@ -27,6 +27,7 @@ import { parseWikiMarkdown, renderWikiPage } from './markdown.js'
 
 export class WikiProviderBridge {
   readonly ingest: WikiIngest
+  /** @deprecated Updates are written directly by distillation; kept for historical proposal rows and API compatibility. */
   readonly proposals: WikiProposals
   /** Prepared once: this is consulted on every entry sync, so it must stay cheap. */
   private readonly hasStmt
@@ -92,7 +93,7 @@ export class WikiProviderBridge {
           const metadata = await readdir(old.layout.metaDir).catch((error: NodeJS.ErrnoException) => { if(error.code === 'ENOENT') return []; throw error })
           const nested = await readdir(old.layout.pageDir).catch((error: NodeJS.ErrnoException) => { if(error.code === 'ENOENT') return []; throw error })
           const indexed = this.db.prepare('SELECT 1 FROM knowledge_entries WHERE knowledge_base_id=? LIMIT 1').get(input.kbId)
-          if (metadata.length || nested.length || indexed || this.ingest.jobs(input.kbId).length) throw new Error('WIKI_RELOCATION_REQUIRES_DETACH')
+          if (metadata.length || nested.length || indexed || this.ingest.jobs(input.kbId, true).length) throw new Error('WIKI_RELOCATION_REQUIRES_DETACH')
           // Explicit correction of an unused wrong binding only. Never move or delete user files.
           const corrected = resolveWikiLayout({ kbId: input.kbId, sourceDir: await realpath(input.sourceDir), workspaceRoot: await realpath(workspaceRoot), ...(input.rawDir ? {rawDir:input.rawDir} : {}) })
           for (const other of this.list().filter(item => item.kbId !== input.kbId)) {
@@ -212,7 +213,8 @@ export class WikiProviderBridge {
     await store.committer.recover()
     await store.committer.assertSettled()
     if (draft.source && (!draft.source.sessionId || !Number.isSafeInteger(draft.source.turn))) throw new Error('WIKI_CONVERSATION_SOURCE_INCOMPLETE')
-    const provenance = draft.source ? { kind: 'conversation' as const, sessionId: draft.source.sessionId!, turn: draft.source.turn! } : { kind: 'manual' as const, actor: 'management' }
+    const provenance = draft.source ? { kind: 'conversation' as const, sessionId: draft.source.sessionId!, turn: draft.source.turn!,
+      ...(draft.source.sourcePath === undefined ? {} : { sourcePath: draft.source.sourcePath }) } : { kind: 'manual' as const, actor: 'management' }
     if (target) {
       const previousOperation = (await store.manifest()).pages.find(p => p.entryId === target.id)
       if (previousOperation?.lastOperation === operationId) { await this.rebuild(draft.knowledgeBaseId); return target.id }

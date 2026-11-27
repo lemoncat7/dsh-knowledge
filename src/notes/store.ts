@@ -1,34 +1,35 @@
-import { hash, noteFingerprint, treeFingerprint, syncError, type NoteSyncChange, type NoteManifest } from './sync-protocol.js'
-import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { constants as fileConstants, copyFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
-import { open, readFile, rename, rm } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { mkdirSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { atomicWriteFile } from '../atomic-file.js'
-import { decodePageCursor, encodePageCursor } from '../page-cursor.js'
-import {
-  isEditableNoteNode,
-  isNoteId,
-  type NoteFileUpload,
-  type NoteListRequest,
-  type NoteNode,
-  type NoteNodeKind,
-  type NoteShare,
-  type NoteVersion,
-} from './domain.js'
+import { isEditableNoteNode, type NoteFileUpload, type NoteListRequest, type NoteNode, type NoteNodeKind, type NoteShare, type NoteVersion } from './domain.js'
+import { migrateNotes } from './note-store-schema.js'
+import { NoteStoreCrud } from './note-store-crud.js'
+import { NoteStoreMutations } from './note-store-mutations.js'
+import { NoteStoreShares } from './note-store-shares.js'
+import { NoteStoreVersions } from './note-store-versions.js'
+import { NoteStoreSync } from './note-store-sync.js'
+import type { NoteStoreHost } from './note-store-internal.js'
+import type { NoteSyncChange, NoteManifest } from './sync-protocol.js'
 
-type SqlRow = Record<string, unknown>
+export { normalizeNoteName } from './note-store-internal.js'
 
-const MAX_NOTE_BYTES = 64 * 1024 * 1024
-const MAX_NOTE_NAME_LENGTH = 255
-const NOTE_SHARE_TOKEN_PATTERN = /^share_[A-Za-z0-9_-]{32}$/
-
+/**
+ * Node-tree store skeleton: owns the database, filesystem paths, the per-node content lock and the
+ * initialization/migration lifecycle, and delegates each note subdomain to its own module.
+ */
 export class NoteStore {
   private readonly db: DatabaseSync
   private readonly objectsPath: string
   private readonly versionsPath: string
   private readonly contentMutationTails = new Map<string, Promise<void>>()
   private closed = false
+  private readonly crud: NoteStoreCrud
+  private readonly mutations: NoteStoreMutations
+  private readonly shares: NoteStoreShares
+  private readonly versions: NoteStoreVersions
+  private readonly sync: NoteStoreSync
 
   constructor(private readonly rootPath: string, private readonly removeOnClose = false) {
     this.objectsPath = join(rootPath, 'objects')
@@ -40,7 +41,7 @@ export class NoteStore {
       isEditableNoteNode({ kind: String(kind) as NoteNodeKind, name: String(name),
         mediaType: mediaType === null ? null : String(mediaType) }) ? 1 : 0)
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
-    this.migrate()
+    migrateNotes(this.db, { objectsPath: this.objectsPath, versionsPath: this.versionsPath })
     this.db.exec('CREATE TABLE IF NOT EXISTS note_version_sources(note_id TEXT NOT NULL, version INTEGER NOT NULL, source TEXT NOT NULL, PRIMARY KEY(note_id,version));')
     this.db.exec(`CREATE TABLE IF NOT EXISTS note_sync_content(note_id TEXT NOT NULL REFERENCES note_nodes(id) ON DELETE CASCADE, version INTEGER NOT NULL, content BLOB NOT NULL, PRIMARY KEY(note_id,version));
       CREATE TABLE IF NOT EXISTS note_sync_receipts(actor TEXT NOT NULL, operation_id TEXT NOT NULL, digest TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(actor,operation_id));
@@ -48,506 +49,85 @@ export class NoteStore {
       PRAGMA user_version=4;`)
     this.db.prepare("INSERT OR IGNORE INTO note_sync_meta VALUES('instance',?)").run(randomUUID())
     this.db.exec("CREATE INDEX IF NOT EXISTS note_page_order ON note_nodes(parent_key, (CASE kind WHEN 'folder' THEN 0 ELSE 1 END), name COLLATE NOCASE, id);")
-  }
-
-  list(request: NoteListRequest = {}): NoteNode[] {
-    this.assertOpen()
-    const query = request.query?.trim() ?? ''
-    const limit = normalizeLimit(request.limit)
-    if (request.kind !== undefined && !['folder', 'document', 'file'].includes(request.kind)) throw new Error('invalid note kind')
-    if (request.kind !== undefined || request.recursive || request.editableOnly) {
-      const clauses: string[] = []
-      const args: (string | number)[] = []
-      if (query) { clauses.push("name LIKE ? ESCAPE '\\'"); args.push(`%${escapeLike(query)}%`) }
-      else if (!request.recursive) {
-        const parentId = normalizeParentId(request.parentId)
-        if (parentId !== null) this.assertFolder(parentId)
-        clauses.push('parent_key = ?'); args.push(parentKey(parentId))
-      }
-      if (request.kind !== undefined) { clauses.push('kind = ?'); args.push(request.kind) }
-      if (request.editableOnly) clauses.push('note_is_editable(kind,name,media_type) = 1')
-      return (this.db.prepare(`SELECT ${NOTE_COLUMNS} FROM note_nodes
-        ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
-        ORDER BY CASE kind WHEN 'folder' THEN 0 ELSE 1 END, name COLLATE NOCASE, id LIMIT ?
-      `).all(...args, limit) as SqlRow[]).map(mapNoteNode)
+    const host: NoteStoreHost = {
+      db: this.db,
+      objectsPath: this.objectsPath,
+      versionsPath: this.versionsPath,
+      contentMutationTails: this.contentMutationTails,
+      assertOpen: () => this.assertOpen(),
     }
-    if (query.length > 0) {
-      return (this.db.prepare(`
-        SELECT ${NOTE_COLUMNS}
-        FROM note_nodes
-        WHERE name LIKE ? ESCAPE '\\'
-        ORDER BY CASE kind WHEN 'folder' THEN 0 ELSE 1 END, name COLLATE NOCASE, id
-        LIMIT ?
-      `).all(`%${escapeLike(query)}%`, limit) as SqlRow[]).map(mapNoteNode)
-    }
-    const parentId = normalizeParentId(request.parentId)
-    if (parentId !== null) this.assertFolder(parentId)
-    return (this.db.prepare(`
-      SELECT ${NOTE_COLUMNS}
-      FROM note_nodes
-      WHERE parent_key = ?
-      ORDER BY CASE kind WHEN 'folder' THEN 0 ELSE 1 END, name COLLATE NOCASE, id
-      LIMIT ?
-    `).all(parentKey(parentId), limit) as SqlRow[]).map(mapNoteNode)
+    this.crud = new NoteStoreCrud(host)
+    this.mutations = new NoteStoreMutations({ ...host, tree: this.crud.tree() })
+    this.shares = new NoteStoreShares({ ...host, tree: this.crud.tree() })
+    this.versions = new NoteStoreVersions({ ...host, tree: this.crud.tree() })
+    this.sync = new NoteStoreSync({ ...host, tree: this.crud.tree() })
   }
 
-  get(id: string): NoteNode | undefined {
-    this.assertOpen()
-    assertNoteId(id)
-    const row = this.db.prepare(`SELECT ${NOTE_COLUMNS} FROM note_nodes WHERE id=?`).get(id) as SqlRow | undefined
-    return row === undefined ? undefined : mapNoteNode(row)
-  }
+  list(request: NoteListRequest = {}): NoteNode[] { return this.crud.list(request) }
 
-  listPage(request: NoteListRequest = {}, cursor?: string) {
-    this.assertOpen()
-    const query = request.query?.trim() || ''
-    const parentId = normalizeParentId(request.parentId)
-    const scope = JSON.stringify(['notes', query, query || request.recursive ? null : parentId, request.kind || '', Boolean(request.recursive), Boolean(request.editableOnly)])
-    const after = decodePageCursor(cursor, scope, ['number', 'string', 'string'])
-    const conditions: string[] = [], args: (string | number)[] = []
-    if (request.kind && !['folder', 'document', 'file'].includes(request.kind)) throw new Error('invalid note kind')
-    if (query) { conditions.push("name LIKE ? ESCAPE '\\'"); args.push(`%${escapeLike(query)}%`) }
-    else if (!request.recursive) {
-      if (parentId !== null) this.assertFolder(parentId)
-      conditions.push('parent_key = ?'); args.push(parentKey(parentId))
-    }
-    if (request.kind) { conditions.push('kind = ?'); args.push(request.kind) }
-    if (request.editableOnly) conditions.push('note_is_editable(kind,name,media_type) = 1')
-    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
-    const total = Number((this.db.prepare(`SELECT count(*) AS total FROM note_nodes ${where}`).get(...args) as SqlRow).total)
-    const rank = "CASE kind WHEN 'folder' THEN 0 ELSE 1 END"
-    if (after) {
-      conditions.push(`(${rank}, name COLLATE NOCASE, id) > (?, ?, ?)`)
-      args.push(...after)
-    }
-    const size = normalizeLimit(request.limit)
-    const rows = this.db.prepare(`SELECT ${NOTE_COLUMNS} FROM note_nodes
-      ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''}
-      ORDER BY ${rank}, name COLLATE NOCASE, id LIMIT ?`).all(...args, size + 1) as SqlRow[]
-    const items = rows.slice(0, size).map(mapNoteNode), last = items.at(-1)
-    return { items, total, nextCursor: rows.length > size && last ? encodePageCursor(scope, [last.kind === 'folder' ? 0 : 1, last.name, last.id]) : undefined }
-  }
+  get(id: string): NoteNode | undefined { return this.crud.get(id) }
 
-  subtree(id: string): NoteNode[] {
-    this.assertOpen()
-    assertNoteId(id)
-    const rows = this.db.prepare(`
-      WITH RECURSIVE descendants(id) AS (
-        SELECT id FROM note_nodes WHERE id=?
-        UNION ALL
-        SELECT child.id FROM note_nodes child JOIN descendants parent ON child.parent_id=parent.id
-      )
-      SELECT ${NOTE_COLUMNS} FROM note_nodes WHERE id IN (SELECT id FROM descendants)
-    `).all(id) as SqlRow[]
-    if (rows.length === 0) throw notFound(`note node "${id}" was not found`)
-    return rows.map(mapNoteNode)
-  }
+  listPage(request: NoteListRequest = {}, cursor?: string) { return this.crud.listPage(request, cursor) }
 
-  listSharedSubtree(id: string, limit = 500): NoteNode[] {
-    this.assertOpen()
-    assertNoteId(id)
-    const boundedLimit = Number.isInteger(limit) ? Math.min(1000, Math.max(1, limit)) : 500
-    const rows = this.db.prepare(`
-      WITH RECURSIVE descendants(id) AS (
-        SELECT id FROM note_nodes WHERE id=?
-        UNION ALL
-        SELECT child.id FROM note_nodes child JOIN descendants parent ON child.parent_id=parent.id
-      )
-      SELECT ${NOTE_COLUMNS} FROM note_nodes WHERE id IN (SELECT id FROM descendants)
-      ORDER BY CASE kind WHEN 'folder' THEN 0 ELSE 1 END, name COLLATE NOCASE, id
-      LIMIT ?
-    `).all(id, boundedLimit) as SqlRow[]
-    if (rows.length === 0) throw notFound(`note node "${id}" was not found`)
-    return rows.map(mapNoteNode)
-  }
+  subtree(id: string): NoteNode[] { return this.crud.subtree(id) }
 
-  isWithin(rootId: string, candidateId: string): boolean {
-    this.assertOpen()
-    assertNoteId(rootId)
-    assertNoteId(candidateId)
-    if (rootId === candidateId) return this.get(rootId) !== undefined
-    return this.db.prepare(`
-      WITH RECURSIVE descendants(id) AS (
-        SELECT id FROM note_nodes WHERE parent_id=?
-        UNION ALL
-        SELECT child.id FROM note_nodes child JOIN descendants parent ON child.parent_id=parent.id
-      )
-      SELECT 1 FROM descendants WHERE id=? LIMIT 1
-    `).get(rootId, candidateId) !== undefined
-  }
+  listSharedSubtree(id: string, limit = 500): NoteNode[] { return this.shares.listSharedSubtree(id, limit) }
 
-  listShares(): NoteShare[] {
-    this.assertOpen()
-    const rows = this.db.prepare(`
-      SELECT ${NOTE_SHARE_COLUMNS}
-      FROM note_shares s JOIN note_nodes n ON n.id=s.note_id
-      ORDER BY s.updated_at DESC, s.id
-    `).all() as SqlRow[]
-    return rows.map(row => this.mapShare(row))
-  }
+  isWithin(rootId: string, candidateId: string): boolean { return this.crud.isWithin(rootId, candidateId) }
 
-  getShareByNoteId(noteId: string): NoteShare | undefined {
-    this.assertOpen()
-    assertNoteId(noteId)
-    const row = this.db.prepare(`
-      SELECT ${NOTE_SHARE_COLUMNS}
-      FROM note_shares s JOIN note_nodes n ON n.id=s.note_id
-      WHERE s.note_id=?
-    `).get(noteId) as SqlRow | undefined
-    return row === undefined ? undefined : this.mapShare(row)
-  }
+  listShares(): NoteShare[] { return this.shares.listShares() }
 
-  getShareByToken(token: string): NoteShare | undefined {
-    this.assertOpen()
-    if (!NOTE_SHARE_TOKEN_PATTERN.test(token)) return undefined
-    const row = this.db.prepare(`
-      SELECT ${NOTE_SHARE_COLUMNS}
-      FROM note_shares s JOIN note_nodes n ON n.id=s.note_id
-      WHERE s.token=?
-    `).get(token) as SqlRow | undefined
-    return row === undefined ? undefined : this.mapShare(row)
-  }
+  getShareByNoteId(noteId: string): NoteShare | undefined { return this.shares.getShareByNoteId(noteId) }
 
-  createShare(noteId: string): NoteShare {
-    this.assertOpen()
-    const node = this.requireNode(noteId)
-    const existing = this.getShareByNoteId(noteId)
-    if (existing !== undefined) return existing
-    const id = `share_${randomUUID().replaceAll('-', '')}`
-    const token = `share_${randomBytes(24).toString('base64url')}`
-    const timestamp = new Date().toISOString()
-    const result = this.db.prepare(`
-      INSERT INTO note_shares(id,note_id,token,created_at,updated_at) VALUES(?,?,?,?,?)
-      ON CONFLICT(note_id) DO NOTHING
-    `).run(id, noteId, token, timestamp, timestamp)
-    if (result.changes === 0) return this.getShareByNoteId(noteId) as NoteShare
-    return { id, noteId, token, createdAt: timestamp, updatedAt: timestamp, node }
-  }
+  getShareByToken(token: string): NoteShare | undefined { return this.shares.getShareByToken(token) }
 
-  deleteShare(noteId: string): boolean {
-    this.assertOpen()
-    assertNoteId(noteId)
-    return this.db.prepare('DELETE FROM note_shares WHERE note_id=?').run(noteId).changes === 1
-  }
+  createShare(noteId: string): NoteShare { return this.shares.createShare(noteId) }
 
-  async createFolder(name: string, parentId: string | null = null): Promise<NoteNode> {
-    return this.createNode('folder', name, parentId, null, Buffer.alloc(0))
-  }
+  deleteShare(noteId: string): boolean { return this.shares.deleteShare(noteId) }
 
-  async createDocument(name: string, parentId: string | null = null, content = ''): Promise<NoteNode> {
-    const normalized = name.trim().toLocaleLowerCase().endsWith('.md') ? name : `${name}.md`
-    return this.createNode('document', normalized, parentId, 'text/markdown', Buffer.from(content, 'utf8'))
-  }
+  async createFolder(name: string, parentId: string | null = null): Promise<NoteNode> { return this.mutations.createFolder(name, parentId) }
 
-  async upload(upload: NoteFileUpload): Promise<NoteNode> {
-    return this.createNode('file', upload.name, upload.parentId ?? null, upload.mediaType, Buffer.from(upload.content))
-  }
+  async createDocument(name: string, parentId: string | null = null, content = ''): Promise<NoteNode> { return this.mutations.createDocument(name, parentId, content) }
 
-  async read(id: string): Promise<{ node: NoteNode; content: Buffer }> {
-    const node = this.get(id)
-    if (node === undefined) throw notFound(`note node "${id}" was not found`)
-    if (node.kind === 'folder') throw inputError('folders do not have file content')
-    try {
-      const blob = this.db.prepare('SELECT content FROM note_sync_content WHERE note_id=? AND version=?').get(id,node.version) as {content:Uint8Array}|undefined
-      const content = blob ? Buffer.from(blob.content) : await readFile(this.objectPath(id))
-      if (content.byteLength !== node.size) throw new Error(`note node "${id}" has an invalid stored size`)
-      return { node, content }
-    } catch (error) {
-      if (isNodeError(error, 'ENOENT')) throw notFound(`note content "${id}" was not found`)
-      throw error
-    }
-  }
+  async upload(upload: NoteFileUpload): Promise<NoteNode> { return this.mutations.upload(upload) }
 
-  async readPreview(id: string, maximumBytes: number): Promise<{ node: NoteNode; content: Buffer; truncated: boolean }> {
-    const node = this.get(id)
-    if (node === undefined) throw notFound(`note node "${id}" was not found`)
-    if (node.kind === 'folder') throw inputError('folders do not have file content')
-    const limit = Number.isInteger(maximumBytes) ? Math.min(MAX_NOTE_BYTES, Math.max(1, maximumBytes)) : 512 * 1024
-    const size = Math.min(node.size, limit)
-    const blob = this.db.prepare('SELECT content FROM note_sync_content WHERE note_id=? AND version=?').get(id,node.version) as {content:Uint8Array}|undefined
-    if(blob) return {node,content:Buffer.from(blob.content).subarray(0,size),truncated:node.size>size}
-    const content = Buffer.alloc(size)
-    let file: Awaited<ReturnType<typeof open>> | undefined
-    try {
-      file = await open(this.objectPath(id), 'r')
-      const { bytesRead } = await file.read(content, 0, size, 0)
-      if (bytesRead !== size) throw new Error(`note node "${id}" has an invalid stored size`)
-      return { node, content, truncated: node.size > size }
-    } catch (error) {
-      if (isNodeError(error, 'ENOENT')) throw notFound(`note content "${id}" was not found`)
-      throw error
-    } finally {
-      await file?.close().catch(() => {})
-    }
-  }
+  async read(id: string): Promise<{ node: NoteNode; content: Buffer }> { return this.crud.read(id) }
 
-  async readSnapshot(id: string): Promise<{ node: NoteNode; content: Buffer }> {
-    return this.enqueueContentMutation(id, () => this.read(id))
-  }
+  async readPreview(id: string, maximumBytes: number): Promise<{ node: NoteNode; content: Buffer; truncated: boolean }> { return this.versions.readPreview(id, maximumBytes) }
+
+  async readSnapshot(id: string): Promise<{ node: NoteNode; content: Buffer }> { return this.versions.readSnapshot(id) }
 
   async updateContent(id: string, content: Uint8Array, expectedVersion?: number, source = '应用修改'): Promise<NoteNode> {
-    const bytes = Buffer.from(content)
-    return this.enqueueContentMutation(id, () => {
-      if (expectedVersion !== undefined && this.requireNode(id).version !== normalizeVersion(expectedVersion)) {
-        throw conflict('笔记已被修改，请重新读取并合并后保存')
-      }
-      return this.updateContentNow(id, bytes, source)
-    })
+    return this.versions.updateContent(id, content, expectedVersion, source)
   }
 
-  private versionSource(id: string, version: number): {source?: string} {
-    const row = this.db.prepare('SELECT source FROM note_version_sources WHERE note_id=? AND version=?').get(id, version) as {source: string} | undefined
-    return row ?? {}
-  }
-  listVersions(id: string, limit = 100): NoteVersion[] {
-    this.assertOpen()
-    this.requireNode(id)
-    const boundedLimit = Number.isInteger(limit) ? Math.min(200, Math.max(1, limit)) : 100
-    return (this.db.prepare(`
-      SELECT note_id,version,name,media_type,size,sha256,created_at
-      FROM note_versions
-      WHERE note_id=?
-      ORDER BY version DESC
-      LIMIT ?
-    `).all(id, boundedLimit) as SqlRow[]).map(row => ({...mapNoteVersion(row), ...this.versionSource(id, Number(row.version))}))
-  }
+  listVersions(id: string, limit = 100): NoteVersion[] { return this.versions.listVersions(id, limit) }
 
   async readVersion(id: string, version: number): Promise<{ node: NoteNode; version: NoteVersion; content: Buffer }> {
-    this.assertOpen()
-    const node = this.requireNode(id)
-    const normalizedVersion = normalizeVersion(version)
-    const row = this.db.prepare(`
-      SELECT note_id,version,name,media_type,size,sha256,created_at
-      FROM note_versions
-      WHERE note_id=? AND version=?
-    `).get(id, normalizedVersion) as SqlRow | undefined
-    if (row === undefined) throw notFound(`note version "${id}@${normalizedVersion}" was not found`)
-    const snapshot = {...mapNoteVersion(row), ...this.versionSource(id, normalizedVersion)}
-    try {
-      const blob = this.db.prepare('SELECT content FROM note_sync_content WHERE note_id=? AND version=?').get(id,normalizedVersion) as {content:Uint8Array}|undefined
-      const content = blob ? Buffer.from(blob.content) : await readFile(this.versionPath(id, normalizedVersion))
-      if (content.byteLength !== snapshot.size || createHash('sha256').update(content).digest('hex') !== snapshot.sha256) {
-        throw new Error(`note version "${id}@${normalizedVersion}" has invalid stored content`)
-      }
-      return { node, version: snapshot, content }
-    } catch (error) {
-      if (isNodeError(error, 'ENOENT')) throw notFound(`note version content "${id}@${normalizedVersion}" was not found`)
-      throw error
-    }
+    return this.versions.readVersion(id, version)
   }
 
   async restoreVersion(id: string, version: number, expectedVersion?: number): Promise<NoteNode> {
-    return this.enqueueContentMutation(id, async () => {
-      const current = this.requireNode(id)
-      if (expectedVersion !== undefined && current.version !== normalizeVersion(expectedVersion)) {
-        throw conflict(`note node "${id}" changed after its history was opened`)
-      }
-      const historical = await this.readVersion(id, version)
-      return this.updateContentNow(id, historical.content, '恢复历史')
-    })
-  }
-
-  private async updateContentNow(id: string, content: Buffer, source = '应用修改'): Promise<NoteNode> {
-    const node = this.get(id)
-    if (node === undefined) throw notFound(`note node "${id}" was not found`)
-    if (!isEditableNoteNode(node)) throw inputError('only text-based note files can be edited')
-    if (content.byteLength > MAX_NOTE_BYTES) throw sizeError('note content exceeds the 64 MiB limit')
-    const sha256 = createHash('sha256').update(content).digest('hex')
-    if (node.sha256 === sha256) return node
-    const previous = await this.read(id)
-    const version = node.version + 1
-    const snapshotPath = this.versionPath(id, version)
-    mkdirSync(this.versionDirectory(id), { recursive: true, mode: 0o700 })
-    await rm(snapshotPath, { force: true })
-    await atomicWriteFile(snapshotPath, content, { mode: 0o600, replace: false })
-    const target = this.objectPath(id)
-    try {
-      await atomicWriteFile(target, content, { mode: 0o600, replace: true })
-      const updatedAt = new Date().toISOString()
-      this.db.exec('BEGIN IMMEDIATE')
-      try {
-        this.db.prepare(`
-          INSERT INTO note_versions(note_id,version,name,media_type,size,sha256,created_at)
-          VALUES(?,?,?,?,?,?,?)
-        `).run(id, version, node.name, node.mediaType, content.byteLength, sha256, updatedAt)
-        this.db.prepare('INSERT OR REPLACE INTO note_version_sources VALUES(?,?,?)').run(id, version, source)
-        const result = this.db.prepare('UPDATE note_nodes SET size=?, sha256=?, version=?, updated_at=? WHERE id=? AND version=?')
-          .run(content.byteLength, sha256, version, updatedAt, id, node.version)
-        if (result.changes !== 1) throw conflict(`note node "${id}" changed while it was being saved`)
-        this.db.exec('COMMIT')
-      } catch (error) {
-        this.db.exec('ROLLBACK')
-        throw error
-      }
-      return { ...node, size: content.byteLength, sha256, version, updatedAt }
-    } catch (error) {
-      await atomicWriteFile(target, previous.content, { mode: 0o600, replace: true }).catch(() => {})
-      await rm(snapshotPath, { force: true }).catch(() => {})
-      throw error
-    }
+    return this.versions.restoreVersion(id, version, expectedVersion)
   }
 
   relocate(id: string, name: string, parentId: string | null, expected: string): Promise<NoteNode> {
-    return this.enqueueContentMutation(id, async () => {
-      const node = this.requireNode(id)
-      if (noteFingerprint(node) !== expected) throw conflict('笔记已变化，未应用外部路径操作')
-      const normalized = normalizeNoteName(name), parent = normalizeParentId(parentId)
-      if (parent !== null) {
-        this.assertFolder(parent)
-        if (parent === id || (node.kind === 'folder' && this.isDescendant(parent, id))) throw conflict('目录不能移动到自身内部')
-      }
-      this.assertNameAvailable(parent, normalized, id)
-      const updatedAt = new Date().toISOString()
-      this.db.prepare('UPDATE note_nodes SET name=?, parent_id=?, parent_key=?, updated_at=? WHERE id=?')
-        .run(normalized, parent, parentKey(parent), updatedAt, id)
-      const result = { ...node, name: normalized, parentId: parent, updatedAt }
-      return { ...result, editable: isEditableNoteNode(result) }
-    })
+    return this.mutations.relocate(id, name, parentId, expected)
   }
 
-  rename(id: string, name: string): NoteNode {
-    const node = this.requireNode(id)
-    const normalized = normalizeNoteName(name)
-    this.assertNameAvailable(node.parentId, normalized, id)
-    const updatedAt = new Date().toISOString()
-    this.db.exec('BEGIN IMMEDIATE')
-    try {
-      this.db.prepare('UPDATE note_nodes SET name=?, updated_at=? WHERE id=?').run(normalized, updatedAt, id)
-      this.db.prepare('UPDATE note_versions SET name=? WHERE note_id=? AND version=?').run(normalized, id, node.version)
-      this.db.exec('COMMIT')
-    } catch (error) {
-      this.db.exec('ROLLBACK')
-      throw error
-    }
-    const renamed = { ...node, name: normalized, updatedAt }
-    return { ...renamed, editable: isEditableNoteNode(renamed) }
-  }
+  rename(id: string, name: string): NoteNode { return this.mutations.rename(id, name) }
 
-  move(id: string, parentId: string | null): NoteNode {
-    const node = this.requireNode(id)
-    const normalizedParent = normalizeParentId(parentId)
-    if (normalizedParent !== null) {
-      this.assertFolder(normalizedParent)
-      if (normalizedParent === id || (node.kind === 'folder' && this.isDescendant(normalizedParent, id))) {
-        throw conflict('a folder cannot be moved into itself or one of its descendants')
-      }
-    }
-    this.assertNameAvailable(normalizedParent, node.name, id)
-    const updatedAt = new Date().toISOString()
-    this.db.prepare('UPDATE note_nodes SET parent_id=?, parent_key=?, updated_at=? WHERE id=?')
-      .run(normalizedParent, parentKey(normalizedParent), updatedAt, id)
-    return { ...node, parentId: normalizedParent, updatedAt }
-  }
+  move(id: string, parentId: string | null): NoteNode { return this.mutations.move(id, parentId) }
 
   async copy(id: string, parentId?: string | null, requestedName?: string): Promise<NoteNode> {
-    const source = this.requireNode(id)
-    const targetParent = parentId === undefined ? source.parentId : normalizeParentId(parentId)
-    if (targetParent !== null) this.assertFolder(targetParent)
-    const targetName = requestedName === undefined
-      ? this.availableCopyName(targetParent, source.name)
-      : normalizeNoteName(requestedName)
-    this.assertNameAvailable(targetParent, targetName)
-    const created: NoteNode[] = []
-    try {
-      return await this.copyNode(source, targetParent, targetName, created)
-    } catch (error) {
-      if (created[0] !== undefined) await this.delete(created[0].id).catch(() => {})
-      throw error
-    }
+    return this.mutations.copy(id, parentId, requestedName)
   }
 
-  async delete(id: string): Promise<void> {
-    const nodes = this.subtree(id)
-    const files = nodes.filter(node => node.kind !== 'folder')
-    const retired: Array<{ target: string; temporary: string }> = []
-    try {
-      for (const node of files) {
-        const retirementTargets: Array<[string, string]> = [
-          [this.objectPath(node.id), join(this.objectsPath, `.${node.id}.${randomUUID()}.deleted`)],
-          [this.versionDirectory(node.id), join(this.versionsPath, `.${node.id}.${randomUUID()}.deleted`)],
-        ]
-        for (const [target, temporary] of retirementTargets) {
-          try {
-            await rename(target, temporary)
-            retired.push({ target, temporary })
-          } catch (error) {
-            if (!isNodeError(error, 'ENOENT')) throw error
-          }
-        }
-      }
-      this.db.exec('BEGIN IMMEDIATE')
-      try {
-        this.db.prepare(`
-          WITH RECURSIVE descendants(id) AS (
-            SELECT id FROM note_nodes WHERE id=?
-            UNION ALL
-            SELECT child.id FROM note_nodes child JOIN descendants parent ON child.parent_id=parent.id
-          )
-          DELETE FROM note_nodes WHERE id IN (SELECT id FROM descendants)
-        `).run(id)
-        this.db.exec('COMMIT')
-      } catch (error) {
-        this.db.exec('ROLLBACK')
-        throw error
-      }
-    } catch (error) {
-      for (const item of retired.reverse()) await rename(item.temporary, item.target).catch(() => {})
-      throw error
-    }
-    for (const item of retired) await rm(item.temporary, { recursive: true, force: true })
-  }
+  async delete(id: string): Promise<void> { return this.mutations.delete(id) }
 
-  syncManifest(): NoteManifest {
-    const nodes = (this.db.prepare(`SELECT ${NOTE_COLUMNS} FROM note_nodes ORDER BY id LIMIT 10001`).all() as SqlRow[]).map(mapNoteNode)
-    if(nodes.length>10000) throw syncError(413,'第一版离线工作区最多支持 10000 个笔记节点；未截断或删除任何内容')
-    return {protocol:1,instance:String((this.db.prepare("SELECT value FROM note_sync_meta WHERE key='instance'").get() as SqlRow).value),revision:treeFingerprint(nodes),nodes}
-  }
+  syncManifest(): NoteManifest { return this.sync.syncManifest() }
 
-  /** Content, metadata and deduplication receipt commit in one SQLite transaction. */
-  applySyncChange(actor:string, change:NoteSyncChange): NoteNode|null {
-    if(!change || typeof change.operationId!=='string' || !/^[a-f0-9-]{36}$/.test(change.operationId) || !isNoteId(change.id)
-      || !(change.base===null || typeof change.base==='string' && /^[a-f0-9]{64}$/.test(change.base))) throw syncError(400,'invalid note sync operation')
-    if(change.instance!==this.syncManifest().instance)throw syncError(409,'远程数据库身份不匹配，已停止同步')
-    const digest=hash(JSON.stringify(change))
-    const receipt=this.db.prepare('SELECT digest,result FROM note_sync_receipts WHERE actor=? AND operation_id=?').get(actor,change.operationId) as SqlRow|undefined
-    if(receipt){if(receipt.digest!==digest)throw syncError(409,'operation ID was reused with different content');return JSON.parse(String(receipt.result)) as NoteNode|null}
-    if(this.contentMutationTails.size)throw syncError(423,'笔记正在保存，请稍后重试同步')
-    const current=this.get(change.id)
-    if(noteFingerprint(current)!==change.base)throw syncError(409,'远程笔记已变化，本地内容保留，请处理冲突')
-    const value=change.value
-    let result:NoteNode|null=null, bytes:Buffer|undefined
-    if(value!==null){
-      if(!value || !['folder','document','file'].includes(value.kind) || typeof value.content!=='string')throw syncError(400,'invalid note sync value')
-      const name=normalizeNoteName(value.name),parentId=normalizeParentId(value.parentId)
-      if(parentId!==null){this.assertFolder(parentId);if(parentId===change.id || this.isDescendant(parentId,change.id))throw syncError(409,'目录不能移动到自身内部')}
-      this.assertNameAvailable(parentId,name,change.id)
-      if(current && (current.kind!==value.kind || current.mediaType!==value.mediaType))throw syncError(409,'同步不能改变笔记类型')
-      bytes=Buffer.from(value.content,'base64')
-      if(bytes.toString('base64')!==value.content || bytes.length>MAX_NOTE_BYTES)throw syncError(413,'invalid or oversized note content')
-      if(value.kind==='folder'&&bytes.length)throw syncError(400,'folder cannot have content')
-      const mediaType=value.kind==='folder'?null:normalizeMediaType(value.mediaType??'application/octet-stream')
-      const sha256=value.kind==='folder'?null:hash(bytes)
-      const changed=!current||current.sha256!==sha256
-      const now=new Date().toISOString()
-      result={id:change.id,kind:value.kind,name,parentId,mediaType,sha256,size:bytes.length,version:current ? current.version+(changed?1:0):1,createdAt:current?.createdAt??now,updatedAt:now,editable:isEditableNoteNode({kind:value.kind,name,mediaType})}
-    }else if(current && change.subtree!==treeFingerprint(this.subtree(change.id)))throw syncError(409,'待删除目录内容已变化')
-    this.db.exec('BEGIN IMMEDIATE')
-    try{
-      if(result){
-        this.db.prepare(`INSERT INTO note_nodes(id,parent_id,parent_key,kind,name,media_type,size,sha256,version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)
-          ON CONFLICT(id) DO UPDATE SET parent_id=excluded.parent_id,parent_key=excluded.parent_key,name=excluded.name,size=excluded.size,sha256=excluded.sha256,version=excluded.version,updated_at=excluded.updated_at`)
-          .run(result.id,result.parentId,parentKey(result.parentId),result.kind,result.name,result.mediaType,result.size,result.sha256,result.version,result.createdAt,result.updatedAt)
-        if(result.kind!=='folder'){
-          this.db.prepare('INSERT OR REPLACE INTO note_sync_content VALUES(?,?,?)').run(result.id,result.version,bytes!)
-          if(result.editable)this.db.prepare('INSERT OR REPLACE INTO note_versions VALUES(?,?,?,?,?,?,?)').run(result.id,result.version,result.name,result.mediaType,result.size,result.sha256,result.updatedAt)
-        }
-      }else if(current){
-        this.db.prepare(`WITH RECURSIVE children(id) AS (SELECT id FROM note_nodes WHERE id=? UNION ALL SELECT n.id FROM note_nodes n JOIN children c ON n.parent_id=c.id) DELETE FROM note_nodes WHERE id IN (SELECT id FROM children)`).run(change.id)
-      }
-      this.db.prepare('INSERT INTO note_sync_receipts VALUES(?,?,?,?)').run(actor,change.operationId,digest,JSON.stringify(result))
-      this.db.exec('COMMIT');return result
-    }catch(error){this.db.exec('ROLLBACK');throw error}
-  }
+  applySyncChange(actor: string, change: NoteSyncChange): NoteNode | null { return this.sync.applySyncChange(actor, change) }
 
   async close(): Promise<void> {
     if (this.closed) return
@@ -556,422 +136,7 @@ export class NoteStore {
     if (this.removeOnClose) await rm(this.rootPath, { recursive: true, force: true })
   }
 
-  private async createNode(kind: NoteNodeKind, name: string, parentId: string | null, mediaType: string | null, content: Buffer): Promise<NoteNode> {
-    this.assertOpen()
-    const normalizedName = normalizeNoteName(name)
-    const normalizedParent = normalizeParentId(parentId)
-    if (normalizedParent !== null) this.assertFolder(normalizedParent)
-    this.assertNameAvailable(normalizedParent, normalizedName)
-    if (content.byteLength > MAX_NOTE_BYTES) throw sizeError('note file exceeds the 64 MiB limit')
-    const id = `note_${randomUUID().replaceAll('-', '')}`
-    const timestamp = new Date().toISOString()
-    const normalizedMediaType = kind === 'folder' ? null : normalizeMediaType(mediaType ?? 'application/octet-stream')
-    const sha256 = kind === 'folder' ? null : createHash('sha256').update(content).digest('hex')
-    const versioned = kind !== 'folder' && isEditableNoteNode({ kind, name: normalizedName, mediaType: normalizedMediaType })
-    if (kind !== 'folder') {
-      await atomicWriteFile(this.objectPath(id), content, { mode: 0o600, replace: false })
-      if (versioned) {
-        mkdirSync(this.versionDirectory(id), { recursive: true, mode: 0o700 })
-        try {
-          await atomicWriteFile(this.versionPath(id, 1), content, { mode: 0o600, replace: false })
-        } catch (error) {
-          await rm(this.objectPath(id), { force: true }).catch(() => {})
-          await rm(this.versionDirectory(id), { recursive: true, force: true }).catch(() => {})
-          throw error
-        }
-      }
-    }
-    try {
-      this.db.exec('BEGIN IMMEDIATE')
-      try {
-        this.db.prepare(`
-          INSERT INTO note_nodes(id,parent_id,parent_key,kind,name,media_type,size,sha256,version,created_at,updated_at)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?)
-        `).run(id, normalizedParent, parentKey(normalizedParent), kind, normalizedName, normalizedMediaType, content.byteLength, sha256, 1, timestamp, timestamp)
-        if (versioned) {
-          this.db.prepare(`
-            INSERT INTO note_versions(note_id,version,name,media_type,size,sha256,created_at)
-            VALUES(?,?,?,?,?,?,?)
-          `).run(id, 1, normalizedName, normalizedMediaType, content.byteLength, sha256, timestamp)
-        }
-        this.db.exec('COMMIT')
-      } catch (error) {
-        this.db.exec('ROLLBACK')
-        throw error
-      }
-    } catch (error) {
-      if (kind !== 'folder') await rm(this.objectPath(id), { force: true }).catch(() => {})
-      if (versioned) await rm(this.versionDirectory(id), { recursive: true, force: true }).catch(() => {})
-      throw error
-    }
-    const node = { id, parentId: normalizedParent, kind, name: normalizedName, mediaType: normalizedMediaType, size: content.byteLength, sha256, version: 1, createdAt: timestamp, updatedAt: timestamp }
-    return { ...node, editable: isEditableNoteNode(node) }
-  }
-
-  private async copyNode(source: NoteNode, parentId: string | null, name: string, created: NoteNode[]): Promise<NoteNode> {
-    if (source.kind === 'folder') {
-      const folder = await this.createFolder(name, parentId)
-      created.push(folder)
-      for (const child of this.children(source.id)) {
-        await this.copyNode(child, folder.id, child.name, created)
-      }
-      return folder
-    }
-    const { content } = await this.read(source.id)
-    const copy = source.kind === 'document'
-      ? await this.createNode('document', name, parentId, source.mediaType, content)
-      : await this.createNode('file', name, parentId, source.mediaType, content)
-    created.push(copy)
-    return copy
-  }
-
-  private availableCopyName(parentId: string | null, original: string): string {
-    const dot = original.lastIndexOf('.')
-    const hasExtension = dot > 0
-    const stem = hasExtension ? original.slice(0, dot) : original
-    const extension = hasExtension ? original.slice(dot) : ''
-    for (let index = 1; index < 10_000; index += 1) {
-      const suffix = index === 1 ? ' 副本' : ` 副本 ${index}`
-      const availableStemLength = Math.max(1, MAX_NOTE_NAME_LENGTH - suffix.length - extension.length)
-      const candidate = normalizeNoteName(`${stem.slice(0, availableStemLength)}${suffix}${extension}`)
-      if (!this.nameExists(parentId, candidate)) return candidate
-    }
-    throw conflict('could not allocate a copy name')
-  }
-
-  private requireNode(id: string): NoteNode {
-    const node = this.get(id)
-    if (node === undefined) throw notFound(`note node "${id}" was not found`)
-    return node
-  }
-
-  private children(parentId: string): NoteNode[] {
-    return (this.db.prepare(`
-      SELECT ${NOTE_COLUMNS} FROM note_nodes WHERE parent_key=?
-      ORDER BY CASE kind WHEN 'folder' THEN 0 ELSE 1 END, name COLLATE NOCASE, id
-    `).all(parentId) as SqlRow[]).map(mapNoteNode)
-  }
-
-  private assertFolder(id: string): void {
-    const parent = this.get(id)
-    if (parent === undefined) throw notFound(`note folder "${id}" was not found`)
-    if (parent.kind !== 'folder') throw inputError('parentId must identify a folder')
-  }
-
-  private assertNameAvailable(parentId: string | null, name: string, exceptId?: string): void {
-    const row = this.db.prepare(`
-      SELECT id FROM note_nodes WHERE parent_key=? AND name=? COLLATE NOCASE
-    `).get(parentKey(parentId), name) as SqlRow | undefined
-    if (row !== undefined && row.id !== exceptId) throw conflict(`"${name}" already exists in this folder`)
-  }
-
-  private nameExists(parentId: string | null, name: string): boolean {
-    return this.db.prepare('SELECT 1 FROM note_nodes WHERE parent_key=? AND name=? COLLATE NOCASE')
-      .get(parentKey(parentId), name) !== undefined
-  }
-
-  private isDescendant(candidateId: string, ancestorId: string): boolean {
-    return this.db.prepare(`
-      WITH RECURSIVE descendants(id) AS (
-        SELECT id FROM note_nodes WHERE parent_id=?
-        UNION ALL
-        SELECT child.id FROM note_nodes child JOIN descendants parent ON child.parent_id=parent.id
-      )
-      SELECT 1 FROM descendants WHERE id=? LIMIT 1
-    `).get(ancestorId, candidateId) !== undefined
-  }
-
-  private mapShare(row: SqlRow): NoteShare {
-    const noteId = String(row.note_id)
-    const node = mapNoteNode({
-      id: row.node_id,
-      parent_id: row.node_parent_id,
-      parent_key: row.node_parent_key,
-      kind: row.node_kind,
-      name: row.node_name,
-      media_type: row.node_media_type,
-      size: row.node_size,
-      sha256: row.node_sha256,
-      version: row.node_version,
-      created_at: row.node_created_at,
-      updated_at: row.node_updated_at,
-    })
-    return {
-      id: String(row.share_id),
-      noteId,
-      token: String(row.token),
-      createdAt: String(row.share_created_at),
-      updatedAt: String(row.share_updated_at),
-      node,
-    }
-  }
-
-  private migrate(): void {
-    let version = Number((this.db.prepare('PRAGMA user_version').get() as SqlRow).user_version ?? 0)
-    if (version > 4) throw new Error(`note database schema ${version} is newer than this plugin supports`)
-    if (version === 0) this.db.exec(`
-      BEGIN IMMEDIATE;
-      CREATE TABLE note_nodes (
-        id TEXT PRIMARY KEY,
-        parent_id TEXT,
-        parent_key TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK(kind IN ('folder','document','file')),
-        name TEXT NOT NULL,
-        media_type TEXT,
-        size INTEGER NOT NULL CHECK(size >= 0),
-        sha256 TEXT,
-        version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-      CREATE TABLE note_versions (
-        note_id TEXT NOT NULL REFERENCES note_nodes(id) ON DELETE CASCADE,
-        version INTEGER NOT NULL CHECK(version >= 1),
-        name TEXT NOT NULL,
-        media_type TEXT,
-        size INTEGER NOT NULL CHECK(size >= 0),
-        sha256 TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        PRIMARY KEY(note_id, version)
-      );
-      CREATE TABLE note_shares (
-        id TEXT PRIMARY KEY,
-        note_id TEXT NOT NULL UNIQUE REFERENCES note_nodes(id) ON DELETE CASCADE,
-        token TEXT NOT NULL UNIQUE,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-      CREATE UNIQUE INDEX note_sibling_name ON note_nodes(parent_key, name COLLATE NOCASE);
-      CREATE INDEX note_parent_order ON note_nodes(parent_key, kind, name COLLATE NOCASE);
-      CREATE INDEX note_name ON note_nodes(name COLLATE NOCASE);
-      CREATE INDEX note_versions_recent ON note_versions(note_id, version DESC);
-      CREATE INDEX note_shares_recent ON note_shares(updated_at DESC);
-      PRAGMA user_version = 3;
-      COMMIT;
-    `)
-    if (version === 0) return
-    if (version === 1) {
-      this.migrateVersionOne()
-      version = 2
-    }
-    if (version === 2) this.migrateVersionTwo()
-  }
-
-  private migrateVersionOne(): void {
-    const files = this.db.prepare(`
-      SELECT id,kind,name,media_type,size,sha256,created_at
-      FROM note_nodes
-      WHERE kind<>'folder'
-    `).all() as SqlRow[]
-    const versionedFiles = files
-      .filter(row => isEditableNoteNode({
-        kind: String(row.kind) as NoteNodeKind,
-        name: String(row.name),
-        mediaType: row.media_type === null ? null : String(row.media_type),
-      }))
-      .map(row => {
-        const id = String(row.id)
-        const content = readFileSync(this.objectPath(id))
-        return {
-          id,
-          name: String(row.name),
-          mediaType: row.media_type === null ? null : String(row.media_type),
-          size: content.byteLength,
-          sha256: createHash('sha256').update(content).digest('hex'),
-          createdAt: String(row.created_at),
-        }
-      })
-    const createdSnapshots: string[] = []
-    try {
-      for (const row of versionedFiles) {
-        const directory = this.versionDirectory(row.id)
-        const snapshotPath = this.versionPath(row.id, 1)
-        mkdirSync(directory, { recursive: true, mode: 0o700 })
-        try {
-          copyFileSync(this.objectPath(row.id), snapshotPath, fileConstants.COPYFILE_EXCL)
-          createdSnapshots.push(snapshotPath)
-        } catch (error) {
-          if (!isNodeError(error, 'EEXIST')) throw error
-        }
-      }
-      this.db.exec(`
-        BEGIN IMMEDIATE;
-        ALTER TABLE note_nodes ADD COLUMN version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1);
-        CREATE TABLE note_versions (
-          note_id TEXT NOT NULL REFERENCES note_nodes(id) ON DELETE CASCADE,
-          version INTEGER NOT NULL CHECK(version >= 1),
-          name TEXT NOT NULL,
-          media_type TEXT,
-          size INTEGER NOT NULL CHECK(size >= 0),
-          sha256 TEXT NOT NULL,
-          created_at TEXT NOT NULL,
-          PRIMARY KEY(note_id, version)
-        );
-      `)
-      const insert = this.db.prepare(`
-        INSERT INTO note_versions(note_id,version,name,media_type,size,sha256,created_at)
-        VALUES(?,1,?,?,?,?,?)
-      `)
-      for (const row of versionedFiles) {
-        this.db.prepare('UPDATE note_nodes SET size=?, sha256=? WHERE id=?').run(row.size, row.sha256, row.id)
-        insert.run(row.id, row.name, row.mediaType, row.size, row.sha256, row.createdAt)
-      }
-      this.db.exec(`
-        CREATE INDEX note_versions_recent ON note_versions(note_id, version DESC);
-        PRAGMA user_version = 2;
-        COMMIT;
-      `)
-    } catch (error) {
-      if (this.db.isTransaction) this.db.exec('ROLLBACK')
-      for (const snapshotPath of createdSnapshots) rmSync(snapshotPath, { force: true })
-      throw error
-    }
-  }
-
-  private migrateVersionTwo(): void {
-    this.db.exec(`
-      BEGIN IMMEDIATE;
-      CREATE TABLE note_shares (
-        id TEXT PRIMARY KEY,
-        note_id TEXT NOT NULL UNIQUE REFERENCES note_nodes(id) ON DELETE CASCADE,
-        token TEXT NOT NULL UNIQUE,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-      CREATE INDEX note_shares_recent ON note_shares(updated_at DESC);
-      PRAGMA user_version = 3;
-      COMMIT;
-    `)
-  }
-
-  private objectPath(id: string): string {
-    assertNoteId(id)
-    return join(this.objectsPath, id)
-  }
-
-  private versionDirectory(id: string): string {
-    assertNoteId(id)
-    return join(this.versionsPath, id)
-  }
-
-  private versionPath(id: string, version: number): string {
-    return join(this.versionDirectory(id), String(normalizeVersion(version)))
-  }
-
-  private enqueueContentMutation<T>(id: string, operation: () => Promise<T>): Promise<T> {
-    const previous = this.contentMutationTails.get(id) ?? Promise.resolve()
-    const result = previous.then(operation, operation)
-    const tail = result.then(() => undefined, () => undefined)
-    this.contentMutationTails.set(id, tail)
-    void tail.then(() => {
-      if (this.contentMutationTails.get(id) === tail) this.contentMutationTails.delete(id)
-    })
-    return result
-  }
-
   private assertOpen(): void {
     if (this.closed) throw new Error('note store is closed')
   }
-}
-
-const NOTE_COLUMNS = 'id,parent_id,parent_key,kind,name,media_type,size,sha256,version,created_at,updated_at'
-const NOTE_SHARE_COLUMNS = `
-  s.id AS share_id,s.note_id,s.token,s.created_at AS share_created_at,s.updated_at AS share_updated_at,
-  n.id AS node_id,n.parent_id AS node_parent_id,n.parent_key AS node_parent_key,n.kind AS node_kind,
-  n.name AS node_name,n.media_type AS node_media_type,n.size AS node_size,n.sha256 AS node_sha256,
-  n.version AS node_version,n.created_at AS node_created_at,n.updated_at AS node_updated_at
-`
-
-export function normalizeNoteName(value: string): string {
-  const name = value.trim().normalize('NFC')
-  if (name.length === 0 || name.length > MAX_NOTE_NAME_LENGTH) {
-    throw inputError(`note name must contain 1-${MAX_NOTE_NAME_LENGTH} characters`)
-  }
-  if (name === '.' || name === '..' || /[\\/\u0000-\u001f\u007f]/.test(name)) {
-    throw inputError('note name contains unsupported path characters')
-  }
-  return name
-}
-
-function normalizeMediaType(value: string): string {
-  const mediaType = value.trim().toLowerCase() || 'application/octet-stream'
-  if (mediaType.length > 255 || !/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+(?:\s*;.*)?$/.test(mediaType)) {
-    throw inputError('note media type is invalid')
-  }
-  return mediaType.split(';', 1)[0] as string
-}
-
-function normalizeParentId(value: string | null | undefined): string | null {
-  if (value === undefined || value === null || value === '') return null
-  assertNoteId(value)
-  return value
-}
-
-function parentKey(value: string | null): string {
-  return value ?? ''
-}
-
-function normalizeLimit(value: number | undefined): number {
-  return Number.isInteger(value) ? Math.min(500, Math.max(1, value as number)) : 200
-}
-
-function mapNoteNode(row: SqlRow): NoteNode {
-  const node = {
-    id: String(row.id),
-    parentId: row.parent_id === null ? null : String(row.parent_id),
-    kind: String(row.kind) as NoteNodeKind,
-    name: String(row.name),
-    mediaType: row.media_type === null ? null : String(row.media_type),
-    size: Number(row.size),
-    sha256: row.sha256 === null ? null : String(row.sha256),
-    version: Number(row.version),
-    createdAt: String(row.created_at),
-    updatedAt: String(row.updated_at),
-  }
-  return { ...node, editable: isEditableNoteNode(node) }
-}
-
-function mapNoteVersion(row: SqlRow): NoteVersion {
-  return {
-    noteId: String(row.note_id),
-    version: Number(row.version),
-    name: String(row.name),
-    mediaType: row.media_type === null ? null : String(row.media_type),
-    size: Number(row.size),
-    sha256: String(row.sha256),
-    createdAt: String(row.created_at),
-  }
-}
-
-function normalizeVersion(value: number): number {
-  if (!Number.isSafeInteger(value) || value < 1) throw inputError('note version is invalid')
-  return value
-}
-
-function assertNoteId(id: string): void {
-  if (!isNoteId(id)) throw inputError('note id is invalid')
-}
-
-function escapeLike(value: string): string {
-  return value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')
-}
-
-function inputError(message: string): Error {
-  return Object.assign(new Error(message), { code: 'BAD_REQUEST', status: 400 })
-}
-
-function sizeError(message: string): Error {
-  return Object.assign(new Error(message), { code: 'PAYLOAD_TOO_LARGE', status: 413 })
-}
-
-function conflict(message: string): Error {
-  return Object.assign(new Error(message), { code: 'CONFLICT', status: 409 })
-}
-
-function notFound(message: string): Error {
-  return Object.assign(new Error(message), { code: 'NOT_FOUND', status: 404 })
-}
-
-function isNodeError(error: unknown, code: string): boolean {
-  return error instanceof Error && (error as NodeJS.ErrnoException).code === code
 }

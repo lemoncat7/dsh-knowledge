@@ -19,6 +19,11 @@ const STATIC_ASSETS = new Map<string, Asset>([
   ] as [string, Asset]),
   ['wiki-directory-browser.js', loadAsset('../web/wiki-directory-browser.js', 'text/javascript; charset=utf-8')],
   ['wiki-workspace.js', loadAsset('../web/wiki-workspace.js', 'text/javascript; charset=utf-8')],
+  // The wiki workspace is assembled from these blocks; each must be served next to it.
+  ['wiki-workspace-connection.js', loadAsset('../web/wiki-workspace-connection.js', 'text/javascript; charset=utf-8')],
+  ['wiki-workspace-scan.js', loadAsset('../web/wiki-workspace-scan.js', 'text/javascript; charset=utf-8')],
+  ['wiki-workspace-jobs.js', loadAsset('../web/wiki-workspace-jobs.js', 'text/javascript; charset=utf-8')],
+  ['wiki-workspace-advanced.js', loadAsset('../web/wiki-workspace-advanced.js', 'text/javascript; charset=utf-8')],
   ['app.js', loadAsset('../web/app.js', 'text/javascript; charset=utf-8')],
   ['api-client.js', loadAsset('../web/api-client.js', 'text/javascript; charset=utf-8')],
   ['change-review.js', loadAsset('../web/change-review.js', 'text/javascript; charset=utf-8')],

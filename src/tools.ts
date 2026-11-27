@@ -24,6 +24,7 @@ import type { KnowledgeNoteHandleCodec } from './note-reference-handle.js'
 import { documentLifecycleTool } from './document-lifecycle-tool.js'
 import { documentGroupTools } from './document-group-tools.js'
 import { recallIncidentTool } from './recall-incident-tool.js'
+import { conversationSaveTool } from './conversation-save-tool.js'
 import { usageRecorder } from './recall-usage.js'
 import { knowledgeEntry } from './tool-entry.js'
 import { calendarTools } from './calendar-tools.js'
@@ -55,6 +56,7 @@ export function registerKnowledgeTools(
   register(readTool(provider, codec))
   register(documentLifecycleTool(provider, codec))
   register(recallIncidentTool(provider, codec))
+  register(conversationSaveTool(provider))
   for (const tool of documentGroupTools(provider, codec)) register(tool)
   register(createKnowledgeBaseTool(provider, ctx.llm))
   register(updateKnowledgeBaseTool(provider, ctx.llm))

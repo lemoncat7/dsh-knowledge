@@ -22,8 +22,11 @@ import {
   type CandidateBatchReviewResult,
   type CandidateChange,
   type ApiTokenRecord,
+  type ConversationSaveInput,
+  type ConversationSaveResult,
   type ExtractionJobCompletion,
   type ExtractionJobRecord,
+  type KnowledgeScope,
   type KnowledgeCandidate,
   type KnowledgeBase,
   type KnowledgeBaseDraft,
@@ -1350,6 +1353,45 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       VALUES(?,?,?,?,?,?,'pending',?,?,?)
     `).run(candidate.id, candidate.action, candidate.targetId ?? null, candidate.change === undefined ? null : JSON.stringify(candidate.change), JSON.stringify(candidate.draft), candidate.reason, sourceKey ?? null, hash, candidate.createdAt)
     return candidate
+  }
+
+  /**
+   * Explicit command write. The target is the knowledge base this session selected (an explicit
+   * session mount): there is no base-id argument and no fallback to a project default. It always
+   * creates a new page — no target page, no overwrite, no candidate — and records conversation
+   * provenance (session, turn and the referenced document path when given).
+   */
+  async saveConversation(input: ConversationSaveInput): Promise<ConversationSaveResult> {
+    this.assertOpen()
+    await this.documentsReady
+    const selected = (await this.resolveMounts(input.sessionId, input.projectId))
+      .filter(mount => mount.targetKind === 'session' && mount.targetId === input.sessionId)
+    if (selected.length === 0) throw new Error('WIKI_CONVERSATION_SAVE_NO_SELECTION：未选择知识库，未写入')
+    const targets = selected.filter(mount => this.wiki.has(mount.knowledgeBaseId))
+    if (targets.length === 0) throw new Error('WIKI_CONVERSATION_SAVE_UNSUPPORTED_TARGET：所选知识库不支持命令写入，未写入')
+    if (targets.length > 1) throw new Error('WIKI_CONVERSATION_SAVE_AMBIGUOUS：会话选中了多个支持命令写入的知识库，请只保留一个再重试')
+    const mount = targets[0]!
+    if (this.wiki.list().find(base => base.kbId === mount.knowledgeBaseId)?.conversationEnabled !== true) {
+      throw new Error('WIKI_CONVERSATION_SAVE_DISABLED：所选知识库未开启对话写入，未写入')
+    }
+    if (mount.writeMode !== 'direct') throw new Error('WIKI_CONVERSATION_SAVE_READ_ONLY：会话对所选知识库没有直接写入权限，未写入')
+    const scope: KnowledgeScope = input.projectId === undefined || input.projectId.trim() === ''
+      ? { kind: 'global' }
+      : { kind: 'project', id: input.projectId.trim() }
+    const draft = normalizeDraft({
+      knowledgeBaseId: mount.knowledgeBaseId, title: input.title, body: input.body, type: 'fact', tags: [], scope, confidence: 0.9,
+      source: { sessionId: input.sessionId, turn: input.turn, evidence: 'explicit', ...(input.sourcePath === undefined ? {} : { sourcePath: input.sourcePath }) },
+    })
+    // Idempotent per session + turn + title + body: the same command maps to the same page path.
+    const operationId = 'conversation:' + createHash('sha256').update(JSON.stringify([input.sessionId, input.turn, draft.title, draft.body])).digest('hex')
+    const store = this.wiki.store(mount.knowledgeBaseId)
+    const relPath = 'wiki/notes/' + createHash('sha256').update(operationId).digest('hex') + '.md'
+    const duplicate = (await store.manifest()).pages.some(page => page.relPath === relPath)
+    const entryId = await this.wiki.write(draft, undefined, operationId)
+    const page = (await store.manifest()).pages.find(item => item.entryId === entryId)
+      ?? (await store.manifest()).pages.find(item => item.relPath === relPath)
+    return { knowledgeBaseId: mount.knowledgeBaseId, knowledgeBaseName: mount.base.name, entryId,
+      pageId: page?.pageId ?? '', relPath: page?.relPath ?? relPath, scope, duplicate }
   }
 
   private resolveDirectProposal(proposal: CandidateProposal): DirectProposalResolution {

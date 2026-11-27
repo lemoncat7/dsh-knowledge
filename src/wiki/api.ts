@@ -80,13 +80,19 @@ export async function handleWikiApi(provider: LocalKnowledgeProvider, segments: 
     send({ providers: await provider.wiki.host.models(), default: provider.wiki.host.defaultModel() }); return
   }
   const store = provider.wiki.store(kbId)
+  // Deprecated: distillation writes accepted updates directly, so no new proposals are produced.
+  // Both routes stay for backward compatibility and for reading historical rows.
   if (req.method === 'GET' && action === 'proposals') { send(provider.wiki.proposals.list(kbId).map(p => ({...p,content:Buffer.from(p.bytes,'base64').toString('utf8')}))); return }
   if (req.method === 'POST' && action === 'proposal' && segments[3]) { const body=await bodyOf(req); await provider.wiki.proposals.review(kbId,segments[3],body.approve===true); send({ok:true}); return }
   if (req.method === 'GET' && action === 'discover') { send(await provider.wiki.ingest.discover(kbId)); return }
   // Change detection is read-only toward source files; POST refreshes and persists the report.
   if (req.method === 'GET' && action === 'changes') { send(provider.wiki.ingest.changeReport(kbId) ?? null); return }
   if (req.method === 'POST' && action === 'changes') { send(await provider.wiki.ingest.changes(kbId)); return }
-  if (req.method === 'GET' && action === 'jobs') { send(provider.wiki.ingest.jobs(kbId)); return }
+  if (req.method === 'GET' && action === 'jobs') {
+    const includeHidden = new URL(req.url ?? '/', 'http://local').searchParams.get('includeHidden') === 'true'
+    // Audit reads every record; the default list keeps its display cap.
+    send(provider.wiki.ingest.jobs(kbId, includeHidden, includeHidden ? 0 : 50)); return
+  }
   // Scan is read-only toward source files: it reports candidates and registers page files only.
   if (req.method === 'POST' && action === 'scan') {
     const body = await bodyOf(req)
@@ -118,8 +124,11 @@ export async function handleWikiApi(provider: LocalKnowledgeProvider, segments: 
     const body = await bodyOf(req)
     send(await provider.wiki.ingest.start(kbId, { python: required(body.python), provider: required(body.provider), model: required(body.model), allowModel: body.allowModel === true, scope: scopeOf(body.scope) })); return
   }
-  if (req.method === 'POST' && action === 'job' && segments[3]) {
+  if (req.method === 'POST' && action === 'job') {
     const body = await bodyOf(req), id = segments[3]
+    if (body.action === 'dismiss-finished') { send({ hidden: provider.wiki.ingest.dismissFinished(kbId) }); return }
+    if (!id) throw new Error('WIKI_JOB_NOT_FOUND')
+    if (body.action === 'dismiss') { send(provider.wiki.ingest.dismiss(kbId,id)); return }
     if (body.action === 'cancel') { provider.wiki.ingest.cancel(kbId,id); send({ok:true}); return }
     if (body.action === 'classify') { send(provider.wiki.ingest.classify(kbId,id,required(body.itemId),required(body.category))); return }
     send(provider.wiki.ingest.resume(kbId,id)); return

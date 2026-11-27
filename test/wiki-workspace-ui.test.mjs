@@ -20,7 +20,7 @@ const all=node=>[node,...node.children.filter(c=>c instanceof Element).flatMap(a
 const text=node=>typeof node==='string'?node:node.children.map(text).join(' ')
 const pending=()=>new Promise(resolve=>setTimeout(resolve,25))
 
-function fixture(t, {configured=true, confirm=false, gate, jobs, connection, scan, changes, storedChanges}={}) {
+function fixture(t, {configured=true, confirm=false, gate, jobs, connection, scan, changes, storedChanges, jobError, dismissFinished, pages, otherJobs, processError, python, models}={}) {
  const calls=[], confirms=[]; let hash="old-hash";
  const previous=globalThis.window;globalThis.window={confirm:m=>{confirms.push(m);return confirm},setTimeout:(fn,ms)=>setTimeout(fn,ms),clearTimeout:id=>clearTimeout(id)};
  t.after(()=>{globalThis.window=previous});
@@ -28,15 +28,18 @@ function fixture(t, {configured=true, confirm=false, gate, jobs, connection, sca
  if(path.endsWith("/connection"))return connection??{state:configured?"ready":"unconfigured",layout:configured?{sourceDir:"s",workspaceRoot:"w",rawDir:"r",pageDir:"w/wiki"}:undefined,report:{registered:0,existing:2,rejected:0,items:[]}};
  if(path==="wiki")return configured?[{kbId:"A",layout:{sourceDir:"s",workspaceRoot:"w",rawDir:"r"}}]:[];
  if(path.endsWith("/changes"))return options.method==="POST"?(typeof changes==="function"?changes():changes??null):(storedChanges??null);
- if(path.endsWith("/pages"))return [{pageId:"p",relPath:"wiki/notes/a.md",status:"active",version:1}];
+ if(path.endsWith("/job"))return {hidden: dismissFinished??0};
+ if(path.endsWith("/pages"))return pages??[{pageId:"p",relPath:"wiki/notes/a.md",status:"active",version:1}];
  if(path.endsWith("/scan"))return scan??{connection:{state:"ready",layout:{pageDir:"w/wiki"},report:{registered:0,existing:0,rejected:0,items:[]}},files:[{name:"a.docx",size:2048,duplicate:false},{name:"done.docx",size:10,duplicate:true}]};
- if(path.endsWith("/process"))return {id:"job-new",state:"running",items:[{id:"i",source:"a.docx",stage:"new"}],discovery:{found:2,duplicates:1},kbId:"A",settings:{},createdAt:"",updatedAt:""};
- if(path.includes("/job/"))return {ok:true};
+ if(path.endsWith("/process")){if(processError)throw Object.assign(new Error(processError.message??processError),{code:processError.code??""});return {id:"job-new",state:"running",items:[{id:"i",source:"a.docx",stage:"new"}],discovery:{found:2,duplicates:1},kbId:"A",settings:{},createdAt:"",updatedAt:""}};
+ if(path.includes("/job/")){if(jobError)throw Object.assign(new Error(jobError),{code:jobError});return {ok:true}};
+ if(path==="wiki/B/jobs")return typeof otherJobs==="function"?otherJobs():(otherJobs??[]);
  if(path.endsWith("/jobs"))return jobs?jobs():[{id:"job-1",state:"done",items:[]}];
  if(path.endsWith("/proposals")||path.endsWith("/raw"))return [];
- if(path.endsWith("/python"))return {candidates:[],hint:""};
- if(path.endsWith("/models"))return {providers:[]};
+ if(path.endsWith("/python"))return python??{candidates:[],hint:""};
+ if(path.endsWith("/models"))return models??{providers:[]};
  if(path.endsWith("/page/p")){if(options.method==="PUT"){hash="new-hash";return{ok:true}}return{pageId:"p",relPath:"wiki/notes/a.md",content:"saved",sha256:hash}};
+ if(path.includes("/page/")&&options.method!=="PUT")return {pageId:path.split("/page/")[1],relPath:"wiki/notes/read.md",content:"# 只读内容",sha256:"read-hash"};
  throw Error("unhandled "+path)};
  const workspace=createWikiWorkspace({api,element,actionButton,badge:label=>element("span",{},label),interfaceIcon:()=>element("svg"),openModal:()=>{},bases:[{id:"A",name:"A"},{id:"B",name:"B"}]});
  const nodes=()=>all(workspace.root),button=label=>nodes().find(n=>n.tag==="button"&&text(n)===label);
@@ -223,9 +226,9 @@ test("source changes show the last check, all three classes and examples",async 
  assert.match(view,/缺失 1 个/);
  assert.match(view,/源文件已不存在，知识库内容不会自动删除/,"missing files explain that nothing is deleted");
  assert.ok(view.includes("01_检测/旧图.png"));
- assert.equal(f.nodes().filter(n=>n.tag==="button"&&/删除|移除|清理/.test(text(n))).length,0,"missing files never offer a delete action");
- assert.ok(f.calls.every(c=>!/delete|remove/i.test(c.path)),"the change area never calls a destructive endpoint");
  const section=f.nodes().find(n=>String(n.attrs.class||"").includes("wiki-change-section"));
+ assert.equal(all(section).filter(n=>n.tag==="button"&&/删除|移除|清理/.test(text(n))).length,0,"missing files never offer a delete action");
+ assert.ok(f.calls.every(c=>!/delete|remove/i.test(c.path)),"the change area never calls a destructive endpoint");
  assert.equal(section.hidden,false,"a connected library shows the area");
  assert.equal(f.button("查看并处理").hidden,false);
 });
@@ -343,4 +346,199 @@ test("立即检查 never reports a clean result while files were skipped",async 
  const status=f.nodes().find(n=>String(n.attrs.class||"")==="wiki-status");
  assert.match(text(status),/另有 1 项因过大未处理/);
  assert.doesNotMatch(text(status),/未发现资料变化/);
+});
+
+// Job list: a cancelled job can never be resumed, finished records can be removed, running ones only stop.
+test("a cancelled job offers removal and never resume",async t=>{
+ const f=fixture(t,{jobs:()=>[{id:"cancelled-1",state:"cancelled",items:[]}]});
+ await pending();
+ assert.match(text(f.root),/已取消/);
+ assert.equal(f.button("续跑"),undefined,"a cancelled job cannot be resumed");
+ assert.ok(f.button("移除"),"a cancelled job can be removed");
+});
+
+test("removing a finished job calls dismiss and drops the card in place",async t=>{
+ const f=fixture(t,{jobs:()=>[{id:"done-1",state:"done",items:[]}]});
+ await pending();
+ const listReads=f.calls.filter(c=>c.path.endsWith("/jobs")).length;
+ await f.button("移除").click();await pending();
+ const dismiss=f.calls.find(c=>c.path.includes("/job/done-1"));
+ assert.deepEqual(dismiss.body,{action:"dismiss"});
+ assert.ok(!f.nodes().some(n=>n.tag==="strong"&&text(n)==="任务 done-1"),"the card disappears");
+ assert.equal(f.calls.filter(c=>c.path.endsWith("/jobs")).length,listReads,"no full list reload");
+ assert.match(text(f.root),/已移除该任务记录/);
+});
+
+test("clearing finished jobs calls dismiss-finished and reports how many went",async t=>{
+ const f=fixture(t,{jobs:()=>[{id:"done-1",state:"done",items:[]},{id:"cancelled-1",state:"cancelled",items:[]},{id:"paused-1",state:"paused",items:[]}],dismissFinished:2});
+ await pending();
+ const clear=f.button("清除已结束任务");
+ assert.ok(clear);
+ assert.equal(clear.hidden,false);
+ await clear.click();await pending();
+ const bulk=f.calls.find(c=>c.path.endsWith("/job")&&c.body?.action==="dismiss-finished");
+ assert.ok(bulk,"the bulk action reaches the host");
+ assert.match(text(f.root),/已清除 2 条已结束任务记录/);
+ const titles=f.nodes().filter(n=>n.tag==="strong"&&text(n).startsWith("任务 ")).map(n=>text(n));
+ assert.deepEqual(titles,["任务 paused-1"],"only the unfinished job stays");
+});
+
+test("the clear action stays hidden when nothing has finished",async t=>{
+ const f=fixture(t,{jobs:()=>[{id:"running-1",state:"running",items:[]}]});
+ await pending();
+ assert.equal(f.button("清除已结束任务").hidden,true);
+ f.dispose();
+});
+
+test("stopping a job updates the card in place and never resumes it",async t=>{
+ const f=fixture(t,{jobs:()=>[{id:"running-1",state:"running",items:[{id:"i",source:"a.docx",stage:"new",activity:"正在抽取"}]}]});
+ await pending();
+ await f.button("停止").click();await pending();
+ const cancel=f.calls.find(c=>c.path.includes("/job/running-1"));
+ assert.deepEqual(cancel.body,{action:"cancel"});
+ assert.match(text(f.root),/任务已取消，可点移除清理/,"the outcome is stated");
+ assert.match(text(f.root),/已取消/);
+ assert.equal(f.button("续跑"),undefined,"a cancelled job is not offered a resume");
+ assert.ok(f.button("移除"));
+ assert.ok(!f.calls.some(c=>c.path.includes("/job/running-1")&&c.body?.action==="resume"),"nothing resumes automatically");
+ assert.equal(f.nodes().find(n=>String(n.attrs.class||"").includes("wiki-runbar")).hidden,true,"the stop bar retires with the job");
+ f.dispose();
+});
+
+test("a stale resume says the job was cancelled instead of failing silently",async t=>{
+ const f=fixture(t,{jobs:()=>[{id:"stale-1",state:"paused",items:[]}],jobError:"WIKI_JOB_CANCELLED"});
+ await pending();
+ await f.button("续跑").click();await pending();
+ const status=f.nodes().find(n=>String(n.attrs.class||"")==="wiki-status");
+ assert.match(text(status),/任务已取消，不能续跑；请重新扫描/);
+ assert.ok(!/WIKI_JOB_CANCELLED/.test(text(status)),"the raw code is not the message");
+ assert.equal(f.button("续跑"),undefined,"the stale card is closed");
+ assert.ok(f.button("移除"));
+});
+
+// The distill update gate is gone: nothing to approve, results are auditable after the fact.
+test("the workspace no longer loads or renders review proposals",async t=>{
+ const f=fixture(t);await pending();
+ assert.ok(!f.calls.some(c=>c.path.endsWith("/proposals")),"no proposals request on load");
+ assert.ok(!text(f.root).includes("蒸馏更新审核"),"the review block is gone");
+ assert.equal(f.button("刷新候选"),undefined);
+ assert.equal(f.button("批准替换"),undefined);
+ assert.equal(f.button("拒绝"),undefined);
+});
+
+// Real host shape: `pages` is every page the item touched, `updatedPages` is the subset that replaced
+// an existing page, so a pure update appears in both lists and must not be counted as a new page.
+test("a pure update counts one updated page and offers one button",async t=>{
+ const f=fixture(t,{pages:[{pageId:"old",relPath:"wiki/notes/old.md",status:"active",version:2}],
+  jobs:()=>[{id:"update",state:"done",items:[{id:"i1",source:"a.docx",stage:"done",pages:["wiki/notes/old.md"],updatedPages:["wiki/notes/old.md"]}]}]});
+ await pending();
+ const view=text(f.root);
+ assert.match(view,/更新 1 篇页面/);
+ assert.doesNotMatch(view,/新增 \d+ 篇页面/,"an updated page is not a new page");
+ const updated=f.button("已更新：wiki/notes/old.md");
+ assert.ok(updated,"the updated page gets its own label");
+ assert.equal(f.button("查看关联页：wiki/notes/old.md"),undefined,"no duplicate button for the same page");
+ await updated.click();await pending();
+ assert.ok(f.calls.some(c=>c.path.includes("/page/old")),"reads the current page content");
+ assert.ok(!f.calls.some(c=>c.method==="PUT"),"viewing a result never writes");
+ const status=f.nodes().find(n=>String(n.attrs.class||"")==="wiki-status");
+ assert.match(text(status),/已打开只读内容/);
+});
+
+test("a pure add still counts one new page",async t=>{
+ const f=fixture(t,{pages:[{pageId:"new",relPath:"wiki/notes/new.md",status:"active",version:1}],
+  jobs:()=>[{id:"create",state:"done",items:[{id:"i1",source:"b.docx",stage:"done",pages:["wiki/notes/new.md"]}]}]});
+ await pending();
+ const view=text(f.root);
+ assert.match(view,/新增 1 篇页面/);
+ assert.doesNotMatch(view,/更新 \d+ 篇页面/,"a new page is not an update");
+ assert.ok(f.button("查看关联页：wiki/notes/new.md"));
+ assert.equal(f.button("已更新：wiki/notes/new.md"),undefined);
+});
+
+test("a mixed result lists the added and the updated page apart",async t=>{
+ const f=fixture(t,{pages:[{pageId:"new",relPath:"wiki/notes/new.md",status:"active",version:1},
+  {pageId:"old",relPath:"wiki/notes/old.md",status:"active",version:2}],
+  jobs:()=>[{id:"mixed",state:"done",items:[{id:"i1",source:"c.docx",stage:"done",
+   pages:["wiki/notes/new.md","wiki/notes/old.md"],updatedPages:["wiki/notes/old.md"]}]}]});
+ await pending();
+ const view=text(f.root);
+ assert.match(view,/新增 1 篇页面/);
+ assert.match(view,/更新 1 篇页面/);
+ assert.ok(f.button("已更新：wiki/notes/old.md"));
+ assert.ok(f.button("查看关联页：wiki/notes/new.md"));
+ assert.equal(f.button("查看关联页：wiki/notes/old.md"),undefined,"the updated page is never listed as new");
+ assert.equal(f.nodes().filter(n=>n.tag==="button"&&text(n).includes("wiki/notes/old.md")).length,1,"one button per page");
+});
+
+test("an external edit conflict is explained and never implies a write",async t=>{
+ const f=fixture(t,{jobs:()=>[{id:"conflict",state:"done",items:[{id:"i",source:"manual.docx",stage:"failed",error:"WIKI_EXTERNAL_EDIT_CONFLICT:wiki/notes/old.md"}]}]});
+ await pending();
+ const view=text(f.root);
+ assert.ok(view.includes("该页已被外部修改，未覆盖；请刷新索引后重试"),"the conflict explains itself in Chinese");
+ assert.ok(!view.includes("WIKI_EXTERNAL_EDIT_CONFLICT"),"the raw code is not the message");
+ assert.ok(!/已更新：|已写入/.test(view),"nothing claims the page was written");
+});
+
+// One library processes at a time across the whole host, so the console must name the busy one.
+test("processing blocked by another library explains itself in Chinese",async t=>{
+ const f=fixture(t,{confirm:true,python:{candidates:[{path:"python.exe",version:"3.12",ok:true}],hint:""},
+  models:{providers:[{provider:"p",name:"本地",models:[{id:"m",name:"模型"}]}],default:{provider:"p",model:"m"}},
+  processError:{code:"WIKI_JOB_RUNNING_ELSEWHERE",message:"库 B 的任务 job-xyz789 正在处理，请等待完成或取消后再开始"}});
+ await pending();
+ await f.button("扫描更新").click();await pending();
+ const consent=f.nodes().filter(n=>n.tag==="input"&&n.attrs.type==="checkbox").at(-1);
+ consent.checked=true;consent.listeners.change();
+ await f.button("开始处理").click();await pending();
+ assert.ok(f.calls.some(c=>c.path.endsWith("/process")),"the request reaches the host");
+ const status=f.nodes().find(n=>String(n.attrs.class||"")==="wiki-status");
+ assert.match(text(status),/另一个知识库正在处理，请先在那边完成或停止/);
+ assert.match(text(status),/B · 任务 job-xyz7/,"the busy library and job are named");
+ assert.doesNotMatch(text(status),/WIKI_JOB_RUNNING_ELSEWHERE/,"raw codes never reach the screen");
+ const note=f.nodes().find(n=>String(n.attrs.class||"").includes("wiki-process-blocked"));
+ assert.equal(note.hidden,false,"the reason stays visible");
+ assert.match(text(note),/另一个知识库正在处理/);
+ assert.equal(f.button("开始处理").disabled,true,"processing stays disabled until that library is free");
+});
+
+test("a busy other library disables processing before any click",async t=>{
+ const running=[{id:"elsewhere-1",state:"running",items:[]}];
+ const f=fixture(t,{otherJobs:()=>running});
+ await pending();
+ const note=f.nodes().find(n=>String(n.attrs.class||"").includes("wiki-process-blocked"));
+ assert.ok(note);
+ assert.equal(note.hidden,false,"the guard is visible without trying first");
+ assert.match(text(note),/另一个知识库正在处理，请先在那边完成或停止/);
+ assert.match(text(note),/任务 elsewher/);
+ assert.match(text(note),/刷新任务/,"the way out is named");
+ await f.button("扫描更新").click();await pending();
+ const consent=f.nodes().filter(n=>n.tag==="input"&&n.attrs.type==="checkbox").at(-1);
+ consent.checked=true;consent.listeners.change();
+ assert.equal(f.button("开始处理").disabled,true,"the button is disabled even with consent and candidates");
+ assert.ok(!f.calls.some(c=>c.path.endsWith("/process")),"no doomed process call");
+ running.length=0;
+ await f.button("刷新任务").click();await pending();
+ assert.equal(note.hidden,true,"the guard clears once the other library is free");
+ assert.equal(f.button("开始处理").disabled,false,"processing becomes available again");
+});
+
+test("a vanished job record is explained and its stale card disappears",async t=>{
+ let reads=0;
+ const f=fixture(t,{jobs:()=>{reads++;return reads<=1?[{id:"ghost-1",state:"done",items:[]}]:[]},jobError:"WIKI_JOB_NOT_FOUND"});
+ await pending();
+ assert.ok(f.nodes().some(n=>n.tag==="strong"&&text(n)==="任务 ghost-1"),"the stale card was rendered first");
+ await f.button("移除").click();await pending();
+ const status=f.nodes().find(n=>String(n.attrs.class||"")==="wiki-status");
+ assert.match(text(status),/任务记录已不存在，请刷新任务列表/);
+ assert.doesNotMatch(text(status),/WIKI_JOB_NOT_FOUND/);
+ assert.ok(!f.nodes().some(n=>n.tag==="strong"&&text(n)==="任务 ghost-1"),"the vanished card is refreshed away");
+});
+
+test("removing a job that is still running explains itself in Chinese",async t=>{
+ const f=fixture(t,{jobs:()=>[{id:"busy-1",state:"done",items:[]}],jobError:"WIKI_JOB_RUNNING"});
+ await pending();
+ await f.button("移除").click();await pending();
+ const status=f.nodes().find(n=>String(n.attrs.class||"")==="wiki-status");
+ assert.match(text(status),/任务仍在运行，请先停止再移除/);
+ assert.doesNotMatch(text(status),/WIKI_JOB_RUNNING/);
 });

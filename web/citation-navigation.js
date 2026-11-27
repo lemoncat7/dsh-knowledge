@@ -2,9 +2,20 @@
 export async function resolveCitation(raw, signal) {
   let ref
   try { ref = JSON.parse(raw) } catch { throw Error('来源引用格式无效，请从原回答重新打开。') }
-  const response = await fetch('/knowledge-control/v1/activity/citation?' + new URLSearchParams({ citation: raw, sessionId: ref?.sessionId || '' }), {
-    signal, headers: { 'x-dsh-knowledge-client': 'conversation-web' },
-  })
+  // Bound the wait: a stalled control request must not pin the workspace open.
+  const timeout = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(15_000) : undefined
+  const combined = signal !== undefined && timeout !== undefined && typeof AbortSignal.any === 'function'
+    ? AbortSignal.any([signal, timeout])
+    : signal ?? timeout
+  let response
+  try {
+    response = await fetch('/knowledge-control/v1/activity/citation?' + new URLSearchParams({ citation: raw, sessionId: ref?.sessionId || '' }), {
+      signal: combined, headers: { 'x-dsh-knowledge-client': 'conversation-web' },
+    })
+  } catch (error) {
+    if (timeout?.aborted) throw Error('打开来源文档超时，请稍后重试。')
+    throw error
+  }
   const data = await response.json()
   if (!response.ok) throw Error(data.error || '无法打开来源文档')
   return ref

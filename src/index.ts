@@ -12,6 +12,7 @@ import { assertKnowledgeBrowserRequest, LOCAL_MANAGEMENT_API_PREFIX, registerKno
 import { registerKnowledgeActivityControl } from './activity-control.js'
 import { registerWritebackControl } from './writeback/control.js'
 import { registerWritebackLive } from './writeback/live-control.js'
+import { registerMountSelectionControl } from './mount-selection.js'
 import {
   connectionSettingsBase,
   createConnectionProvider,
@@ -452,6 +453,12 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
       },
     })
     if (disposeModelCatalog !== undefined) httpRuntime.effect(() => disposeModelCatalog, 'dsh-knowledge.model-catalog')
+    const disposeMountSelection = managementProvider === undefined
+      ? undefined
+      : registerMountSelectionControl(httpRuntime, managementProvider, {
+        available: () => !connectionChanging && activeConnection.backend === 'local',
+      })
+    if (disposeMountSelection !== undefined) httpRuntime.effect(() => disposeMountSelection, 'dsh-knowledge.mount-selection')
   }
 
   if (runtime.inject !== undefined) {
@@ -463,10 +470,19 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   }
 
   if (resolved.extractionEnabled) {
-    runtime.on('agent/turn-stopping', ({ agent, turn }) => {
+    runtime.on('agent/turn-stopping', async ({ agent, turn }) => {
       const key = `${agent.session.id}:${turn}`
       let work: WritebackWork | undefined
       try {
+        // No selected library means no automatic extraction work: nothing is queued,
+        // nothing is written, and the conversation shows no fault-like notice.
+        const writable = (await provider.resolveMounts(agent.session.id, agent.session.header.cwd))
+          .some(mount => mount.writeMode !== 'none')
+        if (!writable) {
+          writebackStatuses.delete(key)
+          writebackSources.delete(key)
+          return
+        }
         const snapshot = coordinator.capture(agent.session, turn)
         if (snapshot) work = { snapshot, destination: destination() }
         if (work) writebackQueue!.enqueue(work)
@@ -498,7 +514,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
 }
 
 function statusFromExtractionResult(result: Awaited<ReturnType<ExtractionCoordinator['run']>>): WritebackStatus {
-  if (result.status === 'unmounted') return { status: 'completed', summary: '知识库回写 · 未挂载可写知识库', retryable: false }
+  if (result.status === 'unmounted') return { status: 'completed', summary: '知识库回写 · 未选择知识库', retryable: false }
   if (result.status === 'skipped') return { status: 'completed', summary: '知识库回写 · 当前回答无可提取内容', retryable: false }
   if (result.status === 'duplicate') return { status: 'completed', summary: '知识库回写 · 已处理', retryable: false }
   if (result.candidateCount === 0) return { status: 'completed', summary: '知识库回写 · 无需收录', retryable: false }
@@ -519,7 +535,7 @@ function statusFromExtractionJob(job: ExtractionJobRecord, retryable: boolean): 
   if (completion === undefined) return {
     status: 'completed', summary: job.candidateCount > 0 ? `知识库回写 · 已处理 ${job.candidateCount} 项` : '知识库回写 · 无需收录', retryable: false,
   }
-  if (completion.outcome === 'unmounted') return { status: 'completed', summary: '知识库回写 · 未挂载可写知识库', retryable: false }
+  if (completion.outcome === 'unmounted') return { status: 'completed', summary: '知识库回写 · 未选择知识库', retryable: false }
   if (completion.outcome === 'skipped') return { status: 'completed', summary: '知识库回写 · 当前回答无可提取内容', retryable: false }
   if (completion.candidateCount === 0) return { status: 'completed', summary: '知识库回写 · 无需收录', retryable: false }
   const grouped = new Map<string, { name: string; directCount: number; auditCount: number }>()
