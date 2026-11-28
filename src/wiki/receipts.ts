@@ -35,6 +35,9 @@ export class ReceiptSupport extends IngestSupport {
   protected async receiptCategories(kbId: string, root: string): Promise<Set<string>> {
     const names = new Set<string>()
     const add = (item: Partial<Item>): void => {
+      // A standalone item's category is its delivery folder, never an archive category: keep that
+      // folder a delivery so later scans keep finding its files (and its declaration).
+      if (item.standalone === true) return
       if (typeof item.category === 'string' && item.category) names.add(item.category)
       if (typeof item.archived === 'string' && isPathInside(root, item.archived)) {
         const first = relative(root, item.archived).split(sep)[0]

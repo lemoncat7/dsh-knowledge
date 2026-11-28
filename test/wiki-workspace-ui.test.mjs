@@ -542,3 +542,58 @@ test("removing a job that is still running explains itself in Chinese",async t=>
  assert.match(text(status),/任务仍在运行，请先停止再移除/);
  assert.doesNotMatch(text(status),/WIKI_JOB_RUNNING/);
 });
+
+// A delivery folder may declare "no archive": it is previewed apart and processed in place.
+const standaloneReport = () => ({state:"ready",layout:{pageDir:"w/wiki"},report:{registered:0,existing:0,rejected:0,repaired:0,items:[],issues:[]}});
+test("a standalone delivery is previewed apart and never counted as archived",async t=>{
+ const scan={connection:standaloneReport(),
+  files:[{name:"根层.pdf",size:1024,duplicate:false},
+   {name:"甲.docx",size:2048,duplicate:false,folder:"不归档资料",relPath:"甲.docx"},
+   {name:"乙.docx",size:512,duplicate:false,folder:"外部投递",relPath:"乙.docx"}],
+  folders:[{name:"不归档资料",count:1},{name:"外部投递",count:1}],
+  standaloneFolders:[{folder:"不归档资料",reason:"说明文件「说明.txt」包含「不拆分」"}]};
+ const f=fixture(t,{scan,python:{candidates:[{path:"python.exe",version:"3.12",ok:true}],hint:""},
+  models:{providers:[{provider:"p",name:"本地",models:[{id:"m",name:"模型"}]}],default:{provider:"p",model:"m"}}});await pending();await f.button("扫描更新").click();await pending();
+ const view=text(f.root);
+ assert.match(view,/不归档文件夹（原位提取/,"the standalone group has its own heading");
+ assert.ok(view.includes("不归档资料"),"the folder name is shown");
+ assert.match(view,/说明文件「说明.txt」包含「不拆分」/,"the declaration reason is shown");
+ assert.match(view,/这些文件不会被移动或复制，只做抽取与蒸馏。/,"files stay put");
+ assert.match(view,/文件夹投递（1 个文件夹，1 个待处理）/,"normal deliveries keep their own group");
+ assert.match(view,/根层文件 1 个；不归档文件夹 1 个；投递文件夹 1 个/,"the summary splits the three sources");
+ assert.match(view,/发现 3 个待处理原件/,"standalone files count as pending work");
+ const consent=f.nodes().filter(n=>n.tag==="input"&&n.attrs.type==="checkbox").at(-1);
+ consent.checked=true;consent.listeners.change();
+ assert.equal(f.button("开始处理").disabled,false,"standalone files are processable");
+ await f.button("开始处理").click();await pending();
+ assert.match(f.confirms.at(-1),/不归档文件夹原位抽取与蒸馏，不移动或复制/,"the confirmation says they stay in place");
+});
+
+test("a standalone job item is described as in-place extraction",async t=>{
+ const f=fixture(t,{jobs:()=>[{id:"standalone-1",state:"running",items:[
+   {id:"a",source:"E:\\\\不归档资料\\\\甲.docx",stage:"archived",standalone:true,standaloneReason:"文件夹名包含「不归档」",archived:"E:\\\\不归档资料\\\\甲.docx",inPlace:true}]}]});
+ try {
+   await pending();
+   const card=text(f.nodes().find(n=>String(n.attrs.class||"")==="wiki-card"));
+   assert.match(card,/原位提取（不归档）/);
+   assert.ok(!card.includes("已归档"),"the stage badge never claims an archive for a standalone item");
+   assert.ok(!/归档路径|已归档到/.test(card),"no filing location is suggested");
+ } finally { f.dispose() }
+});
+
+test("a finished standalone item says the page was written without moving the original",async t=>{
+ const job=(pages) => [{id:"standalone-2",state:"done",items:[
+   {id:"a",source:"E:\\\\不归档资料\\\\甲.docx",stage:"done",standalone:true,pages}]}];
+ const withPage=fixture(t,{pages:[{pageId:"p2",relPath:"wiki/notes/jia.md",status:"active",version:1},{pageId:"p",relPath:"wiki/notes/a.md",status:"active",version:1}],jobs:()=>job(["wiki/notes/jia.md"])});
+ await pending();
+ const done=text(withPage.nodes().find(n=>String(n.attrs.class||"")==="wiki-card"));
+ assert.match(done,/已生成知识页（原件未移动）/);
+ assert.ok(!/归档路径|已归档到/.test(done));
+ withPage.dispose();
+
+ const withoutPage=fixture(t,{jobs:()=>job([])});
+ await pending();
+ const empty=text(withoutPage.nodes().find(n=>String(n.attrs.class||"")==="wiki-card"));
+ assert.match(empty,/原位提取（不归档），未生成知识页/);
+ assert.ok(!empty.includes("已生成知识页"),"no page is claimed when none was written");
+});

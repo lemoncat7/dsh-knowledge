@@ -21,6 +21,8 @@ export function createScanBlock(context) {
   let processButton
   let processBlockedNote
   let previewCount = 0
+  // Folders that declared "no archive": only the confirmation wording depends on them.
+  let pendingStandaloneFolders = 0
   const changeHead = element('div', { class: 'wiki-row wiki-change-head' })
   const changeBadge = badge('检查中…')
   changeHead.append(element('h2', {}, '资料变化'), changeBadge)
@@ -174,21 +176,28 @@ export function createScanBlock(context) {
    * Files that are deliberately not processed (too large to extract) get their own explained block.
    * Nothing is moved here: the confirmed processing step still does all the work.
    */
-  function renderScanPreview(files, folders, skipped) {
+  function renderScanPreview(files, folders, skipped, standaloneFolders) {
     const blocked = skipped ?? []
     const fresh = files.filter(file => !file.duplicate)
     const rootFiles = fresh.filter(file => !file.folder)
+    // A folder that declared "no archive" is never moved or copied, so it is previewed apart.
+    const standaloneReasons = new Map((standaloneFolders ?? []).map(entry => [entry.folder, entry.reason]))
     const groups = new Map()
     for (const file of files) {
       if (!file.folder) continue
-      const group = groups.get(file.folder) ?? { name: file.folder, total: 0, pending: [] }
+      const group = groups.get(file.folder) ?? { name: file.folder, total: 0, pending: [], standalone: standaloneReasons.has(file.folder), reason: standaloneReasons.get(file.folder) }
       group.total += 1
       if (!file.duplicate) group.pending.push(file)
       groups.set(file.folder, group)
     }
     // A declared folder with only already-processed files still deserves its name in the preview.
-    for (const entry of folders ?? []) if (!groups.has(entry.name)) groups.set(entry.name, { name: entry.name, total: entry.count, pending: [] })
+    for (const entry of folders ?? []) {
+      if (groups.has(entry.name)) continue
+      groups.set(entry.name, { name: entry.name, total: entry.count, pending: [], standalone: standaloneReasons.has(entry.name), reason: standaloneReasons.get(entry.name) })
+    }
     const listed = [...groups.values()].sort((a, b) => a.name.localeCompare(b.name))
+    const standaloneList = listed.filter(group => group.standalone)
+    const deliveryList = listed.filter(group => !group.standalone)
     previewList.replaceChildren()
     if (rootFiles.length) {
       previewList.append(element('p', { class: 'wiki-preview-group' }, `根层文件（${rootFiles.length} 个待处理）`))
@@ -197,10 +206,25 @@ export function createScanBlock(context) {
           element('span', {}, file.name), element('span', { class: 'muted' }, Math.round(file.size / 1024) + ' KB')))
       }
     }
-    if (listed.length) {
-      const pending = listed.reduce((sum, group) => sum + group.pending.length, 0)
-      previewList.append(element('p', { class: 'wiki-preview-group' }, `文件夹投递（${listed.length} 个文件夹，${pending} 个待处理）`))
-      for (const group of listed) {
+    if (standaloneList.length) {
+      const pending = standaloneList.reduce((sum, group) => sum + group.pending.length, 0)
+      previewList.append(element('p', { class: 'wiki-preview-group' }, `不归档文件夹（原位提取，${pending} 个待处理）`))
+      previewList.append(element('p', { class: 'wiki-hint' }, '这些文件不会被移动或复制，只做抽取与蒸馏。'))
+      for (const group of standaloneList) {
+        previewList.append(element('div', { class: 'wiki-row wiki-folder-row' },
+          element('strong', { class: 'wiki-folder-name' }, group.name),
+          badge(group.pending.length ? `${group.pending.length} 个待处理` : '已全部处理', group.pending.length ? 'accent' : ''),
+          element('span', { class: 'muted' }, group.reason ?? '不归档'),
+          element('span', { class: 'muted' }, `共 ${group.total} 个文件`)))
+        for (const file of group.pending) previewList.append(element('div', { class: 'wiki-row wiki-row-detail' },
+          element('span', { class: 'wiki-path', title: file.relPath ?? file.name }, file.relPath ?? file.name),
+          element('span', { class: 'muted' }, Math.round(file.size / 1024) + ' KB')))
+      }
+    }
+    if (deliveryList.length) {
+      const pending = deliveryList.reduce((sum, group) => sum + group.pending.length, 0)
+      previewList.append(element('p', { class: 'wiki-preview-group' }, `文件夹投递（${deliveryList.length} 个文件夹，${pending} 个待处理）`))
+      for (const group of deliveryList) {
         previewList.append(element('div', { class: 'wiki-row wiki-folder-row' },
           element('strong', { class: 'wiki-folder-name' }, group.name),
           badge(group.pending.length ? `${group.pending.length} 个待处理` : '已全部处理', group.pending.length ? 'accent' : ''),
@@ -219,8 +243,10 @@ export function createScanBlock(context) {
     }
     return {
       fresh, rootPending: rootFiles.length,
-      folderPending: listed.reduce((sum, group) => sum + group.pending.length, 0),
-      folderCount: listed.filter(group => group.pending.length).length,
+      folderPending: deliveryList.reduce((sum, group) => sum + group.pending.length, 0),
+      folderCount: deliveryList.filter(group => group.pending.length).length,
+      standalonePending: standaloneList.reduce((sum, group) => sum + group.pending.length, 0),
+      standaloneFolderCount: standaloneList.filter(group => group.pending.length).length,
       blocked: blocked.length,
     }
   }
@@ -228,9 +254,16 @@ export function createScanBlock(context) {
   function scanSummary(totals) {
     const parts = []
     if (totals.rootPending) parts.push(`根层文件 ${totals.rootPending} 个`)
-    if (totals.folderPending) parts.push(`文件夹投递 ${totals.folderPending} 个，来自 ${totals.folderCount} 个文件夹`)
+    if (totals.standalonePending) parts.push(`不归档文件夹 ${totals.standalonePending} 个`)
+    if (totals.folderPending) parts.push(totals.standalonePending
+      ? `投递文件夹 ${totals.folderPending} 个`
+      : `文件夹投递 ${totals.folderPending} 个，来自 ${totals.folderCount} 个文件夹`)
+    // Without standalone deliveries every word below stays exactly as before.
+    const after = totals.standalonePending
+      ? '确认后：普通原件移动到分类目录并调用模型；不归档文件夹原位抽取与蒸馏，不移动或复制；只登记类型只写回执、原件原地保留。'
+      : '确认后：可抽取资料移动到分类目录并调用模型；只登记类型只写回执、原件原地保留。'
     const blocked = totals.blocked ? `；另有 ${totals.blocked} 个文件因过大未处理（见下方说明）` : ''
-    return `发现 ${totals.fresh.length} 个待处理原件：${parts.join('；')}（跳过 ${totals.skipped} 个已处理）${blocked}。确认后：可抽取资料移动到分类目录并调用模型；只登记类型只写回执、原件原地保留。`
+    return `发现 ${totals.fresh.length} 个待处理原件：${parts.join('；')}（跳过 ${totals.skipped} 个已处理）${blocked}。${after}`
   }
 
   /** One read-only scan preview shared by the scan button and the source-change entry point. */
@@ -238,7 +271,7 @@ export function createScanBlock(context) {
     context.activity.textContent = '正在检查目录与已有页面，只读取，不移动文件…'
     const result = await call(url('scan'), { method: 'POST', body: {} })
     context.renderConnection(result.connection)
-    const total = renderScanPreview(result.files, result.folders, result.skipped)
+    const total = renderScanPreview(result.files, result.folders, result.skipped, result.standaloneFolders)
     const totals = { ...total, skipped: result.files.length - total.fresh.length }
     previewNote.textContent = total.fresh.length
       ? scanSummary(totals)
@@ -246,6 +279,7 @@ export function createScanBlock(context) {
         ? `没有待处理原件（跳过 ${totals.skipped} 个已处理）；另有 ${total.blocked} 个文件因过大未处理（见下方说明）。根层文件与根层文件夹都会扫描，已归档的分类目录不重复处理。`
         : `没有待处理原件（跳过 ${totals.skipped} 个已处理）。根层文件与根层文件夹都会扫描，已归档的分类目录不重复处理。`
     previewCount = total.fresh.length
+    pendingStandaloneFolders = total.standaloneFolderCount
     processButton.hidden = !total.fresh.length
     applyProcessingGuard()
     await context.loadJobs()
@@ -296,7 +330,11 @@ export function createScanBlock(context) {
         if (!consentToggle.checked) throw new Error('请先确认允许发送资料给模型')
         if (!pythonSelect.value) throw new Error('未检测到 Python，请先安装或重新检测')
         if (!providerSelect.value || !modelSelect.value) throw new Error('请选择模型渠道与模型')
-        if (!window.confirm('将处理待处理原件：可抽取资料移动到分类子目录并调用所选模型抽取与蒸馏；只登记类型（视频/安装包等）只写回执、原件原地保留。继续？')) return
+        // The wording only changes when a folder declared "no archive"; otherwise it stays as it was.
+        const ask = pendingStandaloneFolders
+          ? '将处理待处理原件：普通原件移动到分类子目录并调用所选模型抽取与蒸馏；不归档文件夹原位抽取与蒸馏，不移动或复制；只登记类型（视频/安装包等）只写回执、原件原地保留。继续？'
+          : '将处理待处理原件：可抽取资料移动到分类子目录并调用所选模型抽取与蒸馏；只登记类型（视频/安装包等）只写回执、原件原地保留。继续？'
+        if (!window.confirm(ask)) return
         context.activity.textContent = '正在启动处理任务…'
         let job
         try {

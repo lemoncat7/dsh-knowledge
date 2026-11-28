@@ -108,7 +108,8 @@ export async function handleWikiApi(provider: LocalKnowledgeProvider, segments: 
       return { name: basename(file.source), size: file.size, duplicate: file.duplicate, ...(file.delivery ? { folder: file.delivery } : {}), ...(file.relPath ? { relPath: file.relPath } : {}) }
     })
     const skipped = discovery.skipped.map(item => ({ name: item.name, size: item.size, reason: item.reason, ...(item.delivery ? { folder: item.delivery } : {}), ...(item.relPath ? { relPath: item.relPath } : {}) }))
-    send({ connection, files: entries, folders: [...folders].map(([name, count]) => ({ name, count })), skipped }); return
+    send({ connection, files: entries, folders: [...folders].map(([name, count]) => ({ name, count })), skipped,
+      standaloneFolders: discovery.standaloneFolders }); return
   }
   if (req.method === 'POST' && action === 'process') {
     const body = await bodyOf(req)

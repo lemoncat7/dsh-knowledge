@@ -40,6 +40,18 @@ test('scan preview reports folder deliveries apart from root-level files', async
   assert.deepEqual(scan.skipped, [])
 })
 
+test('scan preview reports delivery folders that declared no-archive', async t => {
+  const { endpoint, headers, sourceDir } = await harness(t)
+  await mkdir(join(sourceDir, '外部汇图ai'), { recursive: true })
+  await writeFile(join(sourceDir, '外部汇图ai', '说明.txt'), '本文件夹内容不拆分，请单独分类处理。')
+  await writeFile(join(sourceDir, '外部汇图ai', '资料.txt'), '资料正文，超过二十个字符以满足抽取质量判定要求。')
+
+  const scan = await (await fetch(endpoint + '/scan', { method: 'POST', headers, body: '{}' })).json()
+  assert.deepEqual(scan.files.map(file => [file.name, file.folder]), [['资料.txt', '外部汇图ai']], 'the notice file is never a candidate')
+  assert.deepEqual(scan.standaloneFolders.map(item => item.folder), ['外部汇图ai'])
+  assert.match(scan.standaloneFolders[0].reason, /不拆分/)
+})
+
 test('scan preview explains oversized extractable files instead of dropping them silently', async t => {
   const { endpoint, headers, sourceDir } = await harness(t)
   const oversized = join(sourceDir, '外部投递', '超大扫描件.pdf')

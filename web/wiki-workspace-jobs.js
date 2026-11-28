@@ -32,7 +32,7 @@ export function createJobsBlock(context) {
     const parts = [`完成 ${done}/${total}`]
     if (failed) parts.push(`失败 ${failed}`)
     if (review) parts.push(`待人工 ${review}`)
-    if (current) parts.push(`当前：${current.source.split(/[\\/]/).pop()}（${current.activity || STAGE_LABEL[current.stage] || current.stage}）`)
+    if (current) parts.push(`当前：${current.source.split(/[\\/]/).pop()}（${current.activity || stageLabelOf(current)}）`)
     return parts.join(' · ')
   }
 
@@ -114,6 +114,18 @@ export function createJobsBlock(context) {
     return hidden ? `已清除 ${hidden} 条已结束任务记录` : '没有可清除的已结束任务'
   }
 
+  /**
+   * A standalone delivery is never archived, so its stage label must not say "已归档" anywhere —
+   * neither on the item badge nor in the running summary.
+   */
+  function stageLabelOf(item) {
+    return item.standalone === true && item.stage === 'archived' ? '原件原位' : (STAGE_LABEL[item.stage] ?? item.stage)
+  }
+  function standaloneNote(item) {
+    if (item.stage !== 'done') return '原位提取（不归档）'
+    return item.pages?.length ? '已生成知识页（原件未移动）' : '原位提取（不归档），未生成知识页'
+  }
+
   function drawJobs(jobs) {
     // Local list: cancel/dismiss update the card in place instead of reloading the whole page.
     state.jobs = jobs
@@ -147,7 +159,7 @@ export function createJobsBlock(context) {
         const conflict = /WIKI_EXTERNAL_EDIT_CONFLICT/.test(item.error ?? '')
         const row = element('div', { class: 'wiki-row wiki-row-detail' },
           element('span', { class: 'wiki-path', title: item.source }, item.source.split(/[\\/]/).pop()),
-          badge(STAGE_LABEL[item.stage] ?? item.stage, item.stage === 'failed' ? 'danger' : item.stage === 'review' ? 'warning' : item.stage === 'done' ? 'success' : ''),
+          badge(stageLabelOf(item), item.stage === 'failed' ? 'danger' : item.stage === 'review' ? 'warning' : item.stage === 'done' ? 'success' : ''),
           item.error
             ? element('small', { class: conflict ? 'wiki-hint' : 'wiki-error', ...(conflict ? { title: item.error } : {}) },
               conflict ? '该页已被外部修改，未覆盖；请刷新索引后重试' : item.error)
@@ -160,7 +172,8 @@ export function createJobsBlock(context) {
             await loadJobs()
           }), 'ghost small'))
         }
-        if (item.stage === 'done' && item.registered) row.append(element('small', { class: 'wiki-hint' }, '已登记（原位，不搬运）：该类型不抽取、不生成知识页'))
+        if (item.standalone === true) row.append(element('small', { class: 'wiki-hint' }, standaloneNote(item)))
+        else if (item.stage === 'done' && item.registered) row.append(element('small', { class: 'wiki-hint' }, '已登记（原位，不搬运）：该类型不抽取、不生成知识页'))
         else if (item.stage === 'done' && !item.pages?.length && !item.updatedPages?.length) row.append(element('small', { class: 'wiki-hint' }, '已记录处理结果，未生成知识页'))
         // `pages` lists every page the item touched; `updatedPages` is the subset that replaced an
         // existing page. Only the rest are new, otherwise an update is counted twice and gets two buttons.

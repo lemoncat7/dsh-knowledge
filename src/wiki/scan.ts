@@ -4,7 +4,7 @@ import type { Dirent } from 'node:fs'
 import { lstat, open, readFile, readdir, realpath, unlink } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join, relative, sep } from 'node:path'
 import { isPathInside } from './paths.js'
-import type { Item, WikiScanResult, WikiSourceCandidate, WikiSkippedSource } from './ingest-types.js'
+import type { WikiScanResult, WikiSourceCandidate, WikiSkippedSource, WikiStandaloneFolder } from './ingest-types.js'
 import { ReceiptSupport } from './receipts.js'
 
 const inventoryName = /^(?:readme|read_me|index|log|schema|knowledge-archive|license|changelog|归档清单|归档目录树|资料索引|资料目录|目录树|索引|清单)(?:[._-]|$)/i
@@ -13,6 +13,12 @@ function isInventory(name: string): boolean {
   const base = name.replace(/\.[^.]+$/, '')
   return inventoryName.test(name) || inventoryStem.test(base)
 }
+// A delivery folder may declare "do not archive" with a notice file at its root (case-insensitive).
+const standaloneNoticeNames = new Set(['说明.txt', '说明.md', 'readme.md', '不归档.txt'])
+const standaloneMarkers = ['不归档', '不拆分', '单独分类', '不要归档', 'no-archive', 'do not archive', 'do not split', 'standalone']
+const standaloneFolderName = /不归档|no-archive/i
+/** Notice files only carry the declaration; they are never source material themselves. */
+function isStandaloneNotice(name: string): boolean { return standaloneNoticeNames.has(name.toLowerCase()) }
 // Register-only formats: classified and archived with a receipt, but never extracted or distilled,
 // so the extractor's 256 MiB guard does not apply to them. Every other type keeps that guard.
 export const registration = new Set(['.mp4','.exe','.rar','.zip','.msi','.7z','.doc'])
@@ -159,9 +165,33 @@ export class ScanSupport extends ReceiptSupport {
       .map(entry => entry.name).sort()
     return { root, entries, categories: folders.filter(name => known.has(name)), deliveries: folders.filter(name => !known.has(name)) }
   }
+  /**
+   * A delivery folder may declare "no archive / no split / standalone" through a root notice file or
+   * its own name. Returns the operator-facing reason plus the declaration files to exclude as sources.
+   */
+  private async standaloneDeclaration(root: string, delivery: string): Promise<{ reason: string; notices: string[] } | undefined> {
+    const dir = join(root, delivery)
+    const entries = await readdir(dir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return [] as Dirent[]
+      throw error
+    })
+    const folderMarker = standaloneFolderName.exec(delivery)
+    let reason: string | undefined = folderMarker === null ? undefined : `文件夹名包含「${folderMarker[0]}」`
+    const notices: string[] = []
+    for (const entry of entries) {
+      if (!entry.isFile() || entry.isSymbolicLink() || !isStandaloneNotice(entry.name)) continue
+      const text = await readFile(join(dir, entry.name), 'utf8').catch(() => '')
+      const marker = standaloneMarkers.find(item => text.toLowerCase().includes(item.toLowerCase()))
+      if (marker === undefined) continue
+      notices.push(entry.name)
+      reason ??= `说明文件「${entry.name}」包含「${marker}」`
+    }
+    return reason === undefined ? undefined : { reason, notices }
+  }
   /** Recursively collect a delivery folder; links and reserved directories never leave the source root. */
-  private async deliveryFiles(root: string, delivery: string): Promise<{ source: string; delivery: string; relPath: string }[]> {
+  private async deliveryFiles(root: string, delivery: string, declarations: string[] = []): Promise<{ source: string; delivery: string; relPath: string }[]> {
     const result: { source: string; delivery: string; relPath: string }[] = []
+    const skipAtRoot = new Set(declarations)
     const walk = async (dir: string, prefix: string[]): Promise<void> => {
       if (prefix.length > maxDeliveryDepth) return
       const entries = (await readdir(dir, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))
@@ -173,7 +203,7 @@ export class ScanSupport extends ReceiptSupport {
           const actual = await realpath(path).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error })
           if (!actual || !isPathInside(root, actual)) continue
           await walk(path, [...prefix, entry.name])
-        } else if (entry.isFile() && !isInventory(entry.name)) {
+        } else if (entry.isFile() && !isInventory(entry.name) && !(prefix.length === 0 && skipAtRoot.has(entry.name))) {
           result.push({ source: path, delivery, relPath: [...prefix, entry.name].join('/') })
         }
       }
@@ -182,19 +212,30 @@ export class ScanSupport extends ReceiptSupport {
     return result
   }
   /** Destination below the category: a folder delivery keeps its name and relative hierarchy. */
-  private async sourceCandidates(kbId: string): Promise<{ root: string; candidates: { source: string; delivery?: string; relPath?: string }[] }> {
+  private async sourceCandidates(kbId: string): Promise<{ root: string; candidates: { source: string; delivery?: string; relPath?: string; standalone?: true; standaloneReason?: string }[]; standaloneFolders: WikiStandaloneFolder[] }> {
     const { root, entries, deliveries } = await this.sourceRoot(kbId)
-    const candidates: { source: string; delivery?: string; relPath?: string }[] = []
+    const candidates: { source: string; delivery?: string; relPath?: string; standalone?: true; standaloneReason?: string }[] = []
+    const standaloneFolders: WikiStandaloneFolder[] = []
     // Root-level files are one-file deliveries; unrelated folders are scanned recursively below.
     for (const entry of entries) {
       if (!entry.isFile() || entry.isSymbolicLink() || entry.name.startsWith('.') || isInventory(entry.name)) continue
       candidates.push({ source: join(root, entry.name) })
     }
-    for (const delivery of deliveries) candidates.push(...await this.deliveryFiles(root, delivery))
-    return { root, candidates: candidates.sort((a, b) => a.source.localeCompare(b.source)) }
+    for (const delivery of deliveries) {
+      const declaration = await this.standaloneDeclaration(root, delivery)
+      const files = await this.deliveryFiles(root, delivery, declaration?.notices ?? [])
+      if (declaration === undefined) {
+        candidates.push(...files)
+        continue
+      }
+      standaloneFolders.push({ folder: delivery, reason: declaration.reason })
+      // Every file below a standalone delivery stays where it is but is still extracted and distilled.
+      candidates.push(...files.map(file => ({ ...file, standalone: true as const, standaloneReason: declaration.reason })))
+    }
+    return { root, candidates: candidates.sort((a, b) => a.source.localeCompare(b.source)), standaloneFolders }
   }
   async scanSources(kbId: string): Promise<WikiScanResult> {
-    const { candidates } = await this.sourceCandidates(kbId)
+    const { candidates, standaloneFolders } = await this.sourceCandidates(kbId)
     const files: WikiSourceCandidate[] = [], skipped: WikiSkippedSource[] = []
     for (const candidate of candidates) {
       const stat = await lstat(candidate.source)
@@ -206,7 +247,7 @@ export class ScanSupport extends ReceiptSupport {
       const sha = (await this.hashedFile(kbId, candidate.source, stat)).sha
       files.push({ ...candidate, sha, size: stat.size, duplicate: await this.receiptExists(kbId, sha) })
     }
-    return { files, skipped }
+    return { files, skipped, standaloneFolders }
   }
   /** Candidate files only; `scanSources` additionally explains what was skipped. */
   async discover(kbId: string): Promise<WikiSourceCandidate[]> { return (await this.scanSources(kbId)).files }
