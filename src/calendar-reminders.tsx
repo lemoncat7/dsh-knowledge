@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { nextAckRequestId } from './calendar-ack-id.js'
 
 interface Reminder { id:string; title:string; day:string; remindAt:number; groupId:string; kind:string }
 interface Reminders { calendarId:string; timeZone:string; items:Reminder[]; total:number; nextAt:number|null }
@@ -51,8 +52,10 @@ export function CalendarReminders({ openCalendar }: { openCalendar(day:string):v
     if (locked.current || !value) return
     locked.current=true;setPending(item.id);setError('')
     const signature=value.calendarId+':'+item.id+':'+item.remindAt
-    if (!ids.current.has(signature)) ids.current.set(signature,crypto.randomUUID())
     try {
+      // Minted inside the try so a throwing id source can never skip `finally` and
+      // leave locked/pending set (that disabled every "知道了" button for good).
+      if (!ids.current.has(signature)) ids.current.set(signature,nextAckRequestId())
       const response=await fetch(endpoint+'reminder-ack',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json','x-dsh-worklog-client':'workspace'},
         body:JSON.stringify({calendarId:value.calendarId,id:item.id,remindAt:item.remindAt,requestId:ids.current.get(signature)})})
       if (!response.ok) { const result=await response.json() as {error?:string}; throw Error(result.error ?? '提醒确认失败，请重试') }
