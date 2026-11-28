@@ -710,6 +710,47 @@ body[data-ds-dark-theme] :is(
   }
 }
 
+/* Composer library selector: one compact chip plus a small list, no layout shift. */
+.dsh-knowledge-mount-selector { position: relative; display: inline-flex; align-items: center; min-width: 0; }
+.dsh-knowledge-mount-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  max-width: 11rem; height: 26px; padding: 0 8px;
+  border: 1px solid var(--knowledge-border); border-radius: var(--knowledge-radius-control);
+  background: var(--knowledge-control); color: var(--knowledge-text-secondary);
+  font: inherit; font-size: 12px; line-height: 1; cursor: pointer;
+}
+.dsh-knowledge-mount-chip:hover { background: var(--knowledge-control-hover, var(--knowledge-control)); color: var(--knowledge-text); }
+.dsh-knowledge-mount-chip:focus-visible { outline: 2px solid var(--knowledge-accent); outline-offset: 2px; }
+.dsh-knowledge-mount-chip:disabled { opacity: .6; cursor: default; }
+.dsh-knowledge-mount-caption { flex: 0 0 auto; opacity: .75; }
+.dsh-knowledge-mount-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dsh-knowledge-mount-caret { flex: 0 0 auto; font-size: 9px; opacity: .7; }
+.dsh-knowledge-mount-menu {
+  position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 40;
+  display: grid; gap: 1px; min-width: 10rem; max-width: 16rem; max-height: 14rem; overflow-y: auto;
+  padding: 4px; border: 1px solid var(--knowledge-border); border-radius: var(--knowledge-radius-control);
+  background: var(--knowledge-menu-bg, #ffffff); box-shadow: 0 10px 28px rgb(0 0 0 / 18%);
+}
+.dsh-knowledge-mount-option {
+  padding: 6px 8px; border: 0; border-radius: 6px; background: transparent;
+  color: var(--knowledge-text); font: inherit; font-size: 12px; text-align: left; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dsh-knowledge-mount-option:hover { background: var(--knowledge-control-hover, var(--knowledge-control)); }
+.dsh-knowledge-mount-option.is-selected { color: var(--knowledge-accent); font-weight: 600; }
+.dsh-knowledge-mount-error {
+  max-width: 9rem;
+  overflow: hidden;
+  color: var(--knowledge-danger);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The floating menu must be opaque: the composer surface is translucent glass. */
+:is(body, body[data-ds-dark-theme]) .dsh-knowledge-mount-menu { background: #23262b; }
+:is(body:not([data-ds-dark-theme])) .dsh-knowledge-mount-menu { background: #ffffff; }
+
 .dsh-calendar-reminder-trigger{flex:0 0 36px;width:36px;min-width:36px;padding:0;justify-content:center;gap:0}
 .dsh-calendar-reminder-trigger>small{position:absolute;top:0;right:0;font-size:10px;line-height:12px;border-radius:8px;padding:1px 3px;background:var(--accent,#38606b);color:var(--on-accent,white)}
 .dsh-calendar-reminders{position:fixed;inset:auto 20px 24px auto;margin:0;box-sizing:border-box;width:min(390px,calc(100vw - 32px));max-height:min(520px,calc(100dvh - 48px));padding:16px;border:1px solid color-mix(in srgb,var(--text,#27313a) 14%,transparent);border-radius:18px;color:var(--text,#27313a);background:color-mix(in srgb,var(--dialog-surface,#eff2f5) 86%,transparent);backdrop-filter:blur(24px) saturate(1.15);box-shadow:0 12px 50px rgb(0 0 0 / 15%);font:13px/1.6 system-ui;overflow:auto;z-index:1000}

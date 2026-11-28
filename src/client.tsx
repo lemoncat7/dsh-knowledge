@@ -1,3 +1,4 @@
+import { createWikiMentionSource } from './wiki/mention-source.js'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { CalendarReminders } from './calendar-reminders.js'
 import { createConnectionClient, ConnectionRequestError, type KnowledgeConnectionView } from './connection-client.js'
@@ -32,6 +33,7 @@ import { supportsDockedPanels } from './docked-panel-compat.js'
 import cssText from './client.css'
 import { settingsSurfaceCss } from './settings-surface.js'
 import { registerMainPanel } from './main-panel-compat.js'
+import { registerKnowledgeMountSelector } from './mount-selection-ui.js'
 import { installCitationLinks } from './citation-links.js'
 import activityCss from './knowledge-activity.css'
 import { createKnowledgeActivityController, type KnowledgeActivityController } from './knowledge-activity-controller.js'
@@ -83,6 +85,7 @@ export function apply(ctx: ClientContext): void {
     scoped.effect(() => scoped.inputTriggers.registerSource(createNoteMentionSource(
       noteId => workspace.openDocument({ view: 'notes', noteId }),
     )), 'dsh-knowledge: @ note documents')
+    scoped.effect(() => scoped.inputTriggers.registerSource(createWikiMentionSource()), 'dsh-knowledge: @ wiki pages')
   })
   activity = createKnowledgeActivityController(ctx, {
     beforeOpen: () => { workspace.close(); if (!docked) activatePluginWorkspace(PLUGIN_ID) },
@@ -104,6 +107,9 @@ export function apply(ctx: ClientContext): void {
     order: 20,
     label: () => '知识库',
   }, KnowledgeConnectionCard))
+
+  // The in-conversation selector sits at the left of the composer tool row; its default is no library.
+  registerKnowledgeMountSelector(ctx)
 
   ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
     name: 'conversation.chat.turnTail',

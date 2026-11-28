@@ -155,6 +155,8 @@ export interface KnowledgeSource {
   turn?: number
   clientId?: string
   evidence?: KnowledgeEvidence
+  /** Document path referenced by this conversation piece; persisted in provenance for traceability. */
+  sourcePath?: string
 }
 
 export interface KnowledgeDraft {
@@ -218,6 +220,30 @@ export interface DirectWriteResult {
   outcome: DirectWriteOutcome
   candidate?: KnowledgeCandidate
   entry?: KnowledgeEntry
+}
+
+/** One explicit command write: create a new conversation page; never an update or an overwrite. */
+export interface ConversationSaveInput {
+  sessionId: string
+  turn: number
+  title: string
+  body: string
+  /** Session/project scope source; without it the page is global. */
+  projectId?: string
+  /** Optional document this conversation piece refers to, recorded in provenance for traceability. */
+  sourcePath?: string
+}
+
+export interface ConversationSaveResult {
+  knowledgeBaseId: string
+  knowledgeBaseName: string
+  entryId: string
+  pageId: string
+  /** Wiki page path relative to the Wiki root, e.g. wiki/notes/<hash>.md. */
+  relPath: string
+  scope: KnowledgeScope
+  /** True when the same session+turn+title+body was already written; no second page was created. */
+  duplicate: boolean
 }
 
 export interface SearchRequest {

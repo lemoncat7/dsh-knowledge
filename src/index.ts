@@ -1,3 +1,6 @@
+import { createWikiModel } from './wiki/model.js'
+import { createWikiDistiller } from './wiki/distill.js'
+import { runWikiChangeCheck, startWikiChangeWatch } from './wiki/change-watch.js'
 import { normalizeWritebackFrequency } from './service-settings.js'
 import { NoteVault } from './notes/vault.js'
 import type { Context } from '@deepseek-ai/cordis'
@@ -9,6 +12,7 @@ import { assertKnowledgeBrowserRequest, LOCAL_MANAGEMENT_API_PREFIX, registerKno
 import { registerKnowledgeActivityControl } from './activity-control.js'
 import { registerWritebackControl } from './writeback/control.js'
 import { registerWritebackLive } from './writeback/live-control.js'
+import { registerMountSelectionControl } from './mount-selection.js'
 import {
   connectionSettingsBase,
   createConnectionProvider,
@@ -115,6 +119,42 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   const provider: KnowledgeProvider = providerRouter.provider
   let activeConnection = initialConnection
   let connectionChanging = false
+  if (managementProvider) {
+    managementProvider.wiki.host = {
+      defaultModel: () => {
+        const selector = runtime.get('agentDefaultModel') as { currentSelection(): { provider: string; model: string } } | undefined
+        try { return selector?.currentSelection() } catch { return undefined }
+      },
+      models: async () => {
+        const llm = runtime.get('llm') as { listProviders(): Array<{ id: string; name: string }>; listModels(provider: string): Promise<Array<{ id: string; name: string }>> } | undefined
+        if (!llm) return []
+        const providers = llm.listProviders()
+        return Promise.all(providers.map(async provider => ({
+          provider: provider.id, name: provider.name,
+          models: await llm.listModels(provider.id).then(list => list.map(model => ({ id: model.id, name: model.name }))).catch(() => []),
+        })))
+      },
+    }
+    managementProvider.wiki.ingest.authorize = () => {
+      if (connectionChanging || activeConnection.backend !== 'local') throw new Error('WIKI_CONNECTION_CHANGED')
+    }
+    managementProvider.wiki.ingest.modelFor = settings => createWikiModel(runtime, () => {
+      if (connectionChanging || activeConnection.backend !== 'local') throw new Error('WIKI_CONNECTION_CHANGED')
+      return { provider: settings.provider, model: settings.model }
+    })
+    managementProvider.wiki.ingest.distill = (kbId,item,settings,operationId,signal) => {
+      const model = managementProvider.wiki.ingest.modelFor!(settings)
+      return createWikiDistiller(managementProvider.wiki, model)(kbId,item,settings,operationId,signal)
+    }
+  }
+  // Read-only material change detection for connected local Wiki bases. Failures are logged, never thrown.
+  if (managementProvider !== undefined && resolved.wikiChangeCheckMinutes > 0) {
+    const wiki = managementProvider.wiki
+    runtime.effect(() => startWikiChangeWatch(async () => {
+      if (connectionChanging || activeConnection.backend !== 'local') return
+      await runWikiChangeCheck(wiki, runtime.logger)
+    }, resolved.wikiChangeCheckMinutes * 60_000), 'dsh-knowledge.wiki-change-watch')
+  }
   let journalRuntime: JournalRuntime | undefined
   ctx.inject?.(['connection'], journal => {
     const connection = journal.get('connection') as { requestRejection?: unknown } | undefined
@@ -235,6 +275,12 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   const registerHttpSurfaces = (httpRuntime: RuntimeContextLike): void => {
     const disposeActivityControl = registerKnowledgeActivityControl(httpRuntime, provider, {
       codec: noteHandleCodec,
+      wiki: { codec: handleCodec, isWiki: id => activeConnection.backend === 'local' && !!managementProvider?.wiki.has(id), projectFor: async sessionId => {
+        const agents = runtime.get('agents') as { get(id: string): { session: { header: { cwd?: string } } } | undefined } | undefined
+        const agent = agents?.get(sessionId)
+        if (!agent) throw connectionError(403,'会话未激活，请重新打开会话')
+        return agent.session.header.cwd
+      } },
       sourceKey: () => createHash('sha256').update(destination()).digest('hex'),
     })
     httpRuntime.effect(() => disposeActivityControl, 'dsh-knowledge.activity-control')
@@ -407,6 +453,12 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
       },
     })
     if (disposeModelCatalog !== undefined) httpRuntime.effect(() => disposeModelCatalog, 'dsh-knowledge.model-catalog')
+    const disposeMountSelection = managementProvider === undefined
+      ? undefined
+      : registerMountSelectionControl(httpRuntime, managementProvider, {
+        available: () => !connectionChanging && activeConnection.backend === 'local',
+      })
+    if (disposeMountSelection !== undefined) httpRuntime.effect(() => disposeMountSelection, 'dsh-knowledge.mount-selection')
   }
 
   if (runtime.inject !== undefined) {
@@ -418,10 +470,19 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
   }
 
   if (resolved.extractionEnabled) {
-    runtime.on('agent/turn-stopping', ({ agent, turn }) => {
+    runtime.on('agent/turn-stopping', async ({ agent, turn }) => {
       const key = `${agent.session.id}:${turn}`
       let work: WritebackWork | undefined
       try {
+        // No selected library means no automatic extraction work: nothing is queued,
+        // nothing is written, and the conversation shows no fault-like notice.
+        const writable = (await provider.resolveMounts(agent.session.id, agent.session.header.cwd))
+          .some(mount => mount.writeMode !== 'none')
+        if (!writable) {
+          writebackStatuses.delete(key)
+          writebackSources.delete(key)
+          return
+        }
         const snapshot = coordinator.capture(agent.session, turn)
         if (snapshot) work = { snapshot, destination: destination() }
         if (work) writebackQueue!.enqueue(work)
@@ -453,7 +514,7 @@ export function apply(ctx: Context, config: KnowledgeConfig): void {
 }
 
 function statusFromExtractionResult(result: Awaited<ReturnType<ExtractionCoordinator['run']>>): WritebackStatus {
-  if (result.status === 'unmounted') return { status: 'completed', summary: '知识库回写 · 未挂载可写知识库', retryable: false }
+  if (result.status === 'unmounted') return { status: 'completed', summary: '知识库回写 · 未选择知识库', retryable: false }
   if (result.status === 'skipped') return { status: 'completed', summary: '知识库回写 · 当前回答无可提取内容', retryable: false }
   if (result.status === 'duplicate') return { status: 'completed', summary: '知识库回写 · 已处理', retryable: false }
   if (result.candidateCount === 0) return { status: 'completed', summary: '知识库回写 · 无需收录', retryable: false }
@@ -474,7 +535,7 @@ function statusFromExtractionJob(job: ExtractionJobRecord, retryable: boolean): 
   if (completion === undefined) return {
     status: 'completed', summary: job.candidateCount > 0 ? `知识库回写 · 已处理 ${job.candidateCount} 项` : '知识库回写 · 无需收录', retryable: false,
   }
-  if (completion.outcome === 'unmounted') return { status: 'completed', summary: '知识库回写 · 未挂载可写知识库', retryable: false }
+  if (completion.outcome === 'unmounted') return { status: 'completed', summary: '知识库回写 · 未选择知识库', retryable: false }
   if (completion.outcome === 'skipped') return { status: 'completed', summary: '知识库回写 · 当前回答无可提取内容', retryable: false }
   if (completion.candidateCount === 0) return { status: 'completed', summary: '知识库回写 · 无需收录', retryable: false }
   const grouped = new Map<string, { name: string; directCount: number; auditCount: number }>()

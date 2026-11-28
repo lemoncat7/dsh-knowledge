@@ -124,6 +124,24 @@ async function dispatch(
 
   const actor = options.authMode === 'same-origin' ? authenticateSameOrigin(req) : authenticateBearer(provider, req)
 
+  if (segments[0] === 'wiki') {
+    if (options.authMode !== 'same-origin') throw httpError(403, 'Wiki 仅支持本机管理端')
+    requirePermission(actor.permissions, 'admin')
+    const { handleWikiApi } = await import('./wiki/api.js')
+    try {
+      await handleWikiApi(provider, segments, req, res)
+    } catch (error) {
+      // Surface the real reason: the console shows this text verbatim.
+      const message = error instanceof Error ? error.message : String(error)
+      if (!res.headersSent) {
+        res.statusCode = 400
+        res.setHeader('content-type', 'application/json; charset=utf-8')
+        res.end(JSON.stringify({ error: message, code: (error as { code?: string }).code ?? 'WIKI_ERROR' }))
+      }
+    }
+    return
+  }
+
   if(options.authMode==='same-origin' && options.noteWorkspace && await handleNoteWorkspace(options.noteWorkspace,relative,url,req,res))return
 
   if (segments[0] === 'note-sync') {
